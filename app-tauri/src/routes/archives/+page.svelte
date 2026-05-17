@@ -15,19 +15,15 @@
   let repo = $state<RepoConfig | null>(null);
   let repoAvailable = $state(false);
 
-  $effect(() => {
-    const unsub1 = repoConfig.subscribe((r) => (repo = r));
-    const unsub2 = hasRepo.subscribe((v) => (repoAvailable = v));
-    return () => { unsub1(); unsub2(); };
-  });
-
   onMount(() => {
-    const unsub = repoConfig.subscribe((r) => {
-      if (r && r.ssh_host) {
+    const unsub1 = repoConfig.subscribe((r) => {
+      repo = r;
+      if (r && r.ssh_host && !loading) {
         loadArchives(r);
       }
     });
-    return unsub;
+    const unsub2 = hasRepo.subscribe((v) => (repoAvailable = v));
+    return () => { unsub1(); unsub2(); };
   });
 
   async function loadArchives(r: RepoConfig) {

@@ -22,7 +22,9 @@
   onMount(async () => {
     try {
       await loadRepoConfig();
-    } catch (_) {}
+    } catch (e) {
+      console.warn('Failed to load saved config:', e);
+    }
   });
 
   $effect(() => {

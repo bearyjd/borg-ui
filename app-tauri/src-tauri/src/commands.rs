@@ -80,6 +80,9 @@ pub async fn load_repo_config(app: tauri::AppHandle) -> Result<Option<RepoConfig
 
 #[tauri::command]
 pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result<(), String> {
+    if repo.ssh_host.trim().is_empty() || repo.repo_path.trim().is_empty() {
+        return Err("ssh_host and repo_path are required".into());
+    }
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     tokio::fs::create_dir_all(&config_dir)
         .await

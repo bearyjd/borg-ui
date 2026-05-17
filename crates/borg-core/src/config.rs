@@ -139,6 +139,18 @@ mod tests {
     }
 
     #[test]
+    fn ssh_url_relative_path() {
+        let repo = RepoConfig {
+            ssh_host: "host.com".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "repos/myrepo".into(),
+            ssh_key_path: None,
+        };
+        assert_eq!(repo.ssh_url(), "ssh://borg@host.com:22/repos/myrepo");
+    }
+
+    #[test]
     fn all_compression_variants_roundtrip() {
         for comp in [
             Compression::None,

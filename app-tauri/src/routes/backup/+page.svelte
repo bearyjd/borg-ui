@@ -17,7 +17,7 @@
 
   async function addFolder() {
     const selected = await open({ directory: true, multiple: false, title: 'Select folder to back up' });
-    if (selected) {
+    if (selected && !sourcePaths.includes(selected as string)) {
       sourcePaths = [...sourcePaths, selected as string];
     }
   }
