@@ -1,0 +1,13 @@
+[package]
+name = "borg-platform-win"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+borg-core = { path = "../borg-core" }
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Will add windows-rs when we implement VSS in v0.2
