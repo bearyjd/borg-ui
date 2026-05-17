@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use borg_core::borg::{ArchiveInfo, BorgClient};
 use borg_core::config::RepoConfig;
-use tauri::State;
+use tauri::{Manager, State};
 
 pub struct AppState {
     pub borg: BorgClient,
@@ -62,4 +62,32 @@ pub async fn create_backup(
         .create(&profile, &archive_name, |_event| {})
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn load_repo_config(app: tauri::AppHandle) -> Result<Option<RepoConfig>, String> {
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let config_path = config_dir.join("repo.json");
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let data = tokio::fs::read_to_string(&config_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let config: RepoConfig = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+    Ok(Some(config))
+}
+
+#[tauri::command]
+pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result<(), String> {
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    tokio::fs::create_dir_all(&config_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let config_path = config_dir.join("repo.json");
+    let data = serde_json::to_string_pretty(&repo).map_err(|e| e.to_string())?;
+    tokio::fs::write(&config_path, data)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }

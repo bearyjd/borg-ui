@@ -1,6 +1,8 @@
 <script lang="ts">
   import '../app.css';
   import { page } from '$app/stores';
+  import { onMount } from 'svelte';
+  import { isConnected, loadRepoConfig } from '$lib/stores/repo';
 
   interface Props {
     children: import('svelte').Snippet;
@@ -14,6 +16,19 @@
     { href: '/archives', label: 'Archives', icon: '▤' },
     { href: '/settings', label: 'Settings', icon: '⚙' },
   ];
+
+  let connected = $state(false);
+
+  onMount(async () => {
+    try {
+      await loadRepoConfig();
+    } catch (_) {}
+  });
+
+  $effect(() => {
+    const unsub = isConnected.subscribe((v) => (connected = v));
+    return unsub;
+  });
 </script>
 
 <div class="app-shell">
@@ -41,8 +56,8 @@
 
     <div class="sidebar-footer">
       <div class="connection-status">
-        <span class="status-dot"></span>
-        <span class="status-text">No repo connected</span>
+        <span class="status-dot" class:connected></span>
+        <span class="status-text">{connected ? 'Repo connected' : 'No repo connected'}</span>
       </div>
     </div>
   </nav>
@@ -151,6 +166,11 @@
     height: 8px;
     border-radius: 50%;
     background: var(--color-text-dim);
+    transition: background var(--duration-normal) var(--ease-out);
+  }
+
+  .status-dot.connected {
+    background: var(--color-success);
   }
 
   .status-text {

@@ -32,3 +32,46 @@ pub enum BorgError {
 }
 
 pub type Result<T> = std::result::Result<T, BorgError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_failed_displays_message() {
+        let err = BorgError::ProcessFailed {
+            message: "borg create failed".into(),
+            exit_code: Some(2),
+            stderr: "permission denied".into(),
+        };
+        assert!(err.to_string().contains("borg create failed"));
+    }
+
+    #[test]
+    fn io_error_converts() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let borg_err: BorgError = io_err.into();
+        assert!(borg_err.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn json_error_converts() {
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let borg_err: BorgError = json_err.into();
+        assert!(matches!(borg_err, BorgError::Json(_)));
+    }
+
+    #[test]
+    fn all_error_variants_display() {
+        let errors: Vec<BorgError> = vec![
+            BorgError::RepoNotFound { path: "/repo".into() },
+            BorgError::AuthFailed { reason: "bad key".into() },
+            BorgError::PassphraseRequired,
+            BorgError::SshFailed { message: "timeout".into() },
+            BorgError::InvalidConfig { message: "missing field".into() },
+        ];
+        for err in errors {
+            assert!(!err.to_string().is_empty());
+        }
+    }
+}

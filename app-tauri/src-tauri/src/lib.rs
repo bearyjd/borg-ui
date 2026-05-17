@@ -21,6 +21,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             borg: BorgClient::new(borg_path),
         })
@@ -30,6 +31,8 @@ pub fn run() {
             commands::get_repo_info,
             commands::list_archives,
             commands::create_backup,
+            commands::load_repo_config,
+            commands::save_repo_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

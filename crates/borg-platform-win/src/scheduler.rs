@@ -62,3 +62,26 @@ pub enum Schedule {
     Hourly,
     Daily { hour: u8, minute: u8 },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schedule_hourly_variant() {
+        let schedule = Schedule::Hourly;
+        assert!(matches!(schedule, Schedule::Hourly));
+    }
+
+    #[test]
+    fn schedule_daily_variant() {
+        let schedule = Schedule::Daily { hour: 14, minute: 30 };
+        match schedule {
+            Schedule::Daily { hour, minute } => {
+                assert_eq!(hour, 14);
+                assert_eq!(minute, 30);
+            }
+            _ => panic!("expected Daily"),
+        }
+    }
+}
