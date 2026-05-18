@@ -1,12 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { repoConfig, isConnected } from '$lib/stores/repo';
+  import { repoState } from '$lib/stores/repo.svelte';
 
   let borgVersion = $state('checking...');
   let borgError = $state('');
-  let repoHost = $state('');
-  let connected = $state(false);
+
+  let repoHost = $derived(
+    repoState.config
+      ? `${repoState.config.ssh_user}@${repoState.config.ssh_host}:${repoState.config.repo_path}`
+      : ''
+  );
+  let connected = $derived(repoState.connected);
 
   onMount(async () => {
     try {
@@ -15,14 +20,6 @@
       borgError = `borg not found: ${e}`;
       borgVersion = 'not available';
     }
-  });
-
-  $effect(() => {
-    const unsub1 = repoConfig.subscribe((r) => {
-      repoHost = r ? `${r.ssh_user}@${r.ssh_host}:${r.repo_path}` : '';
-    });
-    const unsub2 = isConnected.subscribe((v) => (connected = v));
-    return () => { unsub1(); unsub2(); };
   });
 </script>
 

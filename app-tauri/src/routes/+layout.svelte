@@ -2,7 +2,7 @@
   import '../app.css';
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
-  import { isConnected, loadRepoConfig } from '$lib/stores/repo';
+  import { repoState } from '$lib/stores/repo.svelte';
 
   interface Props {
     children: import('svelte').Snippet;
@@ -17,19 +17,16 @@
     { href: '/settings', label: 'Settings', icon: '⚙' },
   ];
 
-  let connected = $state(false);
+  let connected = $derived(repoState.connected);
 
   onMount(async () => {
     try {
-      await loadRepoConfig();
-    } catch (_) {
-      // Config not found on first launch — expected
+      await repoState.load();
+    } catch (e) {
+      if (!String(e).includes('not found') && !String(e).includes('NotFound')) {
+        console.error('Failed to load repo config:', e);
+      }
     }
-  });
-
-  $effect(() => {
-    const unsub = isConnected.subscribe((v) => (connected = v));
-    return unsub;
   });
 </script>
 

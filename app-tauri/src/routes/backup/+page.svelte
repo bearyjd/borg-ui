@@ -1,19 +1,13 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-dialog';
-  import { repoConfig, hasRepo, type RepoConfig } from '$lib/stores/repo';
+  import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
 
   let sourcePaths = $state<string[]>([]);
   let isRunning = $state(false);
   let status = $state('');
-  let repo = $state<RepoConfig | null>(null);
-  let repoAvailable = $state(false);
-
-  $effect(() => {
-    const unsub1 = repoConfig.subscribe((r) => (repo = r));
-    const unsub2 = hasRepo.subscribe((v) => (repoAvailable = v));
-    return () => { unsub1(); unsub2(); };
-  });
+  let repo = $derived(repoState.config);
+  let repoAvailable = $derived(repoState.hasRepo);
 
   async function addFolder() {
     const selected = await open({ directory: true, multiple: false, title: 'Select folder to back up' });
