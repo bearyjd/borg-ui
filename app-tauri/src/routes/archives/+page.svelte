@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { repoConfig, hasRepo, type RepoConfig } from '$lib/stores/repo';
+  import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
 
   interface Archive {
     name: string;
@@ -12,18 +11,13 @@
   let archives = $state<Archive[]>([]);
   let loading = $state(false);
   let error = $state('');
-  let repo = $state<RepoConfig | null>(null);
-  let repoAvailable = $state(false);
+  let repoAvailable = $derived(repoState.hasRepo);
 
-  onMount(() => {
-    const unsub1 = repoConfig.subscribe((r) => {
-      repo = r;
-      if (r && r.ssh_host && !loading) {
-        loadArchives(r);
-      }
-    });
-    const unsub2 = hasRepo.subscribe((v) => (repoAvailable = v));
-    return () => { unsub1(); unsub2(); };
+  $effect(() => {
+    const r = repoState.config;
+    if (r && r.ssh_host && !loading) {
+      loadArchives(r);
+    }
   });
 
   async function loadArchives(r: RepoConfig) {
@@ -40,7 +34,7 @@
   }
 
   function refresh() {
-    if (repo) loadArchives(repo);
+    if (repoState.config) loadArchives(repoState.config);
   }
 </script>
 
