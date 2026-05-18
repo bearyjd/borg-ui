@@ -1,0 +1,45 @@
+# Example GitHub Actions workflow for self-hosted runners with KVM access.
+# Copy to .github/workflows/smoke-windows.yml when ready.
+
+name: Windows Smoke Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  smoke-windows:
+    runs-on: [self-hosted, linux, kvm]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo dnf install -y sshpass qemu-kvm || \
+          sudo apt-get install -y sshpass qemu-kvm
+
+      - name: Verify KVM
+        run: test -c /dev/kvm
+
+      - name: Run smoke tests
+        working-directory: tests/smoke-windows
+        run: ./run.sh all
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-results
+          path: |
+            tests/smoke-windows/results.log
+            tests/smoke-windows/shared/smoke-results.json
+          retention-days: 7
+
+      - name: Teardown
+        if: always()
+        working-directory: tests/smoke-windows
+        run: ./run.sh down

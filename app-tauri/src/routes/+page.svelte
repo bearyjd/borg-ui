@@ -1,17 +1,28 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { repoConfig, isConnected } from '$lib/stores/repo';
 
   let borgVersion = $state('checking...');
-  let error = $state('');
+  let borgError = $state('');
+  let repoHost = $state('');
+  let connected = $state(false);
 
   onMount(async () => {
     try {
       borgVersion = await invoke('get_borg_version');
     } catch (e) {
-      error = `borg not found: ${e}`;
+      borgError = `borg not found: ${e}`;
       borgVersion = 'not available';
     }
+  });
+
+  $effect(() => {
+    const unsub1 = repoConfig.subscribe((r) => {
+      repoHost = r ? `${r.ssh_user}@${r.ssh_host}:${r.repo_path}` : '';
+    });
+    const unsub2 = isConnected.subscribe((v) => (connected = v));
+    return () => { unsub1(); unsub2(); };
   });
 </script>
 
@@ -24,11 +35,11 @@
   <div class="status-grid">
     <div class="status-card">
       <div class="card-label">Borg Engine</div>
-      <div class="card-value" class:error={!!error}>
+      <div class="card-value" class:error={!!borgError}>
         {borgVersion}
       </div>
-      {#if error}
-        <div class="card-detail error">{error}</div>
+      {#if borgError}
+        <div class="card-detail error">{borgError}</div>
       {/if}
     </div>
 
@@ -39,8 +50,12 @@
 
     <div class="status-card">
       <div class="card-label">Repository</div>
-      <div class="card-value dimmed">Not connected</div>
-      <a href="/settings" class="card-action">Configure →</a>
+      {#if connected}
+        <div class="card-value connected">{repoHost}</div>
+      {:else}
+        <div class="card-value dimmed">Not connected</div>
+        <a href="/settings" class="card-action">Configure →</a>
+      {/if}
     </div>
 
     <div class="status-card">
@@ -116,6 +131,11 @@
 
   .card-value.error {
     color: var(--color-danger);
+  }
+
+  .card-value.connected {
+    color: var(--color-success);
+    font-size: var(--text-sm);
   }
 
   .card-detail.error {

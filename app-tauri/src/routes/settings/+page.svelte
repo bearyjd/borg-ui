@@ -1,12 +1,30 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { repoConfig, saveRepoConfig, type RepoConfig } from '$lib/stores/repo';
 
   let sshHost = $state('');
   let sshPort = $state(22);
   let sshUser = $state('');
   let repoPath = $state('');
+  let sshKeyPath = $state('');
   let testing = $state(false);
+  let saving = $state(false);
   let testResult = $state('');
+  let saveResult = $state('');
+
+  onMount(() => {
+    const unsub = repoConfig.subscribe((r) => {
+      if (r) {
+        sshHost = r.ssh_host;
+        sshPort = r.ssh_port;
+        sshUser = r.ssh_user;
+        repoPath = r.repo_path;
+        sshKeyPath = r.ssh_key_path ?? '';
+      }
+    });
+    return unsub;
+  });
 
   async function testConnection() {
     testing = true;
@@ -16,13 +34,33 @@
         host: sshHost,
         port: sshPort,
         user: sshUser,
-        keyPath: null,
+        keyPath: sshKeyPath || null,
       });
       testResult = ok ? 'Connection successful!' : 'Connection failed.';
     } catch (e) {
       testResult = `Error: ${e}`;
     } finally {
       testing = false;
+    }
+  }
+
+  async function save() {
+    saving = true;
+    saveResult = '';
+    try {
+      const repo: RepoConfig = {
+        ssh_host: sshHost,
+        ssh_port: sshPort,
+        ssh_user: sshUser,
+        repo_path: repoPath,
+        ssh_key_path: sshKeyPath || null,
+      };
+      await saveRepoConfig(repo);
+      saveResult = 'Settings saved.';
+    } catch (e) {
+      saveResult = `Save failed: ${e}`;
+    } finally {
+      saving = false;
     }
   }
 </script>
@@ -33,7 +71,7 @@
     <p class="subtitle">Repository and connection configuration</p>
   </header>
 
-  <form class="settings-form" onsubmit={(e) => e.preventDefault()}>
+  <form class="settings-form" onsubmit={(e) => { e.preventDefault(); save(); }}>
     <fieldset class="form-group">
       <legend>SSH Connection</legend>
 
@@ -58,18 +96,29 @@
         <input id="repo-path" type="text" bind:value={repoPath} placeholder="/data/backups/my-pc" />
       </div>
 
+      <div class="field">
+        <label for="ssh-key">SSH Key Path (optional)</label>
+        <input id="ssh-key" type="text" bind:value={sshKeyPath} placeholder="C:\Users\you\.ssh\id_ed25519" />
+      </div>
+
       <div class="form-actions">
-        <button class="btn btn-secondary" onclick={testConnection} disabled={testing || !sshHost}>
+        <button type="button" class="btn btn-secondary" onclick={testConnection} disabled={testing || !sshHost}>
           {testing ? 'Testing...' : 'Test Connection'}
         </button>
-        <button class="btn btn-primary" disabled={!sshHost || !repoPath}>
-          Save
+        <button type="submit" class="btn btn-primary" disabled={saving || !sshHost || !repoPath}>
+          {saving ? 'Saving...' : 'Save'}
         </button>
       </div>
 
       {#if testResult}
         <div class="test-result" class:success={testResult.includes('successful')} class:error={testResult.includes('Error') || testResult.includes('failed')}>
           {testResult}
+        </div>
+      {/if}
+
+      {#if saveResult}
+        <div class="test-result" class:success={saveResult === 'Settings saved.'} class:error={saveResult.includes('failed')}>
+          {saveResult}
         </div>
       {/if}
     </fieldset>

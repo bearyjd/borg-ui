@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { repoConfig, hasRepo, type RepoConfig } from '$lib/stores/repo';
 
   interface Archive {
     name: string;
@@ -11,19 +12,64 @@
   let archives = $state<Archive[]>([]);
   let loading = $state(false);
   let error = $state('');
+  let repo = $state<RepoConfig | null>(null);
+  let repoAvailable = $state(false);
+
+  onMount(() => {
+    const unsub1 = repoConfig.subscribe((r) => {
+      repo = r;
+      if (r && r.ssh_host && !loading) {
+        loadArchives(r);
+      }
+    });
+    const unsub2 = hasRepo.subscribe((v) => (repoAvailable = v));
+    return () => { unsub1(); unsub2(); };
+  });
+
+  async function loadArchives(r: RepoConfig) {
+    if (loading) return;
+    loading = true;
+    error = '';
+    try {
+      archives = await invoke<Archive[]>('list_archives', { repo: r });
+    } catch (e) {
+      error = `Failed to load archives: ${e}`;
+    } finally {
+      loading = false;
+    }
+  }
+
+  function refresh() {
+    if (repo) loadArchives(repo);
+  }
 </script>
 
 <div class="archives-page">
   <header class="page-header">
-    <h1>Archives</h1>
-    <p class="subtitle">Browse and restore from backup archives</p>
+    <div class="header-row">
+      <div>
+        <h1>Archives</h1>
+        <p class="subtitle">Browse and restore from backup archives</p>
+      </div>
+      {#if repoAvailable}
+        <button class="btn btn-secondary" onclick={refresh} disabled={loading}>
+          {loading ? 'Loading...' : 'Refresh'}
+        </button>
+      {/if}
+    </div>
   </header>
 
-  {#if error}
+  {#if !repoAvailable}
+    <div class="empty-state">
+      <p>No repository configured. <a href="/settings">Set up your connection</a> first.</p>
+    </div>
+  {:else if loading}
+    <div class="loading-state">Loading archives...</div>
+  {:else if error}
     <div class="error-banner">{error}</div>
   {:else if archives.length === 0}
     <div class="empty-state">
-      <p>No archives found. Connect a repository in <a href="/settings">Settings</a> first.</p>
+      <p>No archives found. <a href="/backup">Create your first backup</a> to get started.</p>
     </div>
   {:else}
     <div class="archive-list">
@@ -31,7 +77,6 @@
         <div class="archive-row">
           <div class="archive-name">{archive.name}</div>
           <div class="archive-date">{archive.start}</div>
-          <button class="btn btn-secondary">Browse</button>
         </div>
       {/each}
     </div>
@@ -45,6 +90,12 @@
 
   .page-header {
     margin-bottom: var(--space-8);
+  }
+
+  .header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
   }
 
   .page-header h1 {
@@ -65,6 +116,12 @@
     padding: var(--space-8);
     text-align: center;
     color: var(--color-text-muted);
+  }
+
+  .loading-state {
+    padding: var(--space-8);
+    text-align: center;
+    color: var(--color-text-dim);
   }
 
   .error-banner {
@@ -104,11 +161,16 @@
   }
 
   .btn {
-    padding: var(--space-1) var(--space-3);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-xs);
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-md);
     font-weight: 500;
+    font-size: var(--text-sm);
     transition: all var(--duration-fast) var(--ease-out);
+  }
+
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .btn-secondary {
@@ -117,7 +179,7 @@
     border: 1px solid var(--color-border);
   }
 
-  .btn-secondary:hover {
+  .btn-secondary:hover:not(:disabled) {
     background: var(--color-surface-active);
     color: var(--color-text);
   }

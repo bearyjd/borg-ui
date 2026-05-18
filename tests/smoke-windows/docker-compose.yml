@@ -1,0 +1,31 @@
+services:
+  windows:
+    image: dockurr/windows:latest
+    container_name: borgui-smoke-win
+    environment:
+      VERSION: "tiny11"
+      RAM_SIZE: "4G"
+      CPU_CORES: "4"
+      DISK_SIZE: "64G"
+      USERNAME: "borgtest"
+      PASSWORD: "Password1!"
+      USER_PORTS: "22"
+    devices:
+      - /dev/kvm
+      - /dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "3389:3389/tcp"
+      - "3389:3389/udp"
+      - "2222:22/tcp"
+      - "8006:8006/tcp"
+    volumes:
+      - win-storage:/storage
+      - ./shared:/shared:Z
+      - ./oem:/oem:Z
+    stop_grace_period: 120s
+    restart: "no"
+
+volumes:
+  win-storage:
