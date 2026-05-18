@@ -1,11 +1,32 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { open } from '@tauri-apps/plugin-dialog';
+  import { repoConfig, hasRepo, type RepoConfig } from '$lib/stores/repo';
 
   let sourcePaths = $state<string[]>([]);
   let isRunning = $state(false);
   let status = $state('');
+  let repo = $state<RepoConfig | null>(null);
+  let repoAvailable = $state(false);
+
+  $effect(() => {
+    const unsub1 = repoConfig.subscribe((r) => (repo = r));
+    const unsub2 = hasRepo.subscribe((v) => (repoAvailable = v));
+    return () => { unsub1(); unsub2(); };
+  });
+
+  async function addFolder() {
+    const selected = await open({ directory: true, multiple: false, title: 'Select folder to back up' });
+    if (selected && !sourcePaths.includes(selected as string)) {
+      sourcePaths = [...sourcePaths, selected as string];
+    }
+  }
 
   async function runBackup() {
+    if (!repo) {
+      status = 'No repository configured. Go to Settings first.';
+      return;
+    }
     if (sourcePaths.length === 0) {
       status = 'Please add at least one folder to back up.';
       return;
@@ -15,14 +36,11 @@
     status = 'Starting backup...';
 
     try {
-      const archiveName = `backup-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const suffix = Math.random().toString(36).slice(2, 6);
+      const archiveName = `backup-${ts}-${suffix}`;
       await invoke('create_backup', {
-        repo: {
-          ssh_host: '',
-          ssh_port: 22,
-          ssh_user: '',
-          repo_path: '',
-        },
+        repo,
         sourcePaths,
         archiveName,
       });
@@ -41,9 +59,15 @@
     <p class="subtitle">Create a new backup archive</p>
   </header>
 
+  {#if !repoAvailable}
+    <div class="warning-banner">
+      No repository configured. <a href="/settings">Set up your connection</a> first.
+    </div>
+  {/if}
+
   <div class="backup-form">
     <div class="form-section">
-      <label class="form-label">Source Folders</label>
+      <span class="form-label">Source Folders</span>
       <div class="path-list">
         {#if sourcePaths.length === 0}
           <p class="empty-hint">No folders selected</p>
@@ -55,19 +79,19 @@
           </div>
         {/each}
       </div>
-      <button class="btn btn-secondary" disabled={isRunning}>
+      <button class="btn btn-secondary" onclick={addFolder} disabled={isRunning}>
         + Add Folder
       </button>
     </div>
 
     <div class="form-actions">
-      <button class="btn btn-primary" onclick={runBackup} disabled={isRunning}>
+      <button class="btn btn-primary" onclick={runBackup} disabled={isRunning || !repoAvailable}>
         {isRunning ? 'Backing up...' : 'Start Backup'}
       </button>
     </div>
 
     {#if status}
-      <div class="status-message" class:error={status.includes('failed')}>
+      <div class="status-message" class:error={status.includes('failed') || status.includes('No repository')}>
         {status}
       </div>
     {/if}
@@ -92,6 +116,20 @@
   .subtitle {
     color: var(--color-text-muted);
     margin-top: var(--space-1);
+  }
+
+  .warning-banner {
+    background: oklch(78% 0.16 80 / 0.15);
+    color: var(--color-warning);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    margin-bottom: var(--space-6);
+  }
+
+  .warning-banner a {
+    color: var(--color-warning);
+    text-decoration: underline;
   }
 
   .backup-form {

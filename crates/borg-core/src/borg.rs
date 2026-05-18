@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::config::{BackupProfile, RepoConfig};
 use crate::error::{BorgError, Result};
@@ -102,22 +103,29 @@ impl BorgClient {
         let stderr = child.stderr.take().expect("stderr was piped");
         let mut reader = BufReader::new(stderr).lines();
 
-        tokio::spawn(async move {
+        let stderr_capture: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_clone = stderr_capture.clone();
+
+        let reader_task = tokio::spawn(async move {
             while let Ok(Some(line)) = reader.next_line().await {
                 if let Ok(event) = serde_json::from_str::<ProgressEvent>(&line) {
                     on_progress(event);
                 } else {
                     debug!("borg stderr: {}", line);
                 }
+                stderr_clone.lock().expect("stderr mutex poisoned").push(line);
             }
         });
 
         let status = child.wait().await?;
+        let _ = reader_task.await;
+
         if !status.success() {
+            let captured = stderr_capture.lock().expect("stderr mutex poisoned").join("\n");
             return Err(BorgError::ProcessFailed {
                 message: "borg create failed".into(),
                 exit_code: status.code(),
-                stderr: String::new(),
+                stderr: captured,
             });
         }
 
@@ -140,18 +148,22 @@ impl BorgClient {
         }
 
         let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-        let archives = parsed["archives"]
-            .as_array()
-            .unwrap_or(&vec![])
-            .iter()
-            .filter_map(|a| {
-                Some(ArchiveInfo {
-                    name: a["name"].as_str()?.to_string(),
-                    start: a["start"].as_str()?.to_string(),
-                    id: a["id"].as_str()?.to_string(),
+        let archives = match parsed["archives"].as_array() {
+            Some(arr) => arr
+                .iter()
+                .filter_map(|a| {
+                    Some(ArchiveInfo {
+                        name: a["name"].as_str()?.to_string(),
+                        start: a["start"].as_str()?.to_string(),
+                        id: a["id"].as_str()?.to_string(),
+                    })
                 })
-            })
-            .collect();
+                .collect(),
+            None => {
+                warn!("borg list output missing 'archives' array");
+                vec![]
+            }
+        };
 
         Ok(archives)
     }

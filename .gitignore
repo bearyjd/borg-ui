@@ -25,3 +25,7 @@ app-tauri/src-tauri/binaries/
 # Environment
 .env
 .env.*
+
+# Tool state
+.omc/
+.claude-display*
