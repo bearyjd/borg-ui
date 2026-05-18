@@ -31,6 +31,7 @@ pub async fn get_repo_info(
     state: State<'_, AppState>,
     repo: RepoConfig,
 ) -> Result<serde_json::Value, String> {
+    repo.validate()?;
     state.borg.info(&repo).await.map_err(|e| e.to_string())
 }
 
@@ -39,6 +40,7 @@ pub async fn list_archives(
     state: State<'_, AppState>,
     repo: RepoConfig,
 ) -> Result<Vec<ArchiveInfo>, String> {
+    repo.validate()?;
     state.borg.list_archives(&repo).await.map_err(|e| e.to_string())
 }
 
@@ -49,11 +51,14 @@ pub async fn create_backup(
     source_paths: Vec<String>,
     archive_name: String,
 ) -> Result<(), String> {
+    repo.validate()?;
+    let compression = borg_core::config::Compression::default();
+    compression.validate().map_err(|e| e.to_string())?;
     let profile = borg_core::config::BackupProfile {
         name: "manual".into(),
         source_paths: source_paths.into_iter().map(PathBuf::from).collect(),
         excludes: vec![],
-        compression: borg_core::config::Compression::default(),
+        compression,
         repo,
     };
 
@@ -68,28 +73,30 @@ pub async fn create_backup(
 pub async fn load_repo_config(app: tauri::AppHandle) -> Result<Option<RepoConfig>, String> {
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     let config_path = config_dir.join("repo.json");
-    if !config_path.exists() {
-        return Ok(None);
+    match tokio::fs::read_to_string(&config_path).await {
+        Ok(data) => {
+            let config: RepoConfig = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+            Ok(Some(config))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
-    let data = tokio::fs::read_to_string(&config_path)
-        .await
-        .map_err(|e| e.to_string())?;
-    let config: RepoConfig = serde_json::from_str(&data).map_err(|e| e.to_string())?;
-    Ok(Some(config))
 }
 
 #[tauri::command]
 pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result<(), String> {
-    if repo.ssh_host.trim().is_empty() || repo.repo_path.trim().is_empty() {
-        return Err("ssh_host and repo_path are required".into());
-    }
+    repo.validate()?;
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     tokio::fs::create_dir_all(&config_dir)
         .await
         .map_err(|e| e.to_string())?;
     let config_path = config_dir.join("repo.json");
+    let tmp_path = config_dir.join("repo.json.tmp");
     let data = serde_json::to_string_pretty(&repo).map_err(|e| e.to_string())?;
-    tokio::fs::write(&config_path, data)
+    tokio::fs::write(&tmp_path, &data)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::rename(&tmp_path, &config_path)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

@@ -27,6 +27,7 @@
   });
 
   async function loadArchives(r: RepoConfig) {
+    if (loading) return;
     loading = true;
     error = '';
     try {

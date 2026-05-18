@@ -36,7 +36,9 @@
     status = 'Starting backup...';
 
     try {
-      const archiveName = `backup-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const suffix = Math.random().toString(36).slice(2, 6);
+      const archiveName = `backup-${ts}-${suffix}`;
       await invoke('create_backup', {
         repo,
         sourcePaths,

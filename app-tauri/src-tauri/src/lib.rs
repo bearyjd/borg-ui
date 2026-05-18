@@ -9,7 +9,7 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::from_default_env()
-                .add_directive("borg_ui=debug".parse().unwrap()),
+                .add_directive("borg_ui=debug".parse().expect("valid tracing directive")),
         )
         .init();
 

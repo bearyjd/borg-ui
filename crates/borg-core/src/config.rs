@@ -10,7 +10,31 @@ pub struct RepoConfig {
     pub ssh_key_path: Option<PathBuf>,
 }
 
+const SSH_FORBIDDEN: &[char] = &['@', ':', ' ', '\'', '"', ';', '&', '|', '`', '$', '\n', '\r'];
+
 impl RepoConfig {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.ssh_host.trim().is_empty() {
+            return Err("ssh_host cannot be empty".into());
+        }
+        if self.ssh_user.trim().is_empty() {
+            return Err("ssh_user cannot be empty".into());
+        }
+        if self.repo_path.trim().is_empty() {
+            return Err("repo_path cannot be empty".into());
+        }
+        if self.ssh_port == 0 {
+            return Err("ssh_port must be > 0".into());
+        }
+        if self.ssh_host.chars().any(|c| SSH_FORBIDDEN.contains(&c)) {
+            return Err("ssh_host contains invalid characters".into());
+        }
+        if self.ssh_user.chars().any(|c| SSH_FORBIDDEN.contains(&c)) {
+            return Err("ssh_user contains invalid characters".into());
+        }
+        Ok(())
+    }
+
     pub fn ssh_url(&self) -> String {
         format!(
             "ssh://{}@{}:{}/{}",
@@ -34,6 +58,20 @@ pub enum Compression {
     Lz4,
     Zstd { level: u8 },
     Zlib { level: u8 },
+}
+
+impl Compression {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        match self {
+            Compression::Zstd { level } if *level < 1 || *level > 22 => {
+                Err(format!("zstd level must be 1-22, got {}", level))
+            }
+            Compression::Zlib { level } if *level > 9 => {
+                Err(format!("zlib level must be 0-9, got {}", level))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl Default for Compression {
@@ -161,5 +199,106 @@ mod tests {
             let json = serde_json::to_string(&comp).unwrap();
             let _: Compression = serde_json::from_str(&json).unwrap();
         }
+    }
+
+    #[test]
+    fn rejects_ssh_host_with_semicolon() {
+        let repo = RepoConfig {
+            ssh_host: "host;rm -rf /".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "/repo".into(),
+            ssh_key_path: None,
+        };
+        assert!(repo.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_ssh_user_with_at() {
+        let repo = RepoConfig {
+            ssh_host: "host.com".into(),
+            ssh_port: 22,
+            ssh_user: "user@evil".into(),
+            repo_path: "/repo".into(),
+            ssh_key_path: None,
+        };
+        assert!(repo.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_port_zero() {
+        let repo = RepoConfig {
+            ssh_host: "host.com".into(),
+            ssh_port: 0,
+            ssh_user: "borg".into(),
+            repo_path: "/repo".into(),
+            ssh_key_path: None,
+        };
+        assert!(repo.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_empty_ssh_user() {
+        let repo = RepoConfig {
+            ssh_host: "host.com".into(),
+            ssh_port: 22,
+            ssh_user: "".into(),
+            repo_path: "/repo".into(),
+            ssh_key_path: None,
+        };
+        assert!(repo.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_valid_repo_config() {
+        let repo = RepoConfig {
+            ssh_host: "backup.example.com".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "/data/backups/my-pc".into(),
+            ssh_key_path: None,
+        };
+        assert!(repo.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_zstd_level_0() {
+        assert!(Compression::Zstd { level: 0 }.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_zstd_level_23() {
+        assert!(Compression::Zstd { level: 23 }.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_zstd_level_1() {
+        assert!(Compression::Zstd { level: 1 }.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_zstd_level_22() {
+        assert!(Compression::Zstd { level: 22 }.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_zlib_level_10() {
+        assert!(Compression::Zlib { level: 10 }.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_zlib_level_9() {
+        assert!(Compression::Zlib { level: 9 }.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_zlib_level_0() {
+        assert!(Compression::Zlib { level: 0 }.validate().is_ok());
+    }
+
+    #[test]
+    fn none_and_lz4_always_valid() {
+        assert!(Compression::None.validate().is_ok());
+        assert!(Compression::Lz4.validate().is_ok());
     }
 }

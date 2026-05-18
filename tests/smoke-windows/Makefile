@@ -41,7 +41,7 @@ logs: ## Show Windows container logs
 	docker logs borgui-smoke-win --tail 50
 
 shell: ## SSH into the Windows VM
-	sshpass -p 'Password1!' ssh -o StrictHostKeyChecking=no -p 2222 borgtest@localhost
+	sshpass -p '$${SSH_PASS:-Password1!}' ssh -o StrictHostKeyChecking=no -p $${SSH_PORT:-2222} $${SSH_USER:-borgtest}@localhost
 
 keep: ## Full run but keep VM alive after
 	KEEP_VM=1 ./run.sh all
