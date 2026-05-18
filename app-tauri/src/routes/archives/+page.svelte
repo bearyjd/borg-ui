@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
 
@@ -15,7 +16,7 @@
 
   $effect(() => {
     const r = repoState.config;
-    if (r && r.ssh_host && !loading) {
+    if (r && r.ssh_host && untrack(() => !loading)) {
       loadArchives(r);
     }
   });
