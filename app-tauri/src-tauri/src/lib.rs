@@ -1,7 +1,7 @@
 mod commands;
 
-use commands::AppState;
 use borg_core::borg::BorgClient;
+use commands::AppState;
 use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

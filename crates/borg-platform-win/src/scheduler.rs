@@ -1,6 +1,8 @@
 use borg_core::error::{BorgError, Result};
 
-const FORBIDDEN_CHARS: &[char] = &['&', '|', ';', '`', '$', '(', ')', '{', '}', '<', '>', '"', '\'', '\n', '\r'];
+const FORBIDDEN_CHARS: &[char] = &[
+    '&', '|', ';', '`', '$', '(', ')', '{', '}', '<', '>', '"', '\'', '\n', '\r',
+];
 
 fn validate_schtasks_input(value: &str, field_name: &str) -> Result<()> {
     if value.is_empty() {
@@ -103,7 +105,10 @@ mod tests {
 
     #[test]
     fn schedule_daily_variant() {
-        let schedule = Schedule::Daily { hour: 14, minute: 30 };
+        let schedule = Schedule::Daily {
+            hour: 14,
+            minute: 30,
+        };
         match schedule {
             Schedule::Daily { hour, minute } => {
                 assert_eq!(hour, 14);
@@ -145,19 +150,28 @@ mod tests {
 
     #[test]
     fn rejects_hour_24() {
-        let schedule = Schedule::Daily { hour: 24, minute: 0 };
+        let schedule = Schedule::Daily {
+            hour: 24,
+            minute: 0,
+        };
         assert!(schedule.validate().is_err());
     }
 
     #[test]
     fn rejects_minute_60() {
-        let schedule = Schedule::Daily { hour: 0, minute: 60 };
+        let schedule = Schedule::Daily {
+            hour: 0,
+            minute: 60,
+        };
         assert!(schedule.validate().is_err());
     }
 
     #[test]
     fn accepts_hour_23_minute_59() {
-        let schedule = Schedule::Daily { hour: 23, minute: 59 };
+        let schedule = Schedule::Daily {
+            hour: 23,
+            minute: 59,
+        };
         assert!(schedule.validate().is_ok());
     }
 

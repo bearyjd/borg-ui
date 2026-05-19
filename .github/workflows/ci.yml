@@ -50,5 +50,8 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Sync SvelteKit
+        run: npx svelte-kit sync
+
       - name: Type check
         run: npm run check

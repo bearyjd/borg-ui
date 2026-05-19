@@ -41,7 +41,11 @@ pub async fn list_archives(
     repo: RepoConfig,
 ) -> Result<Vec<ArchiveInfo>, String> {
     repo.validate().map_err(|e| e.to_string())?;
-    state.borg.list_archives(&repo).await.map_err(|e| e.to_string())
+    state
+        .borg
+        .list_archives(&repo)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -57,8 +61,13 @@ pub async fn create_backup(
     if archive_name.trim().is_empty() {
         return Err("archive_name cannot be empty".into());
     }
-    if !archive_name.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.')) {
-        return Err("archive_name contains invalid characters (only alphanumeric, -, _, . allowed)".into());
+    if !archive_name
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(
+            "archive_name contains invalid characters (only alphanumeric, -, _, . allowed)".into(),
+        );
     }
     if source_paths.is_empty() {
         return Err("at least one source path is required".into());
