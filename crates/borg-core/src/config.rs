@@ -12,7 +12,9 @@ pub struct RepoConfig {
     pub ssh_key_path: Option<PathBuf>,
 }
 
-const SSH_FORBIDDEN: &[char] = &['@', ':', ' ', '\'', '"', ';', '&', '|', '`', '$', '\n', '\r'];
+const SSH_FORBIDDEN: &[char] = &[
+    '@', ':', ' ', '\'', '"', ';', '&', '|', '`', '$', '\n', '\r',
+];
 const PATH_FORBIDDEN: &[char] = &[';', '&', '|', '`', '$', '\'', '"', '\n', '\r', '\0'];
 
 impl RepoConfig {
@@ -88,11 +90,9 @@ impl Compression {
                     message: format!("zstd level must be 1-22, got {}", level),
                 })
             }
-            Compression::Zlib { level } if *level > 9 => {
-                Err(BorgError::InvalidConfig {
-                    message: format!("zlib level must be 0-9, got {}", level),
-                })
-            }
+            Compression::Zlib { level } if *level > 9 => Err(BorgError::InvalidConfig {
+                message: format!("zlib level must be 0-9, got {}", level),
+            }),
             _ => Ok(()),
         }
     }
@@ -163,7 +163,10 @@ mod tests {
         let deserialized: RepoConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.ssh_host, "host.example.com");
         assert_eq!(deserialized.ssh_port, 22);
-        assert_eq!(deserialized.ssh_key_path, Some(PathBuf::from("C:\\Users\\me\\.ssh\\key")));
+        assert_eq!(
+            deserialized.ssh_key_path,
+            Some(PathBuf::from("C:\\Users\\me\\.ssh\\key"))
+        );
     }
 
     #[test]
@@ -336,7 +339,12 @@ mod tests {
             ssh_key_path: None,
         };
         assert!(repo.validate().is_err());
-        assert!(repo.validate().unwrap_err().to_string().contains("repo_path"));
+        assert!(
+            repo.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("repo_path")
+        );
     }
 
     #[test]
