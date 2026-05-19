@@ -54,6 +54,12 @@ pub async fn create_backup(
     repo.validate().map_err(|e| e.to_string())?;
     let compression = borg_core::config::Compression::default();
     compression.validate().map_err(|e| e.to_string())?;
+    if archive_name.trim().is_empty() {
+        return Err("archive_name cannot be empty".into());
+    }
+    if !archive_name.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.')) {
+        return Err("archive_name contains invalid characters (only alphanumeric, -, _, . allowed)".into());
+    }
     if source_paths.is_empty() {
         return Err("at least one source path is required".into());
     }

@@ -13,7 +13,7 @@ pub struct RepoConfig {
 }
 
 const SSH_FORBIDDEN: &[char] = &['@', ':', ' ', '\'', '"', ';', '&', '|', '`', '$', '\n', '\r'];
-const PATH_FORBIDDEN: &[char] = &[';', '&', '|', '`', '$', '\'', '"', '\n', '\r'];
+const PATH_FORBIDDEN: &[char] = &[';', '&', '|', '`', '$', '\'', '"', '\n', '\r', '\0'];
 
 impl RepoConfig {
     pub fn validate(&self) -> Result<()> {
