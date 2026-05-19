@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::error::{BorgError, Result};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
     pub ssh_host: String,
@@ -11,26 +13,44 @@ pub struct RepoConfig {
 }
 
 const SSH_FORBIDDEN: &[char] = &['@', ':', ' ', '\'', '"', ';', '&', '|', '`', '$', '\n', '\r'];
+const PATH_FORBIDDEN: &[char] = &[';', '&', '|', '`', '$', '\'', '"', '\n', '\r', '\0'];
 
 impl RepoConfig {
-    pub fn validate(&self) -> std::result::Result<(), String> {
+    pub fn validate(&self) -> Result<()> {
         if self.ssh_host.trim().is_empty() {
-            return Err("ssh_host cannot be empty".into());
+            return Err(BorgError::InvalidConfig {
+                message: "ssh_host cannot be empty".into(),
+            });
         }
         if self.ssh_user.trim().is_empty() {
-            return Err("ssh_user cannot be empty".into());
+            return Err(BorgError::InvalidConfig {
+                message: "ssh_user cannot be empty".into(),
+            });
         }
         if self.repo_path.trim().is_empty() {
-            return Err("repo_path cannot be empty".into());
+            return Err(BorgError::InvalidConfig {
+                message: "repo_path cannot be empty".into(),
+            });
         }
         if self.ssh_port == 0 {
-            return Err("ssh_port must be > 0".into());
+            return Err(BorgError::InvalidConfig {
+                message: "ssh_port must be > 0".into(),
+            });
         }
         if self.ssh_host.chars().any(|c| SSH_FORBIDDEN.contains(&c)) {
-            return Err("ssh_host contains invalid characters".into());
+            return Err(BorgError::InvalidConfig {
+                message: "ssh_host contains invalid characters".into(),
+            });
         }
         if self.ssh_user.chars().any(|c| SSH_FORBIDDEN.contains(&c)) {
-            return Err("ssh_user contains invalid characters".into());
+            return Err(BorgError::InvalidConfig {
+                message: "ssh_user contains invalid characters".into(),
+            });
+        }
+        if self.repo_path.chars().any(|c| PATH_FORBIDDEN.contains(&c)) {
+            return Err(BorgError::InvalidConfig {
+                message: "repo_path contains invalid characters".into(),
+            });
         }
         Ok(())
     }
@@ -61,13 +81,17 @@ pub enum Compression {
 }
 
 impl Compression {
-    pub fn validate(&self) -> std::result::Result<(), String> {
+    pub fn validate(&self) -> Result<()> {
         match self {
             Compression::Zstd { level } if *level < 1 || *level > 22 => {
-                Err(format!("zstd level must be 1-22, got {}", level))
+                Err(BorgError::InvalidConfig {
+                    message: format!("zstd level must be 1-22, got {}", level),
+                })
             }
             Compression::Zlib { level } if *level > 9 => {
-                Err(format!("zlib level must be 0-9, got {}", level))
+                Err(BorgError::InvalidConfig {
+                    message: format!("zlib level must be 0-9, got {}", level),
+                })
             }
             _ => Ok(()),
         }
@@ -300,5 +324,67 @@ mod tests {
     fn none_and_lz4_always_valid() {
         assert!(Compression::None.validate().is_ok());
         assert!(Compression::Lz4.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_repo_path_with_semicolon() {
+        let repo = RepoConfig {
+            ssh_host: "host.com".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "/repo;rm -rf /".into(),
+            ssh_key_path: None,
+        };
+        assert!(repo.validate().is_err());
+        assert!(repo.validate().unwrap_err().to_string().contains("repo_path"));
+    }
+
+    #[test]
+    fn rejects_repo_path_with_pipe() {
+        let repo = RepoConfig {
+            ssh_host: "host.com".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "/repo|evil".into(),
+            ssh_key_path: None,
+        };
+        assert!(repo.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_repo_path_with_spaces() {
+        let repo = RepoConfig {
+            ssh_host: "host.com".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "/my backups/repo".into(),
+            ssh_key_path: None,
+        };
+        assert!(repo.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_repo_path_with_at_and_colon() {
+        let repo = RepoConfig {
+            ssh_host: "host.com".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "C:\\backups\\repo".into(),
+            ssh_key_path: None,
+        };
+        assert!(repo.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_returns_borg_error() {
+        let repo = RepoConfig {
+            ssh_host: "".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "/repo".into(),
+            ssh_key_path: None,
+        };
+        let err = repo.validate().unwrap_err();
+        assert!(matches!(err, crate::error::BorgError::InvalidConfig { .. }));
     }
 }

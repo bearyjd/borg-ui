@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { repoConfig, saveRepoConfig, type RepoConfig } from '$lib/stores/repo';
+  import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
 
   let sshHost = $state('');
   let sshPort = $state(22);
@@ -13,17 +12,15 @@
   let testResult = $state('');
   let saveResult = $state('');
 
-  onMount(() => {
-    const unsub = repoConfig.subscribe((r) => {
-      if (r) {
-        sshHost = r.ssh_host;
-        sshPort = r.ssh_port;
-        sshUser = r.ssh_user;
-        repoPath = r.repo_path;
-        sshKeyPath = r.ssh_key_path ?? '';
-      }
-    });
-    return unsub;
+  $effect(() => {
+    const r = repoState.config;
+    if (r) {
+      sshHost = r.ssh_host;
+      sshPort = r.ssh_port;
+      sshUser = r.ssh_user;
+      repoPath = r.repo_path;
+      sshKeyPath = r.ssh_key_path ?? '';
+    }
   });
 
   async function testConnection() {
@@ -55,7 +52,7 @@
         repo_path: repoPath,
         ssh_key_path: sshKeyPath || null,
       };
-      await saveRepoConfig(repo);
+      await repoState.save(repo);
       saveResult = 'Settings saved.';
     } catch (e) {
       saveResult = `Save failed: ${e}`;
