@@ -96,12 +96,55 @@ impl Compression {
             _ => Ok(()),
         }
     }
+
+    pub fn to_borg_arg(&self) -> String {
+        match self {
+            Compression::None => "none".to_string(),
+            Compression::Lz4 => "lz4".to_string(),
+            Compression::Zstd { level } => format!("zstd,{}", level),
+            Compression::Zlib { level } => format!("zlib,{}", level),
+        }
+    }
 }
 
 impl Default for Compression {
     fn default() -> Self {
         Self::Zstd { level: 3 }
     }
+}
+
+pub fn validate_archive_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        return Err(BorgError::InvalidConfig {
+            message: "archive_name cannot be empty".into(),
+        });
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(BorgError::InvalidConfig {
+            message: "archive_name contains invalid characters (only alphanumeric, -, _, . allowed)"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
+pub fn validate_source_paths(paths: &[String]) -> Result<()> {
+    if paths.is_empty() {
+        return Err(BorgError::InvalidConfig {
+            message: "at least one source path is required".into(),
+        });
+    }
+    for path in paths {
+        if path.trim().is_empty() {
+            return Err(BorgError::InvalidConfig {
+                message: "source path cannot be empty".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -394,5 +437,99 @@ mod tests {
         };
         let err = repo.validate().unwrap_err();
         assert!(matches!(err, crate::error::BorgError::InvalidConfig { .. }));
+    }
+
+    #[test]
+    fn compression_to_borg_arg_none() {
+        assert_eq!(Compression::None.to_borg_arg(), "none");
+    }
+
+    #[test]
+    fn compression_to_borg_arg_lz4() {
+        assert_eq!(Compression::Lz4.to_borg_arg(), "lz4");
+    }
+
+    #[test]
+    fn compression_to_borg_arg_zstd() {
+        assert_eq!(Compression::Zstd { level: 9 }.to_borg_arg(), "zstd,9");
+    }
+
+    #[test]
+    fn compression_to_borg_arg_zlib() {
+        assert_eq!(Compression::Zlib { level: 6 }.to_borg_arg(), "zlib,6");
+    }
+
+    #[test]
+    fn accepts_valid_archive_name() {
+        assert!(validate_archive_name("my-backup_2024.01.15").is_ok());
+    }
+
+    #[test]
+    fn accepts_archive_name_alphanumeric_only() {
+        assert!(validate_archive_name("backup2024").is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_archive_name() {
+        assert!(validate_archive_name("").is_err());
+    }
+
+    #[test]
+    fn rejects_whitespace_only_archive_name() {
+        assert!(validate_archive_name("   ").is_err());
+    }
+
+    #[test]
+    fn rejects_archive_name_with_semicolon() {
+        assert!(validate_archive_name("backup;rm -rf /").is_err());
+    }
+
+    #[test]
+    fn rejects_archive_name_with_space() {
+        assert!(validate_archive_name("my backup").is_err());
+    }
+
+    #[test]
+    fn rejects_archive_name_with_slash() {
+        assert!(validate_archive_name("backup/evil").is_err());
+    }
+
+    #[test]
+    fn rejects_archive_name_with_shell_expansion() {
+        assert!(validate_archive_name("$(whoami)").is_err());
+    }
+
+    #[test]
+    fn rejects_archive_name_with_backtick() {
+        assert!(validate_archive_name("`id`").is_err());
+    }
+
+    #[test]
+    fn rejects_archive_name_with_colons() {
+        assert!(validate_archive_name("repo::evil").is_err());
+    }
+
+    #[test]
+    fn accepts_source_paths_valid() {
+        let paths = vec!["/home/user/docs".to_string(), "C:\\Users\\me".to_string()];
+        assert!(validate_source_paths(&paths).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_source_paths() {
+        let paths: Vec<String> = vec![];
+        assert!(validate_source_paths(&paths).is_err());
+    }
+
+    #[test]
+    fn rejects_source_paths_with_empty_entry() {
+        let paths = vec!["/valid/path".to_string(), "".to_string()];
+        assert!(validate_source_paths(&paths).is_err());
+    }
+
+    #[test]
+    fn rejects_source_paths_with_whitespace_entry() {
+        let paths = vec!["  ".to_string()];
+        assert!(validate_source_paths(&paths).is_err());
     }
 }
