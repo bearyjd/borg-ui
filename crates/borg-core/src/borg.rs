@@ -76,12 +76,7 @@ impl BorgClient {
         let mut cmd = self.base_command();
         cmd.args(["create", "--json", "--progress", "--log-json"]);
 
-        let compression = match &profile.compression {
-            crate::config::Compression::None => "none".to_string(),
-            crate::config::Compression::Lz4 => "lz4".to_string(),
-            crate::config::Compression::Zstd { level } => format!("zstd,{}", level),
-            crate::config::Compression::Zlib { level } => format!("zlib,{}", level),
-        };
+        let compression = profile.compression.to_borg_arg();
         cmd.args(["--compression", &compression]);
 
         for exclude in &profile.excludes {
@@ -176,4 +171,183 @@ pub struct ArchiveInfo {
     pub name: String,
     pub start: String,
     pub id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::RepoConfig;
+
+    fn test_repo() -> RepoConfig {
+        RepoConfig {
+            ssh_host: "backup.example.com".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "/data/repo".into(),
+            ssh_key_path: None,
+        }
+    }
+
+    #[test]
+    fn client_new_stores_binary_path() {
+        let client = BorgClient::new(PathBuf::from("/usr/bin/borg"));
+        assert_eq!(client.binary_path(), Path::new("/usr/bin/borg"));
+    }
+
+    #[test]
+    fn client_with_passcommand_sets_field() {
+        let client = BorgClient::new(PathBuf::from("borg"))
+            .with_passcommand("cat /secret".into());
+        assert_eq!(client.passcommand.as_deref(), Some("cat /secret"));
+    }
+
+    #[test]
+    fn client_without_passcommand_is_none() {
+        let client = BorgClient::new(PathBuf::from("borg"));
+        assert!(client.passcommand.is_none());
+    }
+
+    #[test]
+    fn archive_info_deserializes() {
+        let json = r#"{"name":"backup-2024","start":"2024-01-15T10:00:00","id":"abc123"}"#;
+        let info: ArchiveInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.name, "backup-2024");
+        assert_eq!(info.start, "2024-01-15T10:00:00");
+        assert_eq!(info.id, "abc123");
+    }
+
+    #[test]
+    fn archive_info_roundtrip() {
+        let info = ArchiveInfo {
+            name: "daily-2024".into(),
+            start: "2024-06-01T12:00:00".into(),
+            id: "deadbeef".into(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: ArchiveInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, info.name);
+        assert_eq!(parsed.id, info.id);
+    }
+
+    #[test]
+    fn archive_info_rejects_missing_field() {
+        let json = r#"{"name":"backup","start":"2024-01-01T00:00:00"}"#;
+        assert!(serde_json::from_str::<ArchiveInfo>(json).is_err());
+    }
+
+    #[test]
+    fn archive_url_format() {
+        let repo = test_repo();
+        let archive = format!("{}::{}", repo.ssh_url(), "my-backup");
+        assert_eq!(
+            archive,
+            "ssh://borg@backup.example.com:22//data/repo::my-backup"
+        );
+    }
+
+    #[test]
+    fn parses_borg_list_json_output() {
+        let json = r#"{
+            "archives": [
+                {"name": "backup-1", "start": "2024-01-01T00:00:00", "id": "aaa"},
+                {"name": "backup-2", "start": "2024-01-02T00:00:00", "id": "bbb"}
+            ]
+        }"#;
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        let archives: Vec<ArchiveInfo> = parsed["archives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| {
+                Some(ArchiveInfo {
+                    name: a["name"].as_str()?.to_string(),
+                    start: a["start"].as_str()?.to_string(),
+                    id: a["id"].as_str()?.to_string(),
+                })
+            })
+            .collect();
+        assert_eq!(archives.len(), 2);
+        assert_eq!(archives[0].name, "backup-1");
+        assert_eq!(archives[1].id, "bbb");
+    }
+
+    #[test]
+    fn missing_archives_array_returns_empty() {
+        let json = r#"{"repository": {"id": "abc"}}"#;
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        let archives: Vec<ArchiveInfo> = match parsed["archives"].as_array() {
+            Some(arr) => arr
+                .iter()
+                .filter_map(|a| {
+                    Some(ArchiveInfo {
+                        name: a["name"].as_str()?.to_string(),
+                        start: a["start"].as_str()?.to_string(),
+                        id: a["id"].as_str()?.to_string(),
+                    })
+                })
+                .collect(),
+            None => vec![],
+        };
+        assert!(archives.is_empty());
+    }
+
+    #[test]
+    fn skips_archive_entries_with_missing_fields() {
+        let json = r#"{
+            "archives": [
+                {"name": "good", "start": "2024-01-01T00:00:00", "id": "aaa"},
+                {"name": "no-id", "start": "2024-01-02T00:00:00"},
+                {"start": "2024-01-03T00:00:00", "id": "ccc"}
+            ]
+        }"#;
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        let archives: Vec<ArchiveInfo> = parsed["archives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| {
+                Some(ArchiveInfo {
+                    name: a["name"].as_str()?.to_string(),
+                    start: a["start"].as_str()?.to_string(),
+                    id: a["id"].as_str()?.to_string(),
+                })
+            })
+            .collect();
+        assert_eq!(archives.len(), 1);
+        assert_eq!(archives[0].name, "good");
+    }
+
+    #[test]
+    fn base_command_sets_relocated_env() {
+        let client = BorgClient::new(PathBuf::from("borg"));
+        let cmd = client.base_command();
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        let relocated = envs
+            .iter()
+            .find(|(k, _)| *k == "BORG_RELOCATED_REPO_ACCESS_IS_OK");
+        assert!(relocated.is_some());
+    }
+
+    #[test]
+    fn base_command_sets_passcommand_env() {
+        let client = BorgClient::new(PathBuf::from("borg"))
+            .with_passcommand("echo secret".into());
+        let cmd = client.base_command();
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        let passcommand = envs
+            .iter()
+            .find(|(k, _)| *k == "BORG_PASSCOMMAND");
+        assert!(passcommand.is_some());
+    }
+
+    #[test]
+    fn base_command_without_passcommand_skips_env() {
+        let client = BorgClient::new(PathBuf::from("borg"));
+        let cmd = client.base_command();
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        let passcommand = envs
+            .iter()
+            .find(|(k, _)| *k == "BORG_PASSCOMMAND");
+        assert!(passcommand.is_none());
+    }
 }
