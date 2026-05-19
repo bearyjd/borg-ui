@@ -64,11 +64,19 @@ mod tests {
     #[test]
     fn all_error_variants_display() {
         let errors: Vec<BorgError> = vec![
-            BorgError::RepoNotFound { path: "/repo".into() },
-            BorgError::AuthFailed { reason: "bad key".into() },
+            BorgError::RepoNotFound {
+                path: "/repo".into(),
+            },
+            BorgError::AuthFailed {
+                reason: "bad key".into(),
+            },
             BorgError::PassphraseRequired,
-            BorgError::SshFailed { message: "timeout".into() },
-            BorgError::InvalidConfig { message: "missing field".into() },
+            BorgError::SshFailed {
+                message: "timeout".into(),
+            },
+            BorgError::InvalidConfig {
+                message: "missing field".into(),
+            },
         ];
         for err in errors {
             assert!(!err.to_string().is_empty());

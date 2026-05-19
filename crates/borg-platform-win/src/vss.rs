@@ -1,5 +1,5 @@
-use std::path::Path;
 use borg_core::error::Result;
+use std::path::Path;
 
 /// Creates a VSS snapshot of the given volume.
 ///

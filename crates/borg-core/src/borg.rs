@@ -41,11 +41,7 @@ impl BorgClient {
     }
 
     pub async fn version(&self) -> Result<String> {
-        let output = self
-            .base_command()
-            .arg("--version")
-            .output()
-            .await?;
+        let output = self.base_command().arg("--version").output().await?;
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
@@ -113,7 +109,10 @@ impl BorgClient {
                 } else {
                     debug!("borg stderr: {}", line);
                 }
-                stderr_clone.lock().expect("stderr mutex poisoned").push(line);
+                stderr_clone
+                    .lock()
+                    .expect("stderr mutex poisoned")
+                    .push(line);
             }
         });
 
@@ -121,7 +120,10 @@ impl BorgClient {
         let _ = reader_task.await;
 
         if !status.success() {
-            let captured = stderr_capture.lock().expect("stderr mutex poisoned").join("\n");
+            let captured = stderr_capture
+                .lock()
+                .expect("stderr mutex poisoned")
+                .join("\n");
             return Err(BorgError::ProcessFailed {
                 message: "borg create failed".into(),
                 exit_code: status.code(),

@@ -4,7 +4,12 @@ use tracing::debug;
 
 use crate::error::{BorgError, Result};
 
-pub async fn test_connection(host: &str, port: u16, user: &str, key_path: Option<&Path>) -> Result<bool> {
+pub async fn test_connection(
+    host: &str,
+    port: u16,
+    user: &str,
+    key_path: Option<&Path>,
+) -> Result<bool> {
     let mut cmd = Command::new("ssh");
     cmd.args(["-o", "BatchMode=yes"])
         .args(["-o", "ConnectTimeout=10"])

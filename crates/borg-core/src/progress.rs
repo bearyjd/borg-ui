@@ -21,10 +21,7 @@ pub enum ProgressEvent {
     },
 
     #[serde(rename = "log_message")]
-    LogMessage {
-        levelname: String,
-        message: String,
-    },
+    LogMessage { levelname: String, message: String },
 
     #[serde(other)]
     Unknown,
@@ -39,7 +36,11 @@ mod tests {
         let json = r#"{"type":"archive_progress","original_size":1024,"compressed_size":512,"deduplicated_size":256,"nfiles":10,"path":"/home/user/doc.txt"}"#;
         let event: ProgressEvent = serde_json::from_str(json).unwrap();
         match event {
-            ProgressEvent::ArchiveProgress { original_size, nfiles, .. } => {
+            ProgressEvent::ArchiveProgress {
+                original_size,
+                nfiles,
+                ..
+            } => {
                 assert_eq!(original_size, Some(1024));
                 assert_eq!(nfiles, Some(10));
             }
@@ -52,7 +53,12 @@ mod tests {
         let json = r#"{"type":"progress_percent","finished":false,"message":"Backing up","current":50,"total":100}"#;
         let event: ProgressEvent = serde_json::from_str(json).unwrap();
         match event {
-            ProgressEvent::Percent { finished, current, total, .. } => {
+            ProgressEvent::Percent {
+                finished,
+                current,
+                total,
+                ..
+            } => {
                 assert!(!finished);
                 assert_eq!(current, Some(50));
                 assert_eq!(total, Some(100));
@@ -86,7 +92,11 @@ mod tests {
         let json = r#"{"type":"archive_progress"}"#;
         let event: ProgressEvent = serde_json::from_str(json).unwrap();
         match event {
-            ProgressEvent::ArchiveProgress { original_size, path, .. } => {
+            ProgressEvent::ArchiveProgress {
+                original_size,
+                path,
+                ..
+            } => {
                 assert_eq!(original_size, None);
                 assert_eq!(path, None);
             }
