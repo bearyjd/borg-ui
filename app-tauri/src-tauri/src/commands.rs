@@ -58,25 +58,8 @@ pub async fn create_backup(
     repo.validate().map_err(|e| e.to_string())?;
     let compression = borg_core::config::Compression::default();
     compression.validate().map_err(|e| e.to_string())?;
-    if archive_name.trim().is_empty() {
-        return Err("archive_name cannot be empty".into());
-    }
-    if !archive_name
-        .chars()
-        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    {
-        return Err(
-            "archive_name contains invalid characters (only alphanumeric, -, _, . allowed)".into(),
-        );
-    }
-    if source_paths.is_empty() {
-        return Err("at least one source path is required".into());
-    }
-    for path in &source_paths {
-        if path.trim().is_empty() {
-            return Err("source path cannot be empty".into());
-        }
-    }
+    borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
+    borg_core::config::validate_source_paths(&source_paths).map_err(|e| e.to_string())?;
     let profile = borg_core::config::BackupProfile {
         name: "manual".into(),
         source_paths: source_paths.into_iter().map(PathBuf::from).collect(),
