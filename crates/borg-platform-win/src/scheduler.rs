@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use borg_core::error::{BorgError, Result};
 
 const FORBIDDEN_CHARS: &[char] = &[
@@ -75,9 +77,20 @@ pub async fn unschedule_backup(task_name: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum Schedule {
+    #[serde(rename = "hourly")]
     Hourly,
+    #[serde(rename = "daily")]
     Daily { hour: u8, minute: u8 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleConfig {
+    pub enabled: bool,
+    pub source_paths: Vec<String>,
+    pub schedule: Schedule,
 }
 
 impl Schedule {
