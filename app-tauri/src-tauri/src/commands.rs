@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use borg_core::borg::{ArchiveInfo, BorgClient};
 use borg_core::config::RepoConfig;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 pub struct AppState {
     pub borg: BorgClient,
@@ -50,6 +50,7 @@ pub async fn list_archives(
 
 #[tauri::command]
 pub async fn create_backup(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     repo: RepoConfig,
     source_paths: Vec<String>,
@@ -74,7 +75,9 @@ pub async fn create_backup(
 
     let result = state
         .borg
-        .create(&profile, &archive_name, |_event| {})
+        .create(&profile, &archive_name, move |event| {
+            let _ = app.emit("backup-progress", &event);
+        })
         .await
         .map_err(|e| e.to_string());
 
