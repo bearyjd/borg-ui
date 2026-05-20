@@ -32,6 +32,8 @@ pub fn run() {
             commands::create_backup,
             commands::load_repo_config,
             commands::save_repo_config,
+            commands::load_schedule_config,
+            commands::save_schedule_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
