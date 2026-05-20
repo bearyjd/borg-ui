@@ -196,8 +196,7 @@ mod tests {
 
     #[test]
     fn client_with_passcommand_sets_field() {
-        let client = BorgClient::new(PathBuf::from("borg"))
-            .with_passcommand("cat /secret".into());
+        let client = BorgClient::new(PathBuf::from("borg")).with_passcommand("cat /secret".into());
         assert_eq!(client.passcommand.as_deref(), Some("cat /secret"));
     }
 
@@ -330,13 +329,10 @@ mod tests {
 
     #[test]
     fn base_command_sets_passcommand_env() {
-        let client = BorgClient::new(PathBuf::from("borg"))
-            .with_passcommand("echo secret".into());
+        let client = BorgClient::new(PathBuf::from("borg")).with_passcommand("echo secret".into());
         let cmd = client.base_command();
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
-        let passcommand = envs
-            .iter()
-            .find(|(k, _)| *k == "BORG_PASSCOMMAND");
+        let passcommand = envs.iter().find(|(k, _)| *k == "BORG_PASSCOMMAND");
         assert!(passcommand.is_some());
     }
 
@@ -345,9 +341,7 @@ mod tests {
         let client = BorgClient::new(PathBuf::from("borg"));
         let cmd = client.base_command();
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
-        let passcommand = envs
-            .iter()
-            .find(|(k, _)| *k == "BORG_PASSCOMMAND");
+        let passcommand = envs.iter().find(|(k, _)| *k == "BORG_PASSCOMMAND");
         assert!(passcommand.is_none());
     }
 }
