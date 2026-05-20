@@ -124,8 +124,9 @@ pub fn validate_archive_name(name: &str) -> Result<()> {
         .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
     {
         return Err(BorgError::InvalidConfig {
-            message: "archive_name contains invalid characters (only alphanumeric, -, _, . allowed)"
-                .into(),
+            message:
+                "archive_name contains invalid characters (only alphanumeric, -, _, . allowed)"
+                    .into(),
         });
     }
     Ok(())
