@@ -10,4 +10,3 @@ tracing.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# Will add windows-rs when we implement VSS in v0.2
