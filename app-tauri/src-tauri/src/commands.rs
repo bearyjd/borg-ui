@@ -60,19 +60,27 @@ pub async fn create_backup(
     compression.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
     borg_core::config::validate_source_paths(&source_paths).map_err(|e| e.to_string())?;
+
+    let raw_paths: Vec<PathBuf> = source_paths.into_iter().map(PathBuf::from).collect();
+    let (backup_paths, snapshots) = borg_platform_win::vss::snapshot_sources(&raw_paths).await;
+
     let profile = borg_core::config::BackupProfile {
         name: "manual".into(),
-        source_paths: source_paths.into_iter().map(PathBuf::from).collect(),
+        source_paths: backup_paths,
         excludes: vec![],
         compression,
         repo,
     };
 
-    state
+    let result = state
         .borg
         .create(&profile, &archive_name, |_event| {})
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+
+    borg_platform_win::vss::release_all(snapshots).await;
+
+    result
 }
 
 #[tauri::command]
