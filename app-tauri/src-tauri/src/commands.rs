@@ -87,6 +87,64 @@ pub async fn create_backup(
 }
 
 #[tauri::command]
+pub async fn load_schedule_config(
+    app: tauri::AppHandle,
+) -> Result<Option<borg_platform_win::scheduler::ScheduleConfig>, String> {
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let config_path = config_dir.join("schedule.json");
+    match tokio::fs::read_to_string(&config_path).await {
+        Ok(data) => {
+            let config: borg_platform_win::scheduler::ScheduleConfig =
+                serde_json::from_str(&data).map_err(|e| e.to_string())?;
+            Ok(Some(config))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn save_schedule_config(
+    app: tauri::AppHandle,
+    config: borg_platform_win::scheduler::ScheduleConfig,
+) -> Result<(), String> {
+    config.schedule.validate().map_err(|e| e.to_string())?;
+    borg_core::config::validate_source_paths(&config.source_paths).map_err(|e| e.to_string())?;
+
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    tokio::fs::create_dir_all(&config_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let config_path = config_dir.join("schedule.json");
+    let tmp_path = config_dir.join("schedule.json.tmp");
+    let data = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    tokio::fs::write(&tmp_path, &data)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::rename(&tmp_path, &config_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if config.enabled {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_str = exe.to_string_lossy().to_string();
+        let args = "--scheduled-backup";
+        borg_platform_win::scheduler::schedule_backup(
+            "BorgUI-Backup",
+            &exe_str,
+            args,
+            &config.schedule,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    } else {
+        let _ = borg_platform_win::scheduler::unschedule_backup("BorgUI-Backup").await;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn load_repo_config(app: tauri::AppHandle) -> Result<Option<RepoConfig>, String> {
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     let config_path = config_dir.join("repo.json");

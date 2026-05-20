@@ -1,6 +1,9 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { open } from '@tauri-apps/plugin-dialog';
+  import { onMount } from 'svelte';
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
+  import { scheduleState, type ScheduleConfig } from '$lib/stores/schedule.svelte';
 
   let sshHost = $state('');
   let sshPort = $state(22);
@@ -11,6 +14,14 @@
   let saving = $state(false);
   let testResult = $state('');
   let saveResult = $state('');
+
+  let scheduleEnabled = $state(false);
+  let scheduleType = $state<'hourly' | 'daily'>('daily');
+  let scheduleHour = $state(2);
+  let scheduleMinute = $state(0);
+  let schedulePaths = $state<string[]>([]);
+  let scheduleSaving = $state(false);
+  let scheduleResult = $state('');
 
   $effect(() => {
     const r = repoState.config;
@@ -58,6 +69,53 @@
       saveResult = `Save failed: ${e}`;
     } finally {
       saving = false;
+    }
+  }
+
+  onMount(async () => {
+    try {
+      await scheduleState.load();
+      if (scheduleState.config) {
+        scheduleEnabled = scheduleState.config.enabled;
+        schedulePaths = [...scheduleState.config.source_paths];
+        if (scheduleState.config.schedule.type === 'hourly') {
+          scheduleType = 'hourly';
+        } else {
+          scheduleType = 'daily';
+          scheduleHour = scheduleState.config.schedule.hour;
+          scheduleMinute = scheduleState.config.schedule.minute;
+        }
+      }
+    } catch {
+      // No schedule config yet
+    }
+  });
+
+  async function addScheduleFolder() {
+    const selected = await open({ directory: true, multiple: false, title: 'Select folder for scheduled backup' });
+    if (selected && !schedulePaths.includes(selected as string)) {
+      schedulePaths = [...schedulePaths, selected as string];
+    }
+  }
+
+  async function saveSchedule() {
+    scheduleSaving = true;
+    scheduleResult = '';
+    try {
+      const schedule = scheduleType === 'hourly'
+        ? { type: 'hourly' as const }
+        : { type: 'daily' as const, hour: scheduleHour, minute: scheduleMinute };
+      const config: ScheduleConfig = {
+        enabled: scheduleEnabled,
+        source_paths: schedulePaths,
+        schedule,
+      };
+      await scheduleState.save(config);
+      scheduleResult = scheduleEnabled ? 'Schedule saved and activated.' : 'Schedule disabled.';
+    } catch (e) {
+      scheduleResult = `Schedule save failed: ${e}`;
+    } finally {
+      scheduleSaving = false;
     }
   }
 </script>
@@ -120,6 +178,72 @@
       {/if}
     </fieldset>
   </form>
+
+  <form class="settings-form" onsubmit={(e) => { e.preventDefault(); saveSchedule(); }}>
+    <fieldset class="form-group">
+      <legend>Scheduled Backups</legend>
+
+      <div class="field">
+        <label class="toggle-row">
+          <input type="checkbox" bind:checked={scheduleEnabled} />
+          <span>Enable scheduled backups</span>
+        </label>
+      </div>
+
+      {#if scheduleEnabled}
+        <div class="field">
+          <label for="schedule-type">Frequency</label>
+          <select id="schedule-type" bind:value={scheduleType}>
+            <option value="hourly">Every hour</option>
+            <option value="daily">Daily</option>
+          </select>
+        </div>
+
+        {#if scheduleType === 'daily'}
+          <div class="field-row">
+            <div class="field field-sm">
+              <label for="schedule-hour">Hour</label>
+              <input id="schedule-hour" type="number" min="0" max="23" bind:value={scheduleHour} />
+            </div>
+            <div class="field field-sm">
+              <label for="schedule-minute">Minute</label>
+              <input id="schedule-minute" type="number" min="0" max="59" bind:value={scheduleMinute} />
+            </div>
+          </div>
+        {/if}
+
+        <div class="field">
+          <span class="field-label">Source Folders</span>
+          <div class="path-list">
+            {#if schedulePaths.length === 0}
+              <p class="empty-hint">No folders selected</p>
+            {/if}
+            {#each schedulePaths as path, i}
+              <div class="path-item">
+                <code>{path}</code>
+                <button type="button" onclick={() => schedulePaths = schedulePaths.filter((_, idx) => idx !== i)}>✕</button>
+              </div>
+            {/each}
+          </div>
+          <button type="button" class="btn btn-secondary" onclick={addScheduleFolder}>
+            + Add Folder
+          </button>
+        </div>
+      {/if}
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary" disabled={scheduleSaving}>
+          {scheduleSaving ? 'Saving...' : 'Save Schedule'}
+        </button>
+      </div>
+
+      {#if scheduleResult}
+        <div class="test-result" class:success={scheduleResult.includes('saved') || scheduleResult.includes('disabled')} class:error={scheduleResult.includes('failed')}>
+          {scheduleResult}
+        </div>
+      {/if}
+    </fieldset>
+  </form>
 </div>
 
 <style>
@@ -171,7 +295,8 @@
     margin-top: var(--space-4);
   }
 
-  .field label {
+  .field label,
+  .field .field-label {
     font-size: var(--text-xs);
     font-weight: 500;
     color: var(--color-text-muted);
@@ -265,6 +390,76 @@
 
   .test-result.error {
     background: oklch(65% 0.2 25 / 0.15);
+    color: var(--color-danger);
+  }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    cursor: pointer;
+    font-size: var(--text-sm);
+    color: var(--color-text);
+  }
+
+  .toggle-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--color-accent);
+  }
+
+  select {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3);
+    color: var(--color-text);
+    font-size: var(--text-sm);
+  }
+
+  select:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+
+  .path-list {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    min-height: 60px;
+  }
+
+  .empty-hint {
+    color: var(--color-text-dim);
+    text-align: center;
+    padding: var(--space-3);
+    font-size: var(--text-sm);
+  }
+
+  .path-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-2) var(--space-3);
+    background: var(--color-surface-hover);
+    border-radius: var(--radius-sm);
+  }
+
+  .path-item + .path-item {
+    margin-top: var(--space-2);
+  }
+
+  .path-item code {
+    font-size: var(--text-sm);
+  }
+
+  .path-item button {
+    color: var(--color-text-dim);
+    padding: var(--space-1);
+  }
+
+  .path-item button:hover {
     color: var(--color-danger);
   }
 </style>
