@@ -87,6 +87,31 @@ pub async fn create_backup(
 }
 
 #[tauri::command]
+pub async fn restore_archive(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    repo: RepoConfig,
+    archive_name: String,
+    destination: String,
+) -> Result<(), String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
+
+    let dest_path = PathBuf::from(&destination);
+    if !dest_path.is_dir() {
+        return Err(format!("destination does not exist: {}", destination));
+    }
+
+    state
+        .borg
+        .extract(&repo, &archive_name, &dest_path, move |event| {
+            let _ = app.emit("restore-progress", &event);
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn load_schedule_config(
     app: tauri::AppHandle,
 ) -> Result<Option<borg_platform_win::scheduler::ScheduleConfig>, String> {

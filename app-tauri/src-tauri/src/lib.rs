@@ -30,6 +30,7 @@ pub fn run() {
             commands::get_repo_info,
             commands::list_archives,
             commands::create_backup,
+            commands::restore_archive,
             commands::load_repo_config,
             commands::save_repo_config,
             commands::load_schedule_config,
