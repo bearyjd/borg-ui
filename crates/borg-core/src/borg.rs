@@ -184,6 +184,25 @@ impl BorgClient {
         Ok(())
     }
 
+    pub async fn delete_archive(&self, repo: &RepoConfig, archive_name: &str) -> Result<()> {
+        let archive = format!("{}::{}", repo.ssh_url(), archive_name);
+        let output = self
+            .base_command()
+            .args(["delete", &archive])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            return Err(BorgError::ProcessFailed {
+                message: "borg delete failed".into(),
+                exit_code: output.status.code(),
+                stderr: String::from_utf8_lossy(&output.stderr).into(),
+            });
+        }
+
+        Ok(())
+    }
+
     pub async fn list_archives(&self, repo: &RepoConfig) -> Result<Vec<ArchiveInfo>> {
         let output = self
             .base_command()
