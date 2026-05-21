@@ -49,6 +49,21 @@ pub async fn list_archives(
 }
 
 #[tauri::command]
+pub async fn delete_archive(
+    state: State<'_, AppState>,
+    repo: RepoConfig,
+    archive_name: String,
+) -> Result<(), String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
+    state
+        .borg
+        .delete_archive(&repo, &archive_name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn create_backup(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
