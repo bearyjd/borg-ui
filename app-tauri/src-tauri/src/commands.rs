@@ -49,6 +49,30 @@ pub async fn list_archives(
 }
 
 #[tauri::command]
+pub async fn init_repo(
+    state: State<'_, AppState>,
+    repo: RepoConfig,
+    encryption: String,
+    passphrase: Option<String>,
+) -> Result<(), String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    borg_core::config::validate_encryption_mode(&encryption).map_err(|e| e.to_string())?;
+
+    let needs_pass = encryption != "none"
+        && encryption != "authenticated"
+        && encryption != "authenticated-blake2";
+    if needs_pass && passphrase.as_deref().unwrap_or("").is_empty() {
+        return Err("passphrase required for this encryption mode".into());
+    }
+
+    state
+        .borg
+        .init_repo(&repo, &encryption, passphrase.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn delete_archive(
     state: State<'_, AppState>,
     repo: RepoConfig,
