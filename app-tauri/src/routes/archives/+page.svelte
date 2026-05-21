@@ -1,6 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { open } from '@tauri-apps/plugin-dialog';
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
 
   interface Archive {
@@ -9,10 +11,24 @@
     id: string;
   }
 
+  interface RestoreProgress {
+    type: string;
+    nfiles?: number;
+    path?: string;
+    original_size?: number;
+    finished?: boolean;
+    message?: string;
+  }
+
   let archives = $state<Archive[]>([]);
   let loading = $state(false);
   let error = $state('');
   let repoAvailable = $derived(repoState.hasRepo);
+
+  let restoringArchive = $state('');
+  let restoreStatus = $state('');
+  let restoreFile = $state('');
+  let restoreFileCount = $state(0);
 
   $effect(() => {
     const r = repoState.config;
@@ -36,6 +52,43 @@
 
   function refresh() {
     if (repoState.config) loadArchives(repoState.config);
+  }
+
+  async function restoreArchive(archiveName: string) {
+    if (!repoState.config || restoringArchive) return;
+
+    const dest = await open({ directory: true, multiple: false, title: 'Select restore destination' });
+    if (!dest) return;
+
+    restoringArchive = archiveName;
+    restoreStatus = 'Restoring...';
+    restoreFile = '';
+    restoreFileCount = 0;
+
+    let unlisten: UnlistenFn | undefined;
+    try {
+      unlisten = await listen<RestoreProgress>('restore-progress', (event) => {
+        const data = event.payload;
+        if (data.type === 'archive_progress') {
+          if (data.path) restoreFile = data.path;
+          if (data.nfiles != null) restoreFileCount = data.nfiles;
+        } else if (data.type === 'progress_percent' && data.finished) {
+          restoreStatus = 'Finalizing...';
+        }
+      });
+
+      await invoke('restore_archive', {
+        repo: repoState.config,
+        archiveName,
+        destination: dest as string,
+      });
+      restoreStatus = `Restored to ${dest}`;
+    } catch (e) {
+      restoreStatus = `Restore failed: ${e}`;
+    } finally {
+      unlisten?.();
+      restoringArchive = '';
+    }
   }
 </script>
 
@@ -70,11 +123,38 @@
     <div class="archive-list">
       {#each archives as archive}
         <div class="archive-row">
-          <div class="archive-name">{archive.name}</div>
-          <div class="archive-date">{archive.start}</div>
+          <div class="archive-info">
+            <div class="archive-name">{archive.name}</div>
+            <div class="archive-date">{archive.start}</div>
+          </div>
+          <button
+            class="btn btn-restore"
+            onclick={() => restoreArchive(archive.name)}
+            disabled={!!restoringArchive}
+          >
+            {restoringArchive === archive.name ? 'Restoring...' : 'Restore'}
+          </button>
         </div>
       {/each}
     </div>
+
+    {#if restoringArchive}
+      <div class="restore-progress">
+        <div class="restore-progress-header">Restoring: <code>{restoringArchive}</code></div>
+        {#if restoreFile}
+          <code class="restore-file">{restoreFile}</code>
+        {/if}
+        {#if restoreFileCount > 0}
+          <span class="restore-count">{restoreFileCount.toLocaleString()} files extracted</span>
+        {/if}
+      </div>
+    {/if}
+
+    {#if restoreStatus && !restoringArchive}
+      <div class="restore-result" class:error={restoreStatus.includes('failed')}>
+        {restoreStatus}
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -143,16 +223,28 @@
     border-radius: var(--radius-md);
   }
 
-  .archive-name {
+  .archive-info {
     flex: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    min-width: 0;
+  }
+
+  .archive-name {
     font-family: var(--font-mono);
     font-size: var(--text-sm);
     font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
   }
 
   .archive-date {
     color: var(--color-text-dim);
     font-size: var(--text-sm);
+    flex-shrink: 0;
   }
 
   .btn {
@@ -161,6 +253,7 @@
     font-weight: 500;
     font-size: var(--text-sm);
     transition: all var(--duration-fast) var(--ease-out);
+    flex-shrink: 0;
   }
 
   .btn:disabled {
@@ -177,5 +270,61 @@
   .btn-secondary:hover:not(:disabled) {
     background: var(--color-surface-active);
     color: var(--color-text);
+  }
+
+  .btn-restore {
+    background: var(--color-accent-muted);
+    color: var(--color-accent);
+    border: 1px solid transparent;
+  }
+
+  .btn-restore:hover:not(:disabled) {
+    background: var(--color-accent);
+    color: oklch(14% 0 0);
+  }
+
+  .restore-progress {
+    margin-top: var(--space-4);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .restore-progress-header {
+    font-size: var(--text-sm);
+    font-weight: 500;
+  }
+
+  .restore-file {
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .restore-count {
+    font-size: var(--text-sm);
+    color: var(--color-accent);
+    font-weight: 600;
+    font-family: var(--font-mono);
+  }
+
+  .restore-result {
+    margin-top: var(--space-4);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    background: oklch(75% 0.15 145 / 0.15);
+    color: var(--color-success);
+    font-size: var(--text-sm);
+  }
+
+  .restore-result.error {
+    background: oklch(65% 0.2 25 / 0.15);
+    color: var(--color-danger);
   }
 </style>
