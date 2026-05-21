@@ -184,6 +184,33 @@ impl BorgClient {
         Ok(())
     }
 
+    pub async fn init_repo(
+        &self,
+        repo: &RepoConfig,
+        encryption: &str,
+        passphrase: Option<&str>,
+    ) -> Result<()> {
+        let mut cmd = self.base_command();
+        cmd.args(["init", "--encryption", encryption, &repo.ssh_url()]);
+
+        if let Some(pass) = passphrase {
+            cmd.env("BORG_PASSPHRASE", pass);
+            cmd.env("BORG_NEW_PASSPHRASE", pass);
+        }
+
+        let output = cmd.output().await?;
+
+        if !output.status.success() {
+            return Err(BorgError::ProcessFailed {
+                message: "borg init failed".into(),
+                exit_code: output.status.code(),
+                stderr: String::from_utf8_lossy(&output.stderr).into(),
+            });
+        }
+
+        Ok(())
+    }
+
     pub async fn delete_archive(&self, repo: &RepoConfig, archive_name: &str) -> Result<()> {
         let archive = format!("{}::{}", repo.ssh_url(), archive_name);
         let output = self

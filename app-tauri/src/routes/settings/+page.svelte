@@ -23,6 +23,17 @@
   let scheduleSaving = $state(false);
   let scheduleResult = $state('');
 
+  let initEncryption = $state<'repokey' | 'keyfile' | 'repokey-blake2' | 'keyfile-blake2' | 'authenticated' | 'authenticated-blake2' | 'none'>('repokey-blake2');
+  let initPassphrase = $state('');
+  let initPassphraseConfirm = $state('');
+  let initing = $state(false);
+  let initResult = $state('');
+  let needsPassphrase = $derived(
+    initEncryption !== 'none' &&
+    initEncryption !== 'authenticated' &&
+    initEncryption !== 'authenticated-blake2'
+  );
+
   $effect(() => {
     const r = repoState.config;
     if (r) {
@@ -69,6 +80,43 @@
       saveResult = `Save failed: ${e}`;
     } finally {
       saving = false;
+    }
+  }
+
+  async function initRepo() {
+    initResult = '';
+    if (needsPassphrase) {
+      if (!initPassphrase) {
+        initResult = 'Passphrase required for this encryption mode.';
+        return;
+      }
+      if (initPassphrase !== initPassphraseConfirm) {
+        initResult = 'Passphrases do not match.';
+        return;
+      }
+    }
+
+    initing = true;
+    try {
+      const repo: RepoConfig = {
+        ssh_host: sshHost,
+        ssh_port: sshPort,
+        ssh_user: sshUser,
+        repo_path: repoPath,
+        ssh_key_path: sshKeyPath || null,
+      };
+      await invoke('init_repo', {
+        repo,
+        encryption: initEncryption,
+        passphrase: needsPassphrase ? initPassphrase : null,
+      });
+      initResult = 'Repository initialized successfully.';
+      initPassphrase = '';
+      initPassphraseConfirm = '';
+    } catch (e) {
+      initResult = `Init failed: ${e}`;
+    } finally {
+      initing = false;
     }
   }
 
@@ -174,6 +222,49 @@
       {#if saveResult}
         <div class="test-result" class:success={saveResult === 'Settings saved.'} class:error={saveResult.includes('failed')}>
           {saveResult}
+        </div>
+      {/if}
+    </fieldset>
+  </form>
+
+  <form class="settings-form" onsubmit={(e) => { e.preventDefault(); initRepo(); }}>
+    <fieldset class="form-group">
+      <legend>Initialize Repository</legend>
+      <p class="hint">Create a new borg repository at the configured path. Skip if you're connecting to an existing repo.</p>
+
+      <div class="field">
+        <label for="init-encryption">Encryption</label>
+        <select id="init-encryption" bind:value={initEncryption}>
+          <option value="repokey-blake2">repokey-blake2 (recommended)</option>
+          <option value="repokey">repokey</option>
+          <option value="keyfile-blake2">keyfile-blake2</option>
+          <option value="keyfile">keyfile</option>
+          <option value="authenticated-blake2">authenticated-blake2 (no encryption)</option>
+          <option value="authenticated">authenticated (no encryption)</option>
+          <option value="none">none (no encryption, no auth)</option>
+        </select>
+      </div>
+
+      {#if needsPassphrase}
+        <div class="field">
+          <label for="init-passphrase">Passphrase</label>
+          <input id="init-passphrase" type="password" bind:value={initPassphrase} autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label for="init-passphrase-confirm">Confirm passphrase</label>
+          <input id="init-passphrase-confirm" type="password" bind:value={initPassphraseConfirm} autocomplete="new-password" />
+        </div>
+      {/if}
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary" disabled={initing || !sshHost || !repoPath}>
+          {initing ? 'Initializing...' : 'Create Repository'}
+        </button>
+      </div>
+
+      {#if initResult}
+        <div class="test-result" class:success={initResult.includes('success')} class:error={initResult.includes('failed') || initResult.includes('required') || initResult.includes('do not match')}>
+          {initResult}
         </div>
       {/if}
     </fieldset>
@@ -286,6 +377,17 @@
     letter-spacing: 0.04em;
     color: var(--color-text-muted);
     padding: 0 var(--space-2);
+  }
+
+  .form-group .hint {
+    margin-top: var(--space-3);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+    line-height: 1.5;
+  }
+
+  .settings-form + .settings-form {
+    margin-top: var(--space-6);
   }
 
   .field {
