@@ -30,6 +30,23 @@
   let restoreFile = $state('');
   let restoreFileCount = $state(0);
 
+  let deletingArchive = $state('');
+  let confirmDeleteArchive = $state<string | null>(null);
+  let deleteStatus = $state('');
+  let cancelBtn = $state<HTMLButtonElement | null>(null);
+
+  $effect(() => {
+    if (!confirmDeleteArchive) return;
+
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') confirmDeleteArchive = null;
+    };
+    window.addEventListener('keydown', handler);
+    cancelBtn?.focus();
+
+    return () => window.removeEventListener('keydown', handler);
+  });
+
   $effect(() => {
     const r = repoState.config;
     if (r && r.ssh_host && untrack(() => !loading)) {
@@ -90,6 +107,28 @@
       restoringArchive = '';
     }
   }
+
+  async function confirmDelete() {
+    const archiveName = confirmDeleteArchive;
+    if (!archiveName || !repoState.config) return;
+
+    confirmDeleteArchive = null;
+    deletingArchive = archiveName;
+    deleteStatus = '';
+
+    try {
+      await invoke('delete_archive', {
+        repo: repoState.config,
+        archiveName,
+      });
+      deleteStatus = `Deleted ${archiveName}`;
+      archives = archives.filter((a) => a.name !== archiveName);
+    } catch (e) {
+      deleteStatus = `Delete failed: ${e}`;
+    } finally {
+      deletingArchive = '';
+    }
+  }
 </script>
 
 <div class="archives-page">
@@ -127,16 +166,32 @@
             <div class="archive-name">{archive.name}</div>
             <div class="archive-date">{archive.start}</div>
           </div>
-          <button
-            class="btn btn-restore"
-            onclick={() => restoreArchive(archive.name)}
-            disabled={!!restoringArchive}
-          >
-            {restoringArchive === archive.name ? 'Restoring...' : 'Restore'}
-          </button>
+          <div class="archive-actions">
+            <button
+              class="btn btn-restore"
+              onclick={() => restoreArchive(archive.name)}
+              disabled={!!restoringArchive || !!deletingArchive}
+            >
+              {restoringArchive === archive.name ? 'Restoring...' : 'Restore'}
+            </button>
+            <button
+              class="btn btn-delete"
+              onclick={() => confirmDeleteArchive = archive.name}
+              disabled={!!restoringArchive || !!deletingArchive}
+              title="Delete archive"
+            >
+              {deletingArchive === archive.name ? 'Deleting...' : 'Delete'}
+            </button>
+          </div>
         </div>
       {/each}
     </div>
+
+    {#if deleteStatus}
+      <div class="restore-result" class:error={deleteStatus.includes('failed')}>
+        {deleteStatus}
+      </div>
+    {/if}
 
     {#if restoringArchive}
       <div class="restore-progress">
@@ -155,6 +210,31 @@
         {restoreStatus}
       </div>
     {/if}
+  {/if}
+
+  {#if confirmDeleteArchive}
+    <div
+      class="modal-backdrop"
+      onclick={() => confirmDeleteArchive = null}
+      role="presentation"
+    >
+      <div
+        class="modal"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={() => {}}
+        role="dialog"
+        tabindex="-1"
+        aria-modal="true"
+        aria-labelledby="delete-title"
+      >
+        <h2 id="delete-title">Delete archive?</h2>
+        <p>This will permanently delete <code>{confirmDeleteArchive}</code>. This cannot be undone.</p>
+        <div class="modal-actions">
+          <button bind:this={cancelBtn} class="btn btn-secondary" onclick={() => confirmDeleteArchive = null}>Cancel</button>
+          <button class="btn btn-delete-confirm" onclick={confirmDelete}>Delete</button>
+        </div>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -281,6 +361,83 @@
   .btn-restore:hover:not(:disabled) {
     background: var(--color-accent);
     color: oklch(14% 0 0);
+  }
+
+  .archive-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex-shrink: 0;
+  }
+
+  .btn-delete {
+    background: transparent;
+    color: var(--color-text-dim);
+    border: 1px solid var(--color-border);
+  }
+
+  .btn-delete:hover:not(:disabled) {
+    background: oklch(65% 0.2 25 / 0.12);
+    color: var(--color-danger);
+    border-color: var(--color-danger);
+  }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: oklch(0% 0 0 / 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+
+  .modal {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-6);
+    max-width: 420px;
+    width: 90%;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .modal h2 {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .modal p {
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+
+  .modal code {
+    font-family: var(--font-mono);
+    color: var(--color-text);
+    background: var(--color-surface-hover);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+  }
+
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+
+  .btn-delete-confirm {
+    background: var(--color-danger);
+    color: oklch(14% 0 0);
+    border: 1px solid var(--color-danger);
+  }
+
+  .btn-delete-confirm:hover:not(:disabled) {
+    background: oklch(60% 0.22 25);
   }
 
   .restore-progress {
