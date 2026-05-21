@@ -29,6 +29,7 @@ pub fn run() {
             commands::test_ssh_connection,
             commands::get_repo_info,
             commands::list_archives,
+            commands::delete_archive,
             commands::create_backup,
             commands::restore_archive,
             commands::load_repo_config,
