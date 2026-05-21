@@ -132,6 +132,26 @@ pub fn validate_archive_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+const VALID_ENCRYPTION_MODES: &[&str] = &[
+    "none",
+    "authenticated",
+    "authenticated-blake2",
+    "repokey",
+    "keyfile",
+    "repokey-blake2",
+    "keyfile-blake2",
+];
+
+pub fn validate_encryption_mode(mode: &str) -> Result<()> {
+    if VALID_ENCRYPTION_MODES.contains(&mode) {
+        Ok(())
+    } else {
+        Err(BorgError::InvalidConfig {
+            message: format!("invalid encryption mode: {}", mode),
+        })
+    }
+}
+
 pub fn validate_source_paths(paths: &[String]) -> Result<()> {
     if paths.is_empty() {
         return Err(BorgError::InvalidConfig {
@@ -532,5 +552,46 @@ mod tests {
     fn rejects_source_paths_with_whitespace_entry() {
         let paths = vec!["  ".to_string()];
         assert!(validate_source_paths(&paths).is_err());
+    }
+
+    #[test]
+    fn accepts_repokey_blake2_encryption() {
+        assert!(validate_encryption_mode("repokey-blake2").is_ok());
+    }
+
+    #[test]
+    fn accepts_all_documented_encryption_modes() {
+        for mode in [
+            "none",
+            "authenticated",
+            "authenticated-blake2",
+            "repokey",
+            "keyfile",
+            "repokey-blake2",
+            "keyfile-blake2",
+        ] {
+            assert!(
+                validate_encryption_mode(mode).is_ok(),
+                "mode should be valid: {}",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_encryption_mode() {
+        assert!(validate_encryption_mode("super-secret").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_encryption_mode() {
+        assert!(validate_encryption_mode("").is_err());
+    }
+
+    #[test]
+    fn rejects_encryption_mode_with_shell_injection() {
+        assert!(validate_encryption_mode("none; rm -rf /").is_err());
+        assert!(validate_encryption_mode("repokey$(whoami)").is_err());
+        assert!(validate_encryption_mode("`id`").is_err());
     }
 }
