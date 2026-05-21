@@ -129,6 +129,61 @@ impl BorgClient {
         Ok(())
     }
 
+    pub async fn extract(
+        &self,
+        repo: &RepoConfig,
+        archive_name: &str,
+        destination: &Path,
+        on_progress: impl Fn(ProgressEvent) + Send + 'static,
+    ) -> Result<()> {
+        let archive = format!("{}::{}", repo.ssh_url(), archive_name);
+
+        let mut cmd = self.base_command();
+        cmd.args(["extract", "--progress", "--log-json"]);
+        cmd.arg(&archive);
+        cmd.current_dir(destination);
+
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let mut child = cmd.spawn()?;
+        let stderr = child.stderr.take().expect("stderr was piped");
+        let mut reader = BufReader::new(stderr).lines();
+
+        let stderr_capture: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_clone = stderr_capture.clone();
+
+        let reader_task = tokio::spawn(async move {
+            while let Ok(Some(line)) = reader.next_line().await {
+                if let Ok(event) = serde_json::from_str::<ProgressEvent>(&line) {
+                    on_progress(event);
+                } else {
+                    debug!("borg stderr: {}", line);
+                }
+                stderr_clone
+                    .lock()
+                    .expect("stderr mutex poisoned")
+                    .push(line);
+            }
+        });
+
+        let status = child.wait().await?;
+        let _ = reader_task.await;
+
+        if !status.success() {
+            let captured = stderr_capture
+                .lock()
+                .expect("stderr mutex poisoned")
+                .join("\n");
+            return Err(BorgError::ProcessFailed {
+                message: "borg extract failed".into(),
+                exit_code: status.code(),
+                stderr: captured,
+            });
+        }
+
+        Ok(())
+    }
+
     pub async fn list_archives(&self, repo: &RepoConfig) -> Result<Vec<ArchiveInfo>> {
         let output = self
             .base_command()
