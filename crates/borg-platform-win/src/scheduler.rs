@@ -91,6 +91,8 @@ pub struct ScheduleConfig {
     pub enabled: bool,
     pub source_paths: Vec<String>,
     pub schedule: Schedule,
+    #[serde(default)]
+    pub excludes: Vec<String>,
 }
 
 impl Schedule {

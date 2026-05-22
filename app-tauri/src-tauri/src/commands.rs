@@ -149,12 +149,15 @@ pub async fn create_backup(
     repo: RepoConfig,
     source_paths: Vec<String>,
     archive_name: String,
+    excludes: Option<Vec<String>>,
 ) -> Result<(), String> {
     repo.validate().map_err(|e| e.to_string())?;
     let compression = borg_core::config::Compression::default();
     compression.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
     borg_core::config::validate_source_paths(&source_paths).map_err(|e| e.to_string())?;
+    let excludes = excludes.unwrap_or_default();
+    borg_core::config::validate_exclude_patterns(&excludes).map_err(|e| e.to_string())?;
 
     let raw_paths: Vec<PathBuf> = source_paths.into_iter().map(PathBuf::from).collect();
     let (backup_paths, snapshots) = borg_platform_win::vss::snapshot_sources(&raw_paths).await;
@@ -162,7 +165,7 @@ pub async fn create_backup(
     let profile = borg_core::config::BackupProfile {
         name: "manual".into(),
         source_paths: backup_paths,
-        excludes: vec![],
+        excludes,
         compression,
         repo,
     };
@@ -229,6 +232,7 @@ pub async fn save_schedule_config(
 ) -> Result<(), String> {
     config.schedule.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_source_paths(&config.source_paths).map_err(|e| e.to_string())?;
+    borg_core::config::validate_exclude_patterns(&config.excludes).map_err(|e| e.to_string())?;
 
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     tokio::fs::create_dir_all(&config_dir)
