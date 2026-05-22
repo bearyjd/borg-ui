@@ -132,6 +132,31 @@ pub fn validate_archive_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RetentionConfig {
+    pub keep_hourly: Option<u32>,
+    pub keep_daily: Option<u32>,
+    pub keep_weekly: Option<u32>,
+    pub keep_monthly: Option<u32>,
+    pub keep_yearly: Option<u32>,
+}
+
+impl RetentionConfig {
+    pub fn validate(&self) -> Result<()> {
+        let any_set = self.keep_hourly.is_some()
+            || self.keep_daily.is_some()
+            || self.keep_weekly.is_some()
+            || self.keep_monthly.is_some()
+            || self.keep_yearly.is_some();
+        if !any_set {
+            return Err(BorgError::InvalidConfig {
+                message: "at least one retention rule must be set".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 const VALID_ENCRYPTION_MODES: &[&str] = &[
     "none",
     "authenticated",
@@ -593,5 +618,55 @@ mod tests {
         assert!(validate_encryption_mode("none; rm -rf /").is_err());
         assert!(validate_encryption_mode("repokey$(whoami)").is_err());
         assert!(validate_encryption_mode("`id`").is_err());
+    }
+
+    #[test]
+    fn retention_default_is_empty() {
+        let r = RetentionConfig::default();
+        assert!(r.keep_hourly.is_none());
+        assert!(r.keep_daily.is_none());
+        assert!(r.keep_weekly.is_none());
+        assert!(r.keep_monthly.is_none());
+        assert!(r.keep_yearly.is_none());
+    }
+
+    #[test]
+    fn retention_rejects_empty_policy() {
+        assert!(RetentionConfig::default().validate().is_err());
+    }
+
+    #[test]
+    fn retention_accepts_single_rule() {
+        let r = RetentionConfig {
+            keep_daily: Some(7),
+            ..Default::default()
+        };
+        assert!(r.validate().is_ok());
+    }
+
+    #[test]
+    fn retention_accepts_full_policy() {
+        let r = RetentionConfig {
+            keep_hourly: Some(24),
+            keep_daily: Some(7),
+            keep_weekly: Some(4),
+            keep_monthly: Some(12),
+            keep_yearly: Some(5),
+        };
+        assert!(r.validate().is_ok());
+    }
+
+    #[test]
+    fn retention_roundtrip_json() {
+        let r = RetentionConfig {
+            keep_daily: Some(7),
+            keep_weekly: Some(4),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let parsed: RetentionConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.keep_daily, Some(7));
+        assert_eq!(parsed.keep_weekly, Some(4));
+        assert!(parsed.keep_hourly.is_none());
     }
 }

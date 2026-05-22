@@ -49,6 +49,61 @@ pub async fn list_archives(
 }
 
 #[tauri::command]
+pub async fn load_retention_config(
+    app: tauri::AppHandle,
+) -> Result<Option<borg_core::config::RetentionConfig>, String> {
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let config_path = config_dir.join("retention.json");
+    match tokio::fs::read_to_string(&config_path).await {
+        Ok(data) => {
+            let config: borg_core::config::RetentionConfig =
+                serde_json::from_str(&data).map_err(|e| e.to_string())?;
+            Ok(Some(config))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn save_retention_config(
+    app: tauri::AppHandle,
+    config: borg_core::config::RetentionConfig,
+) -> Result<(), String> {
+    config.validate().map_err(|e| e.to_string())?;
+
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    tokio::fs::create_dir_all(&config_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let config_path = config_dir.join("retention.json");
+    let tmp_path = config_dir.join("retention.json.tmp");
+    let data = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    tokio::fs::write(&tmp_path, &data)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::rename(&tmp_path, &config_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn prune_repo(
+    state: State<'_, AppState>,
+    repo: RepoConfig,
+    retention: borg_core::config::RetentionConfig,
+) -> Result<(), String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    retention.validate().map_err(|e| e.to_string())?;
+    state
+        .borg
+        .prune(&repo, &retention)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn init_repo(
     state: State<'_, AppState>,
     repo: RepoConfig,

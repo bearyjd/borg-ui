@@ -184,6 +184,44 @@ impl BorgClient {
         Ok(())
     }
 
+    pub async fn prune(
+        &self,
+        repo: &RepoConfig,
+        retention: &crate::config::RetentionConfig,
+    ) -> Result<()> {
+        let mut cmd = self.base_command();
+        cmd.arg("prune");
+
+        if let Some(n) = retention.keep_hourly {
+            cmd.args(["--keep-hourly", &n.to_string()]);
+        }
+        if let Some(n) = retention.keep_daily {
+            cmd.args(["--keep-daily", &n.to_string()]);
+        }
+        if let Some(n) = retention.keep_weekly {
+            cmd.args(["--keep-weekly", &n.to_string()]);
+        }
+        if let Some(n) = retention.keep_monthly {
+            cmd.args(["--keep-monthly", &n.to_string()]);
+        }
+        if let Some(n) = retention.keep_yearly {
+            cmd.args(["--keep-yearly", &n.to_string()]);
+        }
+
+        cmd.arg(repo.ssh_url());
+
+        let output = cmd.output().await?;
+        if !output.status.success() {
+            return Err(BorgError::ProcessFailed {
+                message: "borg prune failed".into(),
+                exit_code: output.status.code(),
+                stderr: String::from_utf8_lossy(&output.stderr).into(),
+            });
+        }
+
+        Ok(())
+    }
+
     pub async fn init_repo(
         &self,
         repo: &RepoConfig,
