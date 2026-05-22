@@ -9,7 +9,7 @@ Without these, BorgUI can create backups but not complete the full lifecycle.
 - [x] **Restore/extract from archive** — `borg extract` command in `borg.rs`, Tauri command with progress streaming, restore button + destination picker on archives page _(PR #10)_
 - [ ] **Encryption / passphrase UI** — set/change passphrase, store in OS credential manager (Windows Credential Manager), use `BORG_PASSCOMMAND` to pass through
 - [x] **Archive deletion** — `borg delete` command, delete button per archive row, confirmation dialog
-- [ ] **Pruning with retention rules** — `borg prune` with hourly/daily/weekly/monthly/yearly counts, UI in settings
+- [x] **Pruning with retention rules** — `borg prune` with hourly/daily/weekly/monthly/yearly counts, UI in settings
 - [x] **Repository initialization** — `borg init` with encryption mode selector, "Create new repo" button in settings
 
 ## Phase 2 — Make it trustworthy (high-value gaps)

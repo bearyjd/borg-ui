@@ -4,6 +4,7 @@
   import { onMount } from 'svelte';
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
   import { scheduleState, type ScheduleConfig } from '$lib/stores/schedule.svelte';
+  import { retentionState, type RetentionConfig } from '$lib/stores/retention.svelte';
 
   let sshHost = $state('');
   let sshPort = $state(22);
@@ -22,6 +23,15 @@
   let schedulePaths = $state<string[]>([]);
   let scheduleSaving = $state(false);
   let scheduleResult = $state('');
+
+  let keepHourly = $state<number | null>(null);
+  let keepDaily = $state<number | null>(7);
+  let keepWeekly = $state<number | null>(4);
+  let keepMonthly = $state<number | null>(6);
+  let keepYearly = $state<number | null>(null);
+  let retentionSaving = $state(false);
+  let retentionPruning = $state(false);
+  let retentionResult = $state('');
 
   let initEncryption = $state<'repokey' | 'keyfile' | 'repokey-blake2' | 'keyfile-blake2' | 'authenticated' | 'authenticated-blake2' | 'none'>('repokey-blake2');
   let initPassphrase = $state('');
@@ -137,7 +147,63 @@
     } catch {
       // No schedule config yet
     }
+
+    try {
+      await retentionState.load();
+      if (retentionState.config) {
+        keepHourly = retentionState.config.keep_hourly;
+        keepDaily = retentionState.config.keep_daily;
+        keepWeekly = retentionState.config.keep_weekly;
+        keepMonthly = retentionState.config.keep_monthly;
+        keepYearly = retentionState.config.keep_yearly;
+      }
+    } catch {
+      // No retention config yet
+    }
   });
+
+  function currentRetention(): RetentionConfig {
+    return {
+      keep_hourly: keepHourly,
+      keep_daily: keepDaily,
+      keep_weekly: keepWeekly,
+      keep_monthly: keepMonthly,
+      keep_yearly: keepYearly,
+    };
+  }
+
+  async function saveRetention() {
+    retentionSaving = true;
+    retentionResult = '';
+    try {
+      await retentionState.save(currentRetention());
+      retentionResult = 'Retention policy saved.';
+    } catch (e) {
+      retentionResult = `Save failed: ${e}`;
+    } finally {
+      retentionSaving = false;
+    }
+  }
+
+  async function runPrune() {
+    retentionPruning = true;
+    retentionResult = '';
+    try {
+      const repo: RepoConfig = {
+        ssh_host: sshHost,
+        ssh_port: sshPort,
+        ssh_user: sshUser,
+        repo_path: repoPath,
+        ssh_key_path: sshKeyPath || null,
+      };
+      await invoke('prune_repo', { repo, retention: currentRetention() });
+      retentionResult = 'Prune completed successfully.';
+    } catch (e) {
+      retentionResult = `Prune failed: ${e}`;
+    } finally {
+      retentionPruning = false;
+    }
+  }
 
   async function addScheduleFolder() {
     const selected = await open({ directory: true, multiple: false, title: 'Select folder for scheduled backup' });
@@ -265,6 +331,53 @@
       {#if initResult}
         <div class="test-result" class:success={initResult.includes('success')} class:error={initResult.includes('failed') || initResult.includes('required') || initResult.includes('do not match')}>
           {initResult}
+        </div>
+      {/if}
+    </fieldset>
+  </form>
+
+  <form class="settings-form" onsubmit={(e) => { e.preventDefault(); saveRetention(); }}>
+    <fieldset class="form-group">
+      <legend>Retention Policy</legend>
+      <p class="hint">Set how many backups to keep per time bucket. Empty = no limit for that bucket. Pruning removes archives that fall outside the policy.</p>
+
+      <div class="field-row">
+        <div class="field field-sm">
+          <label for="keep-hourly">Keep hourly</label>
+          <input id="keep-hourly" type="number" min="0" placeholder="—" bind:value={keepHourly} />
+        </div>
+        <div class="field field-sm">
+          <label for="keep-daily">Keep daily</label>
+          <input id="keep-daily" type="number" min="0" placeholder="—" bind:value={keepDaily} />
+        </div>
+        <div class="field field-sm">
+          <label for="keep-weekly">Keep weekly</label>
+          <input id="keep-weekly" type="number" min="0" placeholder="—" bind:value={keepWeekly} />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field field-sm">
+          <label for="keep-monthly">Keep monthly</label>
+          <input id="keep-monthly" type="number" min="0" placeholder="—" bind:value={keepMonthly} />
+        </div>
+        <div class="field field-sm">
+          <label for="keep-yearly">Keep yearly</label>
+          <input id="keep-yearly" type="number" min="0" placeholder="—" bind:value={keepYearly} />
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-secondary" disabled={retentionSaving || retentionPruning}>
+          {retentionSaving ? 'Saving...' : 'Save Policy'}
+        </button>
+        <button type="button" class="btn btn-primary" onclick={runPrune} disabled={retentionPruning || retentionSaving || !sshHost || !repoPath}>
+          {retentionPruning ? 'Pruning...' : 'Run Prune Now'}
+        </button>
+      </div>
+
+      {#if retentionResult}
+        <div class="test-result" class:success={retentionResult.includes('success') || retentionResult.includes('saved')} class:error={retentionResult.includes('failed')}>
+          {retentionResult}
         </div>
       {/if}
     </fieldset>
