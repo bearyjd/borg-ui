@@ -16,13 +16,29 @@
   let testResult = $state('');
   let saveResult = $state('');
 
+  const EXCLUDE_PRESETS = ['*.tmp', '*.cache', 'node_modules', '.git', 'target', '__pycache__', '.venv', 'dist', 'build'];
+
   let scheduleEnabled = $state(false);
   let scheduleType = $state<'hourly' | 'daily'>('daily');
   let scheduleHour = $state(2);
   let scheduleMinute = $state(0);
   let schedulePaths = $state<string[]>([]);
+  let scheduleExcludes = $state<string[]>([]);
+  let scheduleExcludeInput = $state('');
   let scheduleSaving = $state(false);
   let scheduleResult = $state('');
+
+  function addScheduleExclude(pattern: string) {
+    const trimmed = pattern.trim();
+    if (trimmed && !scheduleExcludes.includes(trimmed)) {
+      scheduleExcludes = [...scheduleExcludes, trimmed];
+    }
+    scheduleExcludeInput = '';
+  }
+
+  function removeScheduleExclude(index: number) {
+    scheduleExcludes = scheduleExcludes.filter((_, i) => i !== index);
+  }
 
   let keepHourly = $state<number | null>(null);
   let keepDaily = $state<number | null>(7);
@@ -136,6 +152,7 @@
       if (scheduleState.config) {
         scheduleEnabled = scheduleState.config.enabled;
         schedulePaths = [...scheduleState.config.source_paths];
+        scheduleExcludes = [...(scheduleState.config.excludes ?? [])];
         if (scheduleState.config.schedule.type === 'hourly') {
           scheduleType = 'hourly';
         } else {
@@ -223,6 +240,7 @@
         enabled: scheduleEnabled,
         source_paths: schedulePaths,
         schedule,
+        excludes: scheduleExcludes,
       };
       await scheduleState.save(config);
       scheduleResult = scheduleEnabled ? 'Schedule saved and activated.' : 'Schedule disabled.';
@@ -432,6 +450,45 @@
           <button type="button" class="btn btn-secondary" onclick={addScheduleFolder}>
             + Add Folder
           </button>
+        </div>
+
+        <div class="field">
+          <span class="field-label">Exclude Patterns</span>
+          {#if scheduleExcludes.length > 0}
+            <div class="chip-list">
+              {#each scheduleExcludes as pattern, i}
+                <span class="chip">
+                  <code>{pattern}</code>
+                  <button type="button" class="chip-remove" onclick={() => removeScheduleExclude(i)} aria-label="Remove pattern">✕</button>
+                </span>
+              {/each}
+            </div>
+          {/if}
+          <div class="exclude-input-row">
+            <input
+              type="text"
+              class="exclude-input"
+              placeholder="e.g. *.log or node_modules"
+              bind:value={scheduleExcludeInput}
+              onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addScheduleExclude(scheduleExcludeInput); } }}
+            />
+            <button type="button" class="btn btn-secondary" onclick={() => addScheduleExclude(scheduleExcludeInput)} disabled={!scheduleExcludeInput.trim()}>
+              + Add
+            </button>
+          </div>
+          <div class="preset-row">
+            <span class="preset-label">Presets:</span>
+            {#each EXCLUDE_PRESETS as preset}
+              <button
+                type="button"
+                class="preset-chip"
+                onclick={() => addScheduleExclude(preset)}
+                disabled={scheduleExcludes.includes(preset)}
+              >
+                {preset}
+              </button>
+            {/each}
+          </div>
         </div>
       {/if}
 
@@ -676,5 +733,98 @@
 
   .path-item button:hover {
     color: var(--color-danger);
+  }
+
+  .chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    background: var(--color-surface-hover);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-sm);
+  }
+
+  .chip code {
+    font-family: var(--font-mono);
+  }
+
+  .chip-remove {
+    background: transparent;
+    border: none;
+    color: var(--color-text-dim);
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: var(--text-xs);
+  }
+
+  .chip-remove:hover:not(:disabled) {
+    color: var(--color-danger);
+  }
+
+  .exclude-input-row {
+    display: flex;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+
+  .exclude-input {
+    flex: 1;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-2) var(--space-3);
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    font-family: var(--font-mono);
+  }
+
+  .exclude-input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+
+  .preset-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .preset-label {
+    font-size: var(--text-xs);
+    color: var(--color-text-dim);
+    margin-right: var(--space-1);
+  }
+
+  .preset-chip {
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 2px var(--space-2);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: all var(--duration-fast) var(--ease-out);
+  }
+
+  .preset-chip:hover:not(:disabled) {
+    background: var(--color-surface-hover);
+    color: var(--color-text);
+    border-color: var(--color-text-muted);
+  }
+
+  .preset-chip:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 </style>
