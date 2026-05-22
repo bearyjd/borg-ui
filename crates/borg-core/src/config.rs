@@ -177,6 +177,24 @@ pub fn validate_encryption_mode(mode: &str) -> Result<()> {
     }
 }
 
+const EXCLUDE_FORBIDDEN: &[char] = &['\0', '\n', '\r'];
+
+pub fn validate_exclude_patterns(patterns: &[String]) -> Result<()> {
+    for pattern in patterns {
+        if pattern.trim().is_empty() {
+            return Err(BorgError::InvalidConfig {
+                message: "exclude pattern cannot be empty".into(),
+            });
+        }
+        if pattern.chars().any(|c| EXCLUDE_FORBIDDEN.contains(&c)) {
+            return Err(BorgError::InvalidConfig {
+                message: "exclude pattern contains invalid characters".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_source_paths(paths: &[String]) -> Result<()> {
     if paths.is_empty() {
         return Err(BorgError::InvalidConfig {
@@ -654,6 +672,46 @@ mod tests {
             keep_yearly: Some(5),
         };
         assert!(r.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_valid_exclude_patterns() {
+        let patterns = vec![
+            "*.tmp".to_string(),
+            "node_modules".to_string(),
+            ".git".to_string(),
+            "**/target".to_string(),
+        ];
+        assert!(validate_exclude_patterns(&patterns).is_ok());
+    }
+
+    #[test]
+    fn accepts_empty_exclude_list() {
+        assert!(validate_exclude_patterns(&[]).is_ok());
+    }
+
+    #[test]
+    fn rejects_exclude_pattern_with_null_byte() {
+        let patterns = vec!["foo\0bar".to_string()];
+        assert!(validate_exclude_patterns(&patterns).is_err());
+    }
+
+    #[test]
+    fn rejects_exclude_pattern_with_newline() {
+        let patterns = vec!["line1\nline2".to_string()];
+        assert!(validate_exclude_patterns(&patterns).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_exclude_pattern() {
+        let patterns = vec!["valid".to_string(), "".to_string()];
+        assert!(validate_exclude_patterns(&patterns).is_err());
+    }
+
+    #[test]
+    fn rejects_whitespace_only_exclude_pattern() {
+        let patterns = vec!["   ".to_string()];
+        assert!(validate_exclude_patterns(&patterns).is_err());
     }
 
     #[test]
