@@ -4,6 +4,7 @@ export interface ScheduleConfig {
   enabled: boolean;
   source_paths: string[];
   schedule: { type: 'hourly' } | { type: 'daily'; hour: number; minute: number };
+  excludes: string[];
 }
 
 class ScheduleState {
