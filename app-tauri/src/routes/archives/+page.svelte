@@ -4,6 +4,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { open } from '@tauri-apps/plugin-dialog';
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
+  import { notificationsState } from '$lib/stores/notifications.svelte';
 
   interface Archive {
     name: string;
@@ -100,8 +101,13 @@
         destination: dest as string,
       });
       restoreStatus = `Restored to ${dest}`;
+      notificationsState.notify(
+        'Restore complete',
+        `Archive "${archiveName}" restored.`,
+      );
     } catch (e) {
       restoreStatus = `Restore failed: ${e}`;
+      notificationsState.notify('Restore failed', 'See BorgUI for details.');
     } finally {
       unlisten?.();
       restoringArchive = '';
