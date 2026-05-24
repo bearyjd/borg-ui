@@ -5,6 +5,7 @@
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
   import { scheduleState, type ScheduleConfig } from '$lib/stores/schedule.svelte';
   import { retentionState, type RetentionConfig } from '$lib/stores/retention.svelte';
+  import { notificationsState } from '$lib/stores/notifications.svelte';
 
   let sshHost = $state('');
   let sshPort = $state(22);
@@ -17,6 +18,23 @@
   let saveResult = $state('');
 
   const EXCLUDE_PRESETS = ['*.tmp', '*.cache', 'node_modules', '.git', 'target', '__pycache__', '.venv', 'dist', 'build'];
+
+  // Local mirror of the store value so the checkbox reflects the user's
+  // *attempt* even when the OS rejects permission, then we roll it back.
+  let notificationsEnabled = $state(notificationsState.enabled);
+  let notificationsResult = $state('');
+
+  async function toggleNotifications(value: boolean) {
+    notificationsResult = '';
+    try {
+      await notificationsState.setEnabled(value);
+      notificationsEnabled = notificationsState.enabled;
+      notificationsResult = value ? 'Notifications enabled.' : 'Notifications disabled.';
+    } catch (e) {
+      notificationsEnabled = false;
+      notificationsResult = `${e}`;
+    }
+  }
 
   let scheduleEnabled = $state(false);
   let scheduleType = $state<'hourly' | 'daily'>('daily');
@@ -396,6 +414,26 @@
       {#if retentionResult}
         <div class="test-result" class:success={retentionResult.includes('success') || retentionResult.includes('saved')} class:error={retentionResult.includes('failed')}>
           {retentionResult}
+        </div>
+      {/if}
+    </fieldset>
+  </form>
+
+  <form class="settings-form" onsubmit={(e) => e.preventDefault()}>
+    <fieldset class="form-group">
+      <legend>Notifications</legend>
+      <p class="hint">Show a desktop notification when a backup or restore completes or fails.</p>
+
+      <div class="field">
+        <label class="toggle-row">
+          <input type="checkbox" checked={notificationsEnabled} onchange={(e) => toggleNotifications(e.currentTarget.checked)} />
+          <span>Enable desktop notifications</span>
+        </label>
+      </div>
+
+      {#if notificationsResult}
+        <div class="test-result" class:success={notificationsResult.includes('enabled') || notificationsResult.includes('disabled')} class:error={notificationsResult.includes('denied') || notificationsResult.includes('Error')}>
+          {notificationsResult}
         </div>
       {/if}
     </fieldset>

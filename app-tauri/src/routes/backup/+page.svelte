@@ -3,6 +3,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { open } from '@tauri-apps/plugin-dialog';
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
+  import { notificationsState } from '$lib/stores/notifications.svelte';
 
   interface ArchiveProgress {
     type: 'archive_progress';
@@ -127,8 +128,13 @@
         excludes,
       });
       status = 'Backup completed successfully!';
+      notificationsState.notify(
+        'Backup complete',
+        `${fileCount.toLocaleString()} files archived.`,
+      );
     } catch (e) {
       status = `Backup failed: ${e}`;
+      notificationsState.notify('Backup failed', 'See BorgUI for details.');
     } finally {
       unlisten?.();
       isRunning = false;

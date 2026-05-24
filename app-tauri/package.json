@@ -23,5 +23,8 @@
     "tslib": "^2",
     "typescript": "^5",
     "vite": "^6"
+  },
+  "dependencies": {
+    "@tauri-apps/plugin-notification": "^2.3.3"
   }
 }
