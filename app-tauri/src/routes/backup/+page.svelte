@@ -4,6 +4,7 @@
   import { open } from '@tauri-apps/plugin-dialog';
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
+  import { historyState } from '$lib/stores/history.svelte';
 
   interface ArchiveProgress {
     type: 'archive_progress';
@@ -94,6 +95,9 @@
     status = 'Starting backup...';
     resetProgress();
 
+    const startMs = Date.now();
+    let archiveName = '';
+
     let unlisten: UnlistenFn | undefined;
     try {
       unlisten = await listen<ProgressEvent>('backup-progress', (event) => {
@@ -120,7 +124,7 @@
 
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const suffix = Math.random().toString(36).slice(2, 6);
-      const archiveName = `backup-${ts}-${suffix}`;
+      archiveName = `backup-${ts}-${suffix}`;
       await invoke('create_backup', {
         repo,
         sourcePaths,
@@ -132,9 +136,28 @@
         'Backup complete',
         `${fileCount.toLocaleString()} files archived.`,
       );
+      historyState.record({
+        id: `${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        kind: 'backup',
+        archive_name: archiveName,
+        outcome: 'success',
+        duration_seconds: Math.round((Date.now() - startMs) / 1000),
+        file_count: fileCount || undefined,
+        original_size: originalSize || undefined,
+      }).catch((err) => console.warn('Failed to record history:', err));
     } catch (e) {
       status = `Backup failed: ${e}`;
       notificationsState.notify('Backup failed', 'See BorgUI for details.');
+      historyState.record({
+        id: `${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        kind: 'backup',
+        archive_name: archiveName || '(unnamed)',
+        outcome: 'failure',
+        duration_seconds: Math.round((Date.now() - startMs) / 1000),
+        error_message: String(e),
+      }).catch((err) => console.warn('Failed to record history:', err));
     } finally {
       unlisten?.();
       isRunning = false;
