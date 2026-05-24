@@ -5,6 +5,9 @@
   import { goto } from '$app/navigation';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { repoState } from '$lib/stores/repo.svelte';
+  import { scheduleState } from '$lib/stores/schedule.svelte';
+  import { retentionState } from '$lib/stores/retention.svelte';
+  import { profilesState } from '$lib/stores/profiles.svelte';
 
   interface Props {
     children: import('svelte').Snippet;
@@ -22,7 +25,27 @@
   let connected = $derived(repoState.connected);
   let unlistenTray: UnlistenFn | undefined;
 
+  async function switchProfile(id: string) {
+    if (!id || id === profilesState.activeId) return;
+    try {
+      await profilesState.setActive(id);
+      await Promise.all([
+        repoState.load(),
+        scheduleState.load().catch(() => {}),
+        retentionState.load().catch(() => {}),
+      ]);
+    } catch (e) {
+      console.error('Failed to switch profile:', e);
+    }
+  }
+
   onMount(async () => {
+    try {
+      await profilesState.load();
+    } catch (e) {
+      console.warn('Failed to load profiles:', e);
+    }
+
     try {
       await repoState.load();
     } catch (e) {
@@ -52,6 +75,21 @@
       <span class="brand-text">BorgUI</span>
       <span class="brand-version">v0.1</span>
     </div>
+
+    {#if profilesState.profiles.length > 0}
+      <div class="profile-picker">
+        <label for="profile-select" class="profile-label">Profile</label>
+        <select
+          id="profile-select"
+          value={profilesState.activeId ?? ''}
+          onchange={(e) => switchProfile(e.currentTarget.value)}
+        >
+          {#each profilesState.profiles as p (p.id)}
+            <option value={p.id}>{p.name}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
 
     <ul class="nav-list">
       {#each navItems as item}
@@ -102,6 +140,36 @@
     align-items: center;
     gap: var(--space-2);
     padding: 0 var(--space-4) var(--space-6);
+  }
+
+  .profile-picker {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: 0 var(--space-4) var(--space-4);
+  }
+
+  .profile-label {
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-dim);
+    font-weight: 600;
+  }
+
+  .profile-picker select {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3);
+    color: var(--color-text);
+    font-size: var(--text-sm);
+    width: 100%;
+  }
+
+  .profile-picker select:focus {
+    outline: none;
+    border-color: var(--color-accent);
   }
 
   .brand-icon {

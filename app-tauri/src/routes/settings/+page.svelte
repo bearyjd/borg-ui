@@ -6,6 +6,7 @@
   import { scheduleState, type ScheduleConfig } from '$lib/stores/schedule.svelte';
   import { retentionState, type RetentionConfig } from '$lib/stores/retention.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
+  import { profilesState } from '$lib/stores/profiles.svelte';
 
   let sshHost = $state('');
   let sshPort = $state(22);
@@ -19,12 +20,67 @@
 
   const EXCLUDE_PRESETS = ['*.tmp', '*.cache', 'node_modules', '.git', 'target', '__pycache__', '.venv', 'dist', 'build'];
 
+  let newProfileName = $state('');
+  let profileResult = $state('');
+
+  async function addProfile() {
+    const name = newProfileName.trim();
+    if (!name) {
+      profileResult = 'Name required';
+      return;
+    }
+    const repo = currentRepoFromForm();
+    if (!repo) {
+      profileResult = 'Fill in SSH host, user, and repo path first';
+      return;
+    }
+    try {
+      const created = await profilesState.create(name, repo);
+      await profilesState.setActive(created.id);
+      await repoState.load();
+      newProfileName = '';
+      profileResult = `Created profile "${name}"`;
+    } catch (e) {
+      profileResult = `Failed: ${e}`;
+    }
+  }
+
+  async function renameActive() {
+    const id = profilesState.activeId;
+    if (!id) return;
+    const newName = prompt('New profile name', profilesState.active?.name ?? '');
+    if (!newName) return;
+    try {
+      await profilesState.rename(id, newName);
+      profileResult = `Renamed to "${newName}"`;
+    } catch (e) {
+      profileResult = `Failed: ${e}`;
+    }
+  }
+
+  async function deleteActive() {
+    const id = profilesState.activeId;
+    if (!id) return;
+    if (profilesState.profiles.length <= 1) {
+      profileResult = 'Cannot delete the only profile';
+      return;
+    }
+    if (!confirm(`Delete profile "${profilesState.active?.name}"? Repo config is removed; archives are not touched.`)) return;
+    try {
+      await profilesState.remove(id);
+      await repoState.load();
+      profileResult = 'Profile deleted';
+    } catch (e) {
+      profileResult = `Failed: ${e}`;
+    }
+  }
+
   // Local mirror of the store value so the checkbox reflects the user's
   // *attempt* even when the OS rejects permission, then we roll it back.
   let notificationsEnabled = $state(notificationsState.enabled);
   let notificationsResult = $state('');
 
-  function currentRepoForKeychain(): RepoConfig | null {
+  function currentRepoFromForm(): RepoConfig | null {
     if (!sshHost || !repoPath || !sshUser) return null;
     return {
       ssh_host: sshHost,
@@ -36,7 +92,7 @@
   }
 
   async function refreshPassphraseStatus() {
-    const repo = currentRepoForKeychain();
+    const repo = currentRepoFromForm();
     if (!repo) {
       hasPassphrase = false;
       return;
@@ -59,7 +115,7 @@
   }
 
   async function savePassphrase() {
-    const repo = currentRepoForKeychain();
+    const repo = currentRepoFromForm();
     if (!repo) {
       passphraseResult = 'Configure SSH connection first.';
       return;
@@ -88,7 +144,7 @@
   }
 
   async function clearPassphrase() {
-    const repo = currentRepoForKeychain();
+    const repo = currentRepoFromForm();
     if (!repo) return;
     if (!confirm('Remove the passphrase from the system keychain? Backups will fail until you set it again.')) return;
     try {
@@ -284,6 +340,49 @@
     await refreshPassphraseStatus();
   });
 
+  let lastActiveId = $state<string | null>(profilesState.activeId);
+  $effect(() => {
+    const id = profilesState.activeId;
+    if (id === lastActiveId) return;
+    lastActiveId = id;
+
+    if (scheduleState.config) {
+      scheduleEnabled = scheduleState.config.enabled;
+      schedulePaths = [...scheduleState.config.source_paths];
+      scheduleExcludes = [...(scheduleState.config.excludes ?? [])];
+      if (scheduleState.config.schedule.type === 'hourly') {
+        scheduleType = 'hourly';
+      } else {
+        scheduleType = 'daily';
+        scheduleHour = scheduleState.config.schedule.hour;
+        scheduleMinute = scheduleState.config.schedule.minute;
+      }
+    } else {
+      scheduleEnabled = false;
+      scheduleType = 'daily';
+      scheduleHour = 2;
+      scheduleMinute = 0;
+      schedulePaths = [];
+      scheduleExcludes = [];
+    }
+
+    if (retentionState.config) {
+      keepHourly = retentionState.config.keep_hourly;
+      keepDaily = retentionState.config.keep_daily;
+      keepWeekly = retentionState.config.keep_weekly;
+      keepMonthly = retentionState.config.keep_monthly;
+      keepYearly = retentionState.config.keep_yearly;
+    } else {
+      keepHourly = null;
+      keepDaily = 7;
+      keepWeekly = 4;
+      keepMonthly = 6;
+      keepYearly = null;
+    }
+
+    refreshPassphraseStatus();
+  });
+
   function currentRetention(): RetentionConfig {
     return {
       keep_hourly: keepHourly,
@@ -362,6 +461,38 @@
     <h1>Settings</h1>
     <p class="subtitle">Repository and connection configuration</p>
   </header>
+
+  <form class="settings-form" onsubmit={(e) => { e.preventDefault(); addProfile(); }}>
+    <fieldset class="form-group">
+      <legend>Profiles</legend>
+      <p class="hint">A profile bundles a repository plus its schedule and retention settings. Switch profiles via the picker in the sidebar.</p>
+
+      {#if profilesState.active}
+        <div class="profile-current">
+          <span class="field-label">Active</span>
+          <code>{profilesState.active.name}</code>
+          <div class="profile-actions">
+            <button type="button" class="btn btn-secondary" onclick={renameActive}>Rename</button>
+            <button type="button" class="btn btn-secondary" onclick={deleteActive} disabled={profilesState.profiles.length <= 1}>Delete</button>
+          </div>
+        </div>
+      {/if}
+
+      <div class="field">
+        <label for="new-profile-name">New profile name</label>
+        <div class="inline-row">
+          <input id="new-profile-name" type="text" bind:value={newProfileName} placeholder="e.g. Work laptop" />
+          <button type="submit" class="btn btn-primary">+ Add</button>
+        </div>
+      </div>
+
+      {#if profileResult}
+        <div class="test-result" class:success={profileResult.includes('Created') || profileResult.includes('Renamed') || profileResult.includes('deleted')} class:error={profileResult.includes('Failed') || profileResult.includes('required') || profileResult.includes('Cannot')}>
+          {profileResult}
+        </div>
+      {/if}
+    </fieldset>
+  </form>
 
   <form class="settings-form" onsubmit={(e) => { e.preventDefault(); save(); }}>
     <fieldset class="form-group">
@@ -752,6 +883,39 @@
     font-size: var(--text-sm);
     color: var(--color-text-muted);
     line-height: 1.5;
+  }
+
+  .profile-current {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    margin-top: var(--space-3);
+    padding: var(--space-3);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .profile-current code {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--color-text);
+    flex: 1;
+  }
+
+  .profile-actions {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .inline-row {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .inline-row input {
+    flex: 1;
   }
 
   .settings-form + .settings-form {
