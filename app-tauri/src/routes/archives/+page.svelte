@@ -5,6 +5,7 @@
   import { open } from '@tauri-apps/plugin-dialog';
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
+  import { historyState } from '$lib/stores/history.svelte';
 
   interface Archive {
     name: string;
@@ -83,6 +84,7 @@
     restoreFile = '';
     restoreFileCount = 0;
 
+    const startMs = Date.now();
     let unlisten: UnlistenFn | undefined;
     try {
       unlisten = await listen<RestoreProgress>('restore-progress', (event) => {
@@ -105,9 +107,27 @@
         'Restore complete',
         `Archive "${archiveName}" restored.`,
       );
+      historyState.record({
+        id: `${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        kind: 'restore',
+        archive_name: archiveName,
+        outcome: 'success',
+        duration_seconds: Math.round((Date.now() - startMs) / 1000),
+        file_count: restoreFileCount || undefined,
+      }).catch((err) => console.warn('Failed to record history:', err));
     } catch (e) {
       restoreStatus = `Restore failed: ${e}`;
       notificationsState.notify('Restore failed', 'See BorgUI for details.');
+      historyState.record({
+        id: `${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        kind: 'restore',
+        archive_name: archiveName,
+        outcome: 'failure',
+        duration_seconds: Math.round((Date.now() - startMs) / 1000),
+        error_message: String(e),
+      }).catch((err) => console.warn('Failed to record history:', err));
     } finally {
       unlisten?.();
       restoringArchive = '';

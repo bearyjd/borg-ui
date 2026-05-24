@@ -19,7 +19,7 @@ These turn BorgUI from a foreground tool into a daemon-like backup app users act
 - [x] **System tray with background operation** — Tauri tray icon, minimize-to-tray, restore on click, "Backup now" menu item
 - [x] **Desktop notifications** — success/failure toast notifications, configurable in settings
 - [x] **Exclude patterns UI** — backend already supports excludes; add UI on backup + schedule forms with custom + preset patterns (`*.tmp`, `node_modules`, `.git`)
-- [ ] **Backup history / event log** — persist event log, display on dashboard with timestamps and outcomes
+- [x] **Backup history / event log** — persist event log, display on dashboard with timestamps and outcomes
 - [ ] **Multiple profiles** — profile concept (named bundle of repo + sources + excludes + schedule), profile selector in nav
 
 ## Phase 3 — Polish (medium/low-value gaps)
