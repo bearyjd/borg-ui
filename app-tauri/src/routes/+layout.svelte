@@ -1,7 +1,9 @@
 <script lang="ts">
   import '../app.css';
   import { page } from '$app/stores';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { repoState } from '$lib/stores/repo.svelte';
 
   interface Props {
@@ -18,6 +20,7 @@
   ];
 
   let connected = $derived(repoState.connected);
+  let unlistenTray: UnlistenFn | undefined;
 
   onMount(async () => {
     try {
@@ -27,6 +30,18 @@
         console.error('Failed to load repo config:', e);
       }
     }
+
+    try {
+      unlistenTray = await listen('tray-trigger-backup', () => {
+        goto('/backup');
+      });
+    } catch (e) {
+      console.warn('Failed to subscribe to tray events:', e);
+    }
+  });
+
+  onDestroy(() => {
+    unlistenTray?.();
   });
 </script>
 
