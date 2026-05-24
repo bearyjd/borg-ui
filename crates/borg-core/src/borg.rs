@@ -32,9 +32,16 @@ impl BorgClient {
     }
 
     fn base_command(&self) -> Command {
+        self.base_command_with(None)
+    }
+
+    fn base_command_with(&self, passphrase: Option<&str>) -> Command {
         let mut cmd = Command::new(&self.binary_path);
         if let Some(ref passcommand) = self.passcommand {
             cmd.env("BORG_PASSCOMMAND", passcommand);
+        }
+        if let Some(p) = passphrase {
+            cmd.env("BORG_PASSPHRASE", p);
         }
         cmd.env("BORG_RELOCATED_REPO_ACCESS_IS_OK", "yes");
         cmd
@@ -46,9 +53,13 @@ impl BorgClient {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    pub async fn info(&self, repo: &RepoConfig) -> Result<serde_json::Value> {
+    pub async fn info(
+        &self,
+        repo: &RepoConfig,
+        passphrase: Option<&str>,
+    ) -> Result<serde_json::Value> {
         let output = self
-            .base_command()
+            .base_command_with(passphrase)
             .args(["info", "--json", &repo.ssh_url()])
             .output()
             .await?;
@@ -68,12 +79,13 @@ impl BorgClient {
         &self,
         profile: &BackupProfile,
         archive_name: &str,
+        passphrase: Option<&str>,
         on_progress: impl Fn(ProgressEvent) + Send + 'static,
     ) -> Result<()> {
         let repo_url = profile.repo.ssh_url();
         let archive = format!("{}::{}", repo_url, archive_name);
 
-        let mut cmd = self.base_command();
+        let mut cmd = self.base_command_with(passphrase);
         cmd.args(["create", "--json", "--progress", "--log-json"]);
 
         let compression = profile.compression.to_borg_arg();
@@ -134,11 +146,12 @@ impl BorgClient {
         repo: &RepoConfig,
         archive_name: &str,
         destination: &Path,
+        passphrase: Option<&str>,
         on_progress: impl Fn(ProgressEvent) + Send + 'static,
     ) -> Result<()> {
         let archive = format!("{}::{}", repo.ssh_url(), archive_name);
 
-        let mut cmd = self.base_command();
+        let mut cmd = self.base_command_with(passphrase);
         cmd.args(["extract", "--progress", "--log-json"]);
         cmd.arg(&archive);
         cmd.current_dir(destination);
@@ -188,8 +201,9 @@ impl BorgClient {
         &self,
         repo: &RepoConfig,
         retention: &crate::config::RetentionConfig,
+        passphrase: Option<&str>,
     ) -> Result<()> {
-        let mut cmd = self.base_command();
+        let mut cmd = self.base_command_with(passphrase);
         cmd.arg("prune");
 
         if let Some(n) = retention.keep_hourly {
@@ -249,10 +263,15 @@ impl BorgClient {
         Ok(())
     }
 
-    pub async fn delete_archive(&self, repo: &RepoConfig, archive_name: &str) -> Result<()> {
+    pub async fn delete_archive(
+        &self,
+        repo: &RepoConfig,
+        archive_name: &str,
+        passphrase: Option<&str>,
+    ) -> Result<()> {
         let archive = format!("{}::{}", repo.ssh_url(), archive_name);
         let output = self
-            .base_command()
+            .base_command_with(passphrase)
             .args(["delete", &archive])
             .output()
             .await?;
@@ -268,9 +287,13 @@ impl BorgClient {
         Ok(())
     }
 
-    pub async fn list_archives(&self, repo: &RepoConfig) -> Result<Vec<ArchiveInfo>> {
+    pub async fn list_archives(
+        &self,
+        repo: &RepoConfig,
+        passphrase: Option<&str>,
+    ) -> Result<Vec<ArchiveInfo>> {
         let output = self
-            .base_command()
+            .base_command_with(passphrase)
             .args(["list", "--json", &repo.ssh_url()])
             .output()
             .await?;
