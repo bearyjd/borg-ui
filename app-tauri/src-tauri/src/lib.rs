@@ -1,5 +1,6 @@
 mod commands;
 mod history;
+mod keychain;
 mod tray;
 
 use borg_core::borg::BorgClient;
@@ -59,6 +60,9 @@ pub fn run() {
             commands::record_backup_event,
             commands::load_backup_history,
             commands::clear_backup_history,
+            commands::set_repo_passphrase,
+            commands::clear_repo_passphrase,
+            commands::has_repo_passphrase,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
