@@ -1,6 +1,7 @@
 mod commands;
 mod history;
 mod keychain;
+mod profiles;
 mod tray;
 
 use borg_core::borg::BorgClient;
@@ -63,6 +64,11 @@ pub fn run() {
             commands::set_repo_passphrase,
             commands::clear_repo_passphrase,
             commands::has_repo_passphrase,
+            commands::list_profiles,
+            commands::set_active_profile,
+            commands::create_profile,
+            commands::rename_profile,
+            commands::delete_profile,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
