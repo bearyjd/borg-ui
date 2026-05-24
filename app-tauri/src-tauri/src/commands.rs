@@ -6,9 +6,24 @@ use tauri::{Emitter, Manager, State};
 
 use crate::history::{self, BackupEvent};
 use crate::keychain;
+use crate::profiles::{self, Profile, ProfilesData};
 
 fn lookup_passphrase(repo: &RepoConfig) -> Option<String> {
     keychain::get_passphrase(&repo.ssh_url()).ok().flatten()
+}
+
+async fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path().app_config_dir().map_err(|e| e.to_string())
+}
+
+async fn read_profiles(app: &tauri::AppHandle) -> Result<ProfilesData, String> {
+    let dir = config_dir(app).await?;
+    profiles::load(&dir).await
+}
+
+async fn write_profiles(app: &tauri::AppHandle, data: &ProfilesData) -> Result<(), String> {
+    let dir = config_dir(app).await?;
+    profiles::save(&dir, data).await
 }
 
 pub struct AppState {
@@ -65,17 +80,8 @@ pub async fn list_archives(
 pub async fn load_retention_config(
     app: tauri::AppHandle,
 ) -> Result<Option<borg_core::config::RetentionConfig>, String> {
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let config_path = config_dir.join("retention.json");
-    match tokio::fs::read_to_string(&config_path).await {
-        Ok(data) => {
-            let config: borg_core::config::RetentionConfig =
-                serde_json::from_str(&data).map_err(|e| e.to_string())?;
-            Ok(Some(config))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    let data = read_profiles(&app).await?;
+    Ok(data.active().and_then(|p| p.retention.clone()))
 }
 
 #[tauri::command]
@@ -84,21 +90,12 @@ pub async fn save_retention_config(
     config: borg_core::config::RetentionConfig,
 ) -> Result<(), String> {
     config.validate().map_err(|e| e.to_string())?;
-
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    tokio::fs::create_dir_all(&config_dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    let config_path = config_dir.join("retention.json");
-    let tmp_path = config_dir.join("retention.json.tmp");
-    let data = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    tokio::fs::write(&tmp_path, &data)
-        .await
-        .map_err(|e| e.to_string())?;
-    tokio::fs::rename(&tmp_path, &config_path)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let mut data = read_profiles(&app).await?;
+    let profile = data
+        .active_mut()
+        .ok_or_else(|| "no active profile; configure repository first".to_string())?;
+    profile.retention = Some(config);
+    write_profiles(&app, &data).await
 }
 
 #[tauri::command]
@@ -242,17 +239,8 @@ pub async fn restore_archive(
 pub async fn load_schedule_config(
     app: tauri::AppHandle,
 ) -> Result<Option<borg_platform_win::scheduler::ScheduleConfig>, String> {
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let config_path = config_dir.join("schedule.json");
-    match tokio::fs::read_to_string(&config_path).await {
-        Ok(data) => {
-            let config: borg_platform_win::scheduler::ScheduleConfig =
-                serde_json::from_str(&data).map_err(|e| e.to_string())?;
-            Ok(Some(config))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    let data = read_profiles(&app).await?;
+    Ok(data.active().and_then(|p| p.schedule.clone()))
 }
 
 #[tauri::command]
@@ -264,19 +252,12 @@ pub async fn save_schedule_config(
     borg_core::config::validate_source_paths(&config.source_paths).map_err(|e| e.to_string())?;
     borg_core::config::validate_exclude_patterns(&config.excludes).map_err(|e| e.to_string())?;
 
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    tokio::fs::create_dir_all(&config_dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    let config_path = config_dir.join("schedule.json");
-    let tmp_path = config_dir.join("schedule.json.tmp");
-    let data = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    tokio::fs::write(&tmp_path, &data)
-        .await
-        .map_err(|e| e.to_string())?;
-    tokio::fs::rename(&tmp_path, &config_path)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut data = read_profiles(&app).await?;
+    let profile = data
+        .active_mut()
+        .ok_or_else(|| "no active profile; configure repository first".to_string())?;
+    profile.schedule = Some(config.clone());
+    write_profiles(&app, &data).await?;
 
     if config.enabled {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -343,33 +324,90 @@ fn history_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 #[tauri::command]
 pub async fn load_repo_config(app: tauri::AppHandle) -> Result<Option<RepoConfig>, String> {
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let config_path = config_dir.join("repo.json");
-    match tokio::fs::read_to_string(&config_path).await {
-        Ok(data) => {
-            let config: RepoConfig = serde_json::from_str(&data).map_err(|e| e.to_string())?;
-            Ok(Some(config))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    let data = read_profiles(&app).await?;
+    Ok(data.active().map(|p| p.repo.clone()))
 }
 
 #[tauri::command]
 pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result<(), String> {
     repo.validate().map_err(|e| e.to_string())?;
-    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    tokio::fs::create_dir_all(&config_dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    let config_path = config_dir.join("repo.json");
-    let tmp_path = config_dir.join("repo.json.tmp");
-    let data = serde_json::to_string_pretty(&repo).map_err(|e| e.to_string())?;
-    tokio::fs::write(&tmp_path, &data)
-        .await
-        .map_err(|e| e.to_string())?;
-    tokio::fs::rename(&tmp_path, &config_path)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let mut data = read_profiles(&app).await?;
+    if let Some(profile) = data.active_mut() {
+        profile.repo = repo;
+    } else {
+        let profile = Profile {
+            id: "default".into(),
+            name: "Default".into(),
+            repo,
+            schedule: None,
+            retention: None,
+        };
+        data.active_id = Some(profile.id.clone());
+        data.profiles.push(profile);
+    }
+    write_profiles(&app, &data).await
+}
+
+#[tauri::command]
+pub async fn list_profiles(app: tauri::AppHandle) -> Result<ProfilesData, String> {
+    read_profiles(&app).await
+}
+
+#[tauri::command]
+pub async fn set_active_profile(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let mut data = read_profiles(&app).await?;
+    data.set_active(&id)?;
+    write_profiles(&app, &data).await
+}
+
+#[tauri::command]
+pub async fn create_profile(
+    app: tauri::AppHandle,
+    name: String,
+    repo: RepoConfig,
+) -> Result<Profile, String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("profile name cannot be empty".into());
+    }
+
+    let mut data = read_profiles(&app).await?;
+    let id = profiles::make_profile_id(&name, &data);
+    let profile = Profile {
+        id: id.clone(),
+        name,
+        repo,
+        schedule: None,
+        retention: None,
+    };
+    data.profiles.push(profile.clone());
+    if data.active_id.is_none() {
+        data.active_id = Some(id);
+    }
+    write_profiles(&app, &data).await?;
+    Ok(profile)
+}
+
+#[tauri::command]
+pub async fn rename_profile(app: tauri::AppHandle, id: String, name: String) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("profile name cannot be empty".into());
+    }
+    let mut data = read_profiles(&app).await?;
+    let profile = data
+        .profiles
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("profile not found: {}", id))?;
+    profile.name = name;
+    write_profiles(&app, &data).await
+}
+
+#[tauri::command]
+pub async fn delete_profile(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let mut data = read_profiles(&app).await?;
+    data.remove(&id)?;
+    write_profiles(&app, &data).await
 }
