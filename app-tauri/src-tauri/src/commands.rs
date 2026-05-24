@@ -4,6 +4,8 @@ use borg_core::borg::{ArchiveInfo, BorgClient};
 use borg_core::config::RepoConfig;
 use tauri::{Emitter, Manager, State};
 
+use crate::history::{self, BackupEvent};
+
 pub struct AppState {
     pub borg: BorgClient,
 }
@@ -265,6 +267,29 @@ pub async fn save_schedule_config(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn record_backup_event(app: tauri::AppHandle, event: BackupEvent) -> Result<(), String> {
+    let path = history_path(&app)?;
+    history::append(&path, event).await
+}
+
+#[tauri::command]
+pub async fn load_backup_history(app: tauri::AppHandle) -> Result<Vec<BackupEvent>, String> {
+    let path = history_path(&app)?;
+    history::load(&path).await
+}
+
+#[tauri::command]
+pub async fn clear_backup_history(app: tauri::AppHandle) -> Result<(), String> {
+    let path = history_path(&app)?;
+    history::clear(&path).await
+}
+
+fn history_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("history.json"))
 }
 
 #[tauri::command]
