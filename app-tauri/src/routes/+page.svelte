@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { repoState } from '$lib/stores/repo.svelte';
+  import { historyState, type BackupEvent } from '$lib/stores/history.svelte';
 
   let borgVersion = $state('checking...');
   let borgError = $state('');
@@ -12,6 +13,42 @@
       : ''
   );
   let connected = $derived(repoState.connected);
+  let events = $derived(historyState.events);
+  let lastBackup = $derived(
+    [...events]
+      .reverse()
+      .find((e) => e.kind === 'backup' && e.outcome === 'success')
+  );
+  let recent = $derived([...events].slice(-10).reverse());
+
+  function formatRelative(iso: string): string {
+    const diffMs = Date.now() - new Date(iso).getTime();
+    const sec = Math.round(diffMs / 1000);
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.round(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.round(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const day = Math.round(hr / 24);
+    return `${day}d ago`;
+  }
+
+  function formatDuration(sec: number): string {
+    if (sec < 60) return `${sec}s`;
+    const min = Math.floor(sec / 60);
+    const remSec = sec % 60;
+    if (min < 60) return remSec === 0 ? `${min}m` : `${min}m ${remSec}s`;
+    const hr = Math.floor(min / 60);
+    const remMin = min % 60;
+    return remMin === 0 ? `${hr}h` : `${hr}h ${remMin}m`;
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+  }
 
   onMount(async () => {
     try {
@@ -19,6 +56,11 @@
     } catch (e) {
       borgError = `borg not found: ${e}`;
       borgVersion = 'not available';
+    }
+    try {
+      await historyState.load();
+    } catch (e) {
+      console.warn('Failed to load history:', e);
     }
   });
 </script>
@@ -42,7 +84,16 @@
 
     <div class="status-card">
       <div class="card-label">Last Backup</div>
-      <div class="card-value dimmed">No backups yet</div>
+      {#if lastBackup}
+        <div class="card-value">{formatRelative(lastBackup.timestamp)}</div>
+        <div class="card-detail">
+          {lastBackup.file_count?.toLocaleString() ?? '—'} files
+          {#if lastBackup.original_size}· {formatBytes(lastBackup.original_size)}{/if}
+          · {formatDuration(lastBackup.duration_seconds)}
+        </div>
+      {:else}
+        <div class="card-value dimmed">No backups yet</div>
+      {/if}
     </div>
 
     <div class="status-card">
@@ -63,9 +114,35 @@
 
   <section class="recent-section">
     <h2>Recent Activity</h2>
-    <div class="empty-state">
-      <p>No backup activity yet. <a href="/backup">Create your first backup</a> to get started.</p>
-    </div>
+    {#if recent.length === 0}
+      <div class="empty-state">
+        <p>No backup activity yet. <a href="/backup">Create your first backup</a> to get started.</p>
+      </div>
+    {:else}
+      <ul class="event-list">
+        {#each recent as event (event.id)}
+          <li class="event-row" class:failure={event.outcome === 'failure'}>
+            <span class="event-dot" class:success={event.outcome === 'success'} aria-hidden="true"></span>
+            <div class="event-main">
+              <div class="event-title">
+                <span class="event-kind">{event.kind}</span>
+                <code class="event-archive">{event.archive_name}</code>
+              </div>
+              {#if event.outcome === 'failure' && event.error_message}
+                <div class="event-error">{event.error_message}</div>
+              {:else}
+                <div class="event-detail">
+                  {#if event.file_count}{event.file_count.toLocaleString()} files · {/if}
+                  {#if event.original_size}{formatBytes(event.original_size)} · {/if}
+                  {formatDuration(event.duration_seconds)}
+                </div>
+              {/if}
+            </div>
+            <time class="event-time" datetime={event.timestamp}>{formatRelative(event.timestamp)}</time>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   </section>
 </div>
 
@@ -163,5 +240,93 @@
     padding: var(--space-8);
     text-align: center;
     color: var(--color-text-muted);
+  }
+
+  .card-detail {
+    font-size: var(--text-xs);
+    color: var(--color-text-dim);
+    margin-top: var(--space-1);
+  }
+
+  .event-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .event-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+  }
+
+  .event-dot {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-danger);
+    margin-top: 6px;
+  }
+
+  .event-dot.success {
+    background: var(--color-success);
+  }
+
+  .event-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .event-title {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+  }
+
+  .event-kind {
+    text-transform: uppercase;
+    font-size: var(--text-xs);
+    letter-spacing: 0.06em;
+    color: var(--color-text-dim);
+    font-weight: 600;
+  }
+
+  .event-archive {
+    font-family: var(--font-mono);
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .event-detail {
+    font-size: var(--text-xs);
+    color: var(--color-text-dim);
+    margin-top: 2px;
+  }
+
+  .event-error {
+    font-size: var(--text-xs);
+    color: var(--color-danger);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .event-time {
+    flex-shrink: 0;
+    font-size: var(--text-xs);
+    color: var(--color-text-dim);
+    margin-top: 2px;
   }
 </style>

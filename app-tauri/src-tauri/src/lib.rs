@@ -1,4 +1,5 @@
 mod commands;
+mod history;
 mod tray;
 
 use borg_core::borg::BorgClient;
@@ -55,6 +56,9 @@ pub fn run() {
             commands::save_repo_config,
             commands::load_schedule_config,
             commands::save_schedule_config,
+            commands::record_backup_event,
+            commands::load_backup_history,
+            commands::clear_backup_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
