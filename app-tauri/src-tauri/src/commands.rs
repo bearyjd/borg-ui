@@ -5,6 +5,11 @@ use borg_core::config::RepoConfig;
 use tauri::{Emitter, Manager, State};
 
 use crate::history::{self, BackupEvent};
+use crate::keychain;
+
+fn lookup_passphrase(repo: &RepoConfig) -> Option<String> {
+    keychain::get_passphrase(&repo.ssh_url()).ok().flatten()
+}
 
 pub struct AppState {
     pub borg: BorgClient,
@@ -34,7 +39,12 @@ pub async fn get_repo_info(
     repo: RepoConfig,
 ) -> Result<serde_json::Value, String> {
     repo.validate().map_err(|e| e.to_string())?;
-    state.borg.info(&repo).await.map_err(|e| e.to_string())
+    let pass = lookup_passphrase(&repo);
+    state
+        .borg
+        .info(&repo, pass.as_deref())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -43,9 +53,10 @@ pub async fn list_archives(
     repo: RepoConfig,
 ) -> Result<Vec<ArchiveInfo>, String> {
     repo.validate().map_err(|e| e.to_string())?;
+    let pass = lookup_passphrase(&repo);
     state
         .borg
-        .list_archives(&repo)
+        .list_archives(&repo, pass.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -98,9 +109,10 @@ pub async fn prune_repo(
 ) -> Result<(), String> {
     repo.validate().map_err(|e| e.to_string())?;
     retention.validate().map_err(|e| e.to_string())?;
+    let pass = lookup_passphrase(&repo);
     state
         .borg
-        .prune(&repo, &retention)
+        .prune(&repo, &retention, pass.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -126,7 +138,13 @@ pub async fn init_repo(
         .borg
         .init_repo(&repo, &encryption, passphrase.as_deref())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    if let Some(pass) = passphrase.as_deref() {
+        keychain::set_passphrase(&repo.ssh_url(), pass)?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -137,9 +155,10 @@ pub async fn delete_archive(
 ) -> Result<(), String> {
     repo.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
+    let pass = lookup_passphrase(&repo);
     state
         .borg
-        .delete_archive(&repo, &archive_name)
+        .delete_archive(&repo, &archive_name, pass.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -164,6 +183,8 @@ pub async fn create_backup(
     let raw_paths: Vec<PathBuf> = source_paths.into_iter().map(PathBuf::from).collect();
     let (backup_paths, snapshots) = borg_platform_win::vss::snapshot_sources(&raw_paths).await;
 
+    let pass = lookup_passphrase(&repo);
+
     let profile = borg_core::config::BackupProfile {
         name: "manual".into(),
         source_paths: backup_paths,
@@ -174,7 +195,7 @@ pub async fn create_backup(
 
     let result = state
         .borg
-        .create(&profile, &archive_name, move |event| {
+        .create(&profile, &archive_name, pass.as_deref(), move |event| {
             let _ = app.emit("backup-progress", &event);
         })
         .await
@@ -201,11 +222,18 @@ pub async fn restore_archive(
         return Err(format!("destination does not exist: {}", destination));
     }
 
+    let pass = lookup_passphrase(&repo);
     state
         .borg
-        .extract(&repo, &archive_name, &dest_path, move |event| {
-            let _ = app.emit("restore-progress", &event);
-        })
+        .extract(
+            &repo,
+            &archive_name,
+            &dest_path,
+            pass.as_deref(),
+            move |event| {
+                let _ = app.emit("restore-progress", &event);
+            },
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -267,6 +295,27 @@ pub async fn save_schedule_config(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn set_repo_passphrase(repo: RepoConfig, passphrase: String) -> Result<(), String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    if passphrase.is_empty() {
+        return Err("passphrase cannot be empty".into());
+    }
+    keychain::set_passphrase(&repo.ssh_url(), &passphrase)
+}
+
+#[tauri::command]
+pub async fn clear_repo_passphrase(repo: RepoConfig) -> Result<(), String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    keychain::clear_passphrase(&repo.ssh_url())
+}
+
+#[tauri::command]
+pub async fn has_repo_passphrase(repo: RepoConfig) -> Result<bool, String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    keychain::has_passphrase(&repo.ssh_url())
 }
 
 #[tauri::command]

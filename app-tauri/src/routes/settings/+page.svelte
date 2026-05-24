@@ -24,6 +24,82 @@
   let notificationsEnabled = $state(notificationsState.enabled);
   let notificationsResult = $state('');
 
+  function currentRepoForKeychain(): RepoConfig | null {
+    if (!sshHost || !repoPath || !sshUser) return null;
+    return {
+      ssh_host: sshHost,
+      ssh_port: sshPort,
+      ssh_user: sshUser,
+      repo_path: repoPath,
+      ssh_key_path: sshKeyPath || null,
+    };
+  }
+
+  async function refreshPassphraseStatus() {
+    const repo = currentRepoForKeychain();
+    if (!repo) {
+      hasPassphrase = false;
+      return;
+    }
+    passphraseLoading = true;
+    try {
+      hasPassphrase = await invoke<boolean>('has_repo_passphrase', { repo });
+    } catch {
+      hasPassphrase = false;
+    } finally {
+      passphraseLoading = false;
+    }
+  }
+
+  function openPassphraseModal() {
+    passphraseInput = '';
+    passphraseConfirm = '';
+    passphraseResult = '';
+    passphraseModalOpen = true;
+  }
+
+  async function savePassphrase() {
+    const repo = currentRepoForKeychain();
+    if (!repo) {
+      passphraseResult = 'Configure SSH connection first.';
+      return;
+    }
+    if (!passphraseInput) {
+      passphraseResult = 'Passphrase cannot be empty.';
+      return;
+    }
+    if (passphraseInput !== passphraseConfirm) {
+      passphraseResult = 'Passphrases do not match.';
+      return;
+    }
+    passphraseSaving = true;
+    try {
+      await invoke('set_repo_passphrase', { repo, passphrase: passphraseInput });
+      hasPassphrase = true;
+      passphraseModalOpen = false;
+      passphraseInput = '';
+      passphraseConfirm = '';
+      passphraseResult = 'Passphrase saved to system keychain.';
+    } catch (e) {
+      passphraseResult = `Failed to save passphrase: ${e}`;
+    } finally {
+      passphraseSaving = false;
+    }
+  }
+
+  async function clearPassphrase() {
+    const repo = currentRepoForKeychain();
+    if (!repo) return;
+    if (!confirm('Remove the passphrase from the system keychain? Backups will fail until you set it again.')) return;
+    try {
+      await invoke('clear_repo_passphrase', { repo });
+      hasPassphrase = false;
+      passphraseResult = 'Passphrase removed from keychain.';
+    } catch (e) {
+      passphraseResult = `Failed to clear passphrase: ${e}`;
+    }
+  }
+
   async function toggleNotifications(value: boolean) {
     notificationsResult = '';
     try {
@@ -66,6 +142,14 @@
   let retentionSaving = $state(false);
   let retentionPruning = $state(false);
   let retentionResult = $state('');
+
+  let hasPassphrase = $state(false);
+  let passphraseLoading = $state(false);
+  let passphraseModalOpen = $state(false);
+  let passphraseInput = $state('');
+  let passphraseConfirm = $state('');
+  let passphraseSaving = $state(false);
+  let passphraseResult = $state('');
 
   let initEncryption = $state<'repokey' | 'keyfile' | 'repokey-blake2' | 'keyfile-blake2' | 'authenticated' | 'authenticated-blake2' | 'none'>('repokey-blake2');
   let initPassphrase = $state('');
@@ -157,6 +241,7 @@
       initResult = 'Repository initialized successfully.';
       initPassphrase = '';
       initPassphraseConfirm = '';
+      await refreshPassphraseStatus();
     } catch (e) {
       initResult = `Init failed: ${e}`;
     } finally {
@@ -195,6 +280,8 @@
     } catch {
       // No retention config yet
     }
+
+    await refreshPassphraseStatus();
   });
 
   function currentRetention(): RetentionConfig {
@@ -372,6 +459,43 @@
     </fieldset>
   </form>
 
+  <form class="settings-form" onsubmit={(e) => e.preventDefault()}>
+    <fieldset class="form-group">
+      <legend>Repository Passphrase</legend>
+      <p class="hint">Stored in your OS keychain (Windows Credential Manager, macOS Keychain, or Secret Service). Used automatically for borg commands that need it.</p>
+
+      <div class="passphrase-status">
+        <span class="status-dot" class:set={hasPassphrase}></span>
+        <span>
+          {#if passphraseLoading}
+            Checking…
+          {:else if hasPassphrase}
+            Passphrase is set for this repository
+          {:else}
+            No passphrase stored
+          {/if}
+        </span>
+      </div>
+
+      <div class="form-actions">
+        <button type="button" class="btn btn-primary" onclick={openPassphraseModal} disabled={!sshHost || !repoPath}>
+          {hasPassphrase ? 'Change passphrase' : 'Set passphrase'}
+        </button>
+        {#if hasPassphrase}
+          <button type="button" class="btn btn-secondary" onclick={clearPassphrase}>
+            Clear
+          </button>
+        {/if}
+      </div>
+
+      {#if passphraseResult && !passphraseModalOpen}
+        <div class="test-result" class:success={passphraseResult.includes('saved') || passphraseResult.includes('removed')} class:error={passphraseResult.includes('Failed') || passphraseResult.includes('first') || passphraseResult.includes('match') || passphraseResult.includes('empty')}>
+          {passphraseResult}
+        </div>
+      {/if}
+    </fieldset>
+  </form>
+
   <form class="settings-form" onsubmit={(e) => { e.preventDefault(); saveRetention(); }}>
     <fieldset class="form-group">
       <legend>Retention Policy</legend>
@@ -543,6 +667,42 @@
       {/if}
     </fieldset>
   </form>
+
+  {#if passphraseModalOpen}
+    <div class="modal-backdrop" onclick={() => (passphraseModalOpen = false)} role="presentation">
+      <div
+        class="modal"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={() => {}}
+        role="dialog"
+        tabindex="-1"
+        aria-modal="true"
+        aria-labelledby="passphrase-title"
+      >
+        <h2 id="passphrase-title">{hasPassphrase ? 'Change passphrase' : 'Set passphrase'}</h2>
+        <p>Enter the passphrase used to encrypt this borg repository. It will be stored in your OS keychain.</p>
+        <form onsubmit={(e) => { e.preventDefault(); savePassphrase(); }}>
+          <div class="field">
+            <label for="pass-input">Passphrase</label>
+            <input id="pass-input" type="password" autocomplete="new-password" bind:value={passphraseInput} />
+          </div>
+          <div class="field">
+            <label for="pass-confirm">Confirm</label>
+            <input id="pass-confirm" type="password" autocomplete="new-password" bind:value={passphraseConfirm} />
+          </div>
+          {#if passphraseResult}
+            <div class="test-result error">{passphraseResult}</div>
+          {/if}
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" onclick={() => (passphraseModalOpen = false)}>Cancel</button>
+            <button type="submit" class="btn btn-primary" disabled={passphraseSaving}>
+              {passphraseSaving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -864,5 +1024,66 @@
   .preset-chip:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .passphrase-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+    margin-top: var(--space-3);
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-text-dim);
+  }
+
+  .status-dot.set {
+    background: var(--color-success);
+  }
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: oklch(0% 0 0 / 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+
+  .modal {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-6);
+    max-width: 440px;
+    width: 90%;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .modal h2 {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .modal p {
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    margin-top: var(--space-4);
   }
 </style>
