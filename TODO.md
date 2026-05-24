@@ -20,7 +20,7 @@ These turn BorgUI from a foreground tool into a daemon-like backup app users act
 - [x] **Desktop notifications** — success/failure toast notifications, configurable in settings
 - [x] **Exclude patterns UI** — backend already supports excludes; add UI on backup + schedule forms with custom + preset patterns (`*.tmp`, `node_modules`, `.git`)
 - [x] **Backup history / event log** — persist event log, display on dashboard with timestamps and outcomes
-- [ ] **Multiple profiles** — profile concept (named bundle of repo + sources + excludes + schedule), profile selector in nav
+- [x] **Multiple profiles** — profile concept (named bundle of repo + schedule + retention), profile selector in nav, profile CRUD in settings, one-time migration from legacy single-config files
 
 ## Phase 3 — Polish (medium/low-value gaps)
 
