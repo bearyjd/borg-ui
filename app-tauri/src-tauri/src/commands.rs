@@ -409,6 +409,44 @@ pub async fn rename_profile(app: tauri::AppHandle, id: String, name: String) -> 
 }
 
 #[tauri::command]
+pub async fn export_profile(app: tauri::AppHandle, id: String, path: String) -> Result<(), String> {
+    let data = read_profiles(&app).await?;
+    let profile = data
+        .profiles
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("profile not found: {}", id))?;
+    let json = serde_json::to_string_pretty(profile).map_err(|e| e.to_string())?;
+    tokio::fs::write(&path, json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn import_profile(app: tauri::AppHandle, path: String) -> Result<Profile, String> {
+    let json = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut imported: Profile =
+        serde_json::from_str(&json).map_err(|e| format!("invalid profile JSON: {}", e))?;
+    imported.repo.validate().map_err(|e| e.to_string())?;
+    let name = imported.name.trim().to_string();
+    if name.is_empty() {
+        return Err("imported profile has empty name".into());
+    }
+    imported.name = name;
+
+    let mut data = read_profiles(&app).await?;
+    imported.id = profiles::make_profile_id(&imported.name, &data);
+    data.profiles.push(imported.clone());
+    if data.active_id.is_none() {
+        data.active_id = Some(imported.id.clone());
+    }
+    write_profiles(&app, &data).await?;
+    Ok(imported)
+}
+
+#[tauri::command]
 pub async fn set_profile_template(
     app: tauri::AppHandle,
     id: String,
