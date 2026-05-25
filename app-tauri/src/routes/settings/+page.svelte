@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { open } from '@tauri-apps/plugin-dialog';
+  import { open, save as saveDialog } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
   import { scheduleState, type ScheduleConfig } from '$lib/stores/schedule.svelte';
@@ -87,6 +87,43 @@
       profileResult = `Renamed to "${newName}"`;
     } catch (e) {
       profileResult = `Failed: ${e}`;
+    }
+  }
+
+  async function exportActive() {
+    const id = profilesState.activeId;
+    if (!id) return;
+    const profile = profilesState.active;
+    const suggestedName = `${profile?.id ?? 'profile'}.borgui.json`;
+    try {
+      const path = await saveDialog({
+        title: 'Export profile',
+        defaultPath: suggestedName,
+        filters: [{ name: 'BorgUI profile', extensions: ['json'] }],
+      });
+      if (!path) return;
+      await invoke('export_profile', { id, path });
+      profileResult = `Exported to ${path}`;
+    } catch (e) {
+      profileResult = `Export failed: ${e}`;
+    }
+  }
+
+  async function importProfile() {
+    try {
+      const path = await open({
+        title: 'Import profile',
+        multiple: false,
+        filters: [{ name: 'BorgUI profile', extensions: ['json'] }],
+      });
+      if (!path) return;
+      const imported = await invoke<{ id: string; name: string }>('import_profile', { path });
+      await profilesState.load();
+      await profilesState.setActive(imported.id);
+      await repoState.load();
+      profileResult = `Imported profile "${imported.name}"`;
+    } catch (e) {
+      profileResult = `Import failed: ${e}`;
     }
   }
 
@@ -512,6 +549,7 @@
           <code>{profilesState.active.name}</code>
           <div class="profile-actions">
             <button type="button" class="btn btn-secondary" onclick={renameActive}>Rename</button>
+            <button type="button" class="btn btn-secondary" onclick={exportActive}>Export</button>
             <button type="button" class="btn btn-secondary" onclick={deleteActive} disabled={profilesState.profiles.length <= 1}>Delete</button>
           </div>
         </div>
@@ -522,11 +560,12 @@
         <div class="inline-row">
           <input id="new-profile-name" type="text" bind:value={newProfileName} placeholder="e.g. Work laptop" />
           <button type="submit" class="btn btn-primary">+ Add</button>
+          <button type="button" class="btn btn-secondary" onclick={importProfile}>Import…</button>
         </div>
       </div>
 
       {#if profileResult}
-        <div class="test-result" class:success={profileResult.includes('Created') || profileResult.includes('Renamed') || profileResult.includes('deleted')} class:error={profileResult.includes('Failed') || profileResult.includes('required') || profileResult.includes('Cannot')}>
+        <div class="test-result" class:success={profileResult.includes('Created') || profileResult.includes('Renamed') || profileResult.includes('deleted') || profileResult.includes('Exported') || profileResult.includes('Imported')} class:error={profileResult.includes('failed') || profileResult.includes('Failed') || profileResult.includes('required') || profileResult.includes('Cannot')}>
           {profileResult}
         </div>
       {/if}

@@ -72,6 +72,8 @@ pub fn run() {
             commands::delete_profile,
             commands::set_profile_template,
             commands::preview_archive_name,
+            commands::export_profile,
+            commands::import_profile,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
