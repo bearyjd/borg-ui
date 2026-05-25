@@ -32,7 +32,7 @@ Feature parity with Vorta where it pays off.
 - [x] **Custom archive naming templates** — per-profile template with `{date}`/`{time}`/`{datetime}`/`{hostname}`/`{profile}`/`{random}` variables, live preview in settings, applied by backup page via `preview_archive_name` command
 - [ ] **Autostart at login** — Windows registry entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 - [ ] **Repository compaction** — `borg compact` button on archives page (requires borg 1.2+)
-- [ ] **Profile import/export** — JSON export/import for portable config
+- [x] **Profile import/export** — JSON export via save dialog, import via open dialog, ID collisions auto-resolved on import. Passphrase intentionally excluded (lives in keychain)
 
 ## Not pursuing
 
