@@ -23,6 +23,38 @@
   let newProfileName = $state('');
   let profileResult = $state('');
 
+  let archiveTemplate = $state('');
+  let archivePreview = $state('');
+  let archiveTemplateResult = $state('');
+  let archiveTemplateSaving = $state(false);
+
+  async function refreshArchivePreview() {
+    try {
+      archivePreview = await invoke<string>('preview_archive_name', { template: archiveTemplate });
+    } catch (e) {
+      archivePreview = `(${e})`;
+    }
+  }
+
+  async function saveArchiveTemplate() {
+    const id = profilesState.activeId;
+    if (!id) {
+      archiveTemplateResult = 'No active profile';
+      return;
+    }
+    archiveTemplateSaving = true;
+    try {
+      const template = archiveTemplate.trim();
+      await invoke('set_profile_template', { id, template: template || null });
+      await profilesState.load();
+      archiveTemplateResult = template ? 'Template saved' : 'Template reset to default';
+    } catch (e) {
+      archiveTemplateResult = `Failed: ${e}`;
+    } finally {
+      archiveTemplateSaving = false;
+    }
+  }
+
   async function addProfile() {
     const name = newProfileName.trim();
     if (!name) {
@@ -380,7 +412,14 @@
       keepYearly = null;
     }
 
+    archiveTemplate = profilesState.active?.archive_template ?? '';
+    refreshArchivePreview();
     refreshPassphraseStatus();
+  });
+
+  $effect(() => {
+    void archiveTemplate;
+    refreshArchivePreview();
   });
 
   function currentRetention(): RetentionConfig {
@@ -493,6 +532,37 @@
       {/if}
     </fieldset>
   </form>
+
+  {#if profilesState.active}
+    <form class="settings-form" onsubmit={(e) => { e.preventDefault(); saveArchiveTemplate(); }}>
+      <fieldset class="form-group">
+        <legend>Archive Naming</legend>
+        <p class="hint">Template for new archive names. Variables: <code>{'{date}'}</code>, <code>{'{time}'}</code>, <code>{'{datetime}'}</code>, <code>{'{hostname}'}</code>, <code>{'{profile}'}</code>, <code>{'{random}'}</code>. Leave blank to use the default <code>{'{datetime}-{random}'}</code>.</p>
+
+        <div class="field">
+          <label for="archive-template">Template</label>
+          <input id="archive-template" type="text" bind:value={archiveTemplate} placeholder="{'{datetime}-{random}'}" />
+        </div>
+
+        <div class="field">
+          <span class="field-label">Preview</span>
+          <code class="preview-box">{archivePreview || '...'}</code>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" disabled={archiveTemplateSaving}>
+            {archiveTemplateSaving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+
+        {#if archiveTemplateResult}
+          <div class="test-result" class:success={archiveTemplateResult.includes('saved') || archiveTemplateResult.includes('reset')} class:error={archiveTemplateResult.includes('Failed') || archiveTemplateResult.includes('No active')}>
+            {archiveTemplateResult}
+          </div>
+        {/if}
+      </fieldset>
+    </form>
+  {/if}
 
   <form class="settings-form" onsubmit={(e) => { e.preventDefault(); save(); }}>
     <fieldset class="form-group">
@@ -916,6 +986,18 @@
 
   .inline-row input {
     flex: 1;
+  }
+
+  .preview-box {
+    display: block;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--color-accent);
+    word-break: break-all;
   }
 
   .settings-form + .settings-form {

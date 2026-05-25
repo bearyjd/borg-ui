@@ -13,6 +13,8 @@ pub struct Profile {
     pub schedule: Option<ScheduleConfig>,
     #[serde(default)]
     pub retention: Option<RetentionConfig>,
+    #[serde(default)]
+    pub archive_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -98,6 +100,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         repo,
         schedule,
         retention,
+        archive_template: None,
     };
 
     Ok(ProfilesData {
@@ -162,6 +165,7 @@ mod tests {
             repo: sample_repo(),
             schedule: None,
             retention: None,
+            archive_template: None,
         }
     }
 
