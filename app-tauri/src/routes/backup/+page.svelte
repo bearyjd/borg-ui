@@ -5,6 +5,7 @@
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
+  import { profilesState } from '$lib/stores/profiles.svelte';
 
   interface ArchiveProgress {
     type: 'archive_progress';
@@ -122,9 +123,8 @@
         }
       });
 
-      const ts = new Date().toISOString().replace(/[:.]/g, '-');
-      const suffix = Math.random().toString(36).slice(2, 6);
-      archiveName = `backup-${ts}-${suffix}`;
+      const template = profilesState.active?.archive_template ?? '';
+      archiveName = await invoke<string>('preview_archive_name', { template });
       await invoke('create_backup', {
         repo,
         sourcePaths,
