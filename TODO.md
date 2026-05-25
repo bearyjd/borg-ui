@@ -29,7 +29,7 @@ Feature parity with Vorta where it pays off.
 - [ ] **Archive browsing (tree view)** — `borg list <archive>` with tree UI, selective restore checkboxes
 - [ ] **Archive diff** — `borg diff` between two selected archives, tree view of changes
 - [ ] **Pre/post backup commands** — run shell commands before/after backup with `$repo_url`, `$archive_name` substitution
-- [ ] **Custom archive naming templates** — `{hostname}-{date}` style templates, replace auto-generated names
+- [x] **Custom archive naming templates** — per-profile template with `{date}`/`{time}`/`{datetime}`/`{hostname}`/`{profile}`/`{random}` variables, live preview in settings, applied by backup page via `preview_archive_name` command
 - [ ] **Autostart at login** — Windows registry entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 - [ ] **Repository compaction** — `borg compact` button on archives page (requires borg 1.2+)
 - [ ] **Profile import/export** — JSON export/import for portable config

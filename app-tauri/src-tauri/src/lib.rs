@@ -1,3 +1,4 @@
+mod archive_naming;
 mod commands;
 mod history;
 mod keychain;
@@ -69,6 +70,8 @@ pub fn run() {
             commands::create_profile,
             commands::rename_profile,
             commands::delete_profile,
+            commands::set_profile_template,
+            commands::preview_archive_name,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
