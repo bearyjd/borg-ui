@@ -9,6 +9,7 @@ export interface Profile {
   repo: RepoConfig;
   schedule: ScheduleConfig | null;
   retention: RetentionConfig | null;
+  archive_template: string | null;
 }
 
 export interface ProfilesData {

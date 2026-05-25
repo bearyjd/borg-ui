@@ -4,6 +4,7 @@ use borg_core::borg::{ArchiveInfo, BorgClient};
 use borg_core::config::RepoConfig;
 use tauri::{Emitter, Manager, State};
 
+use crate::archive_naming::{self, TemplateContext};
 use crate::history::{self, BackupEvent};
 use crate::keychain;
 use crate::profiles::{self, Profile, ProfilesData};
@@ -341,6 +342,7 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
             repo,
             schedule: None,
             retention: None,
+            archive_template: None,
         };
         data.active_id = Some(profile.id.clone());
         data.profiles.push(profile);
@@ -380,6 +382,7 @@ pub async fn create_profile(
         repo,
         schedule: None,
         retention: None,
+        archive_template: None,
     };
     data.profiles.push(profile.clone());
     if data.active_id.is_none() {
@@ -403,6 +406,55 @@ pub async fn rename_profile(app: tauri::AppHandle, id: String, name: String) -> 
         .ok_or_else(|| format!("profile not found: {}", id))?;
     profile.name = name;
     write_profiles(&app, &data).await
+}
+
+#[tauri::command]
+pub async fn set_profile_template(
+    app: tauri::AppHandle,
+    id: String,
+    template: Option<String>,
+) -> Result<(), String> {
+    let template = template.and_then(|t| {
+        let trimmed = t.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    let mut data = read_profiles(&app).await?;
+    let profile = data
+        .profiles
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("profile not found: {}", id))?;
+    profile.archive_template = template;
+    write_profiles(&app, &data).await
+}
+
+#[tauri::command]
+pub async fn preview_archive_name(
+    app: tauri::AppHandle,
+    template: String,
+) -> Result<String, String> {
+    let template = if template.trim().is_empty() {
+        archive_naming::DEFAULT_TEMPLATE.to_string()
+    } else {
+        template
+    };
+    let data = read_profiles(&app).await?;
+    let profile_name = data.active().map(|p| p.name.as_str()).unwrap_or("default");
+    let hostname = archive_naming::current_hostname();
+    let random = archive_naming::random_suffix();
+    let ctx = TemplateContext {
+        now: chrono::Utc::now(),
+        hostname: &hostname,
+        profile: profile_name,
+        random: &random,
+    };
+    let expanded = archive_naming::expand(&template, &ctx);
+    borg_core::config::validate_archive_name(&expanded).map_err(|e| e.to_string())?;
+    Ok(expanded)
 }
 
 #[tauri::command]
