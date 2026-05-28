@@ -5,6 +5,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, warn};
 
+use crate::archive::ArchiveEntry;
 use crate::config::{BackupProfile, RepoConfig};
 use crate::error::{BorgError, Result};
 use crate::progress::ProgressEvent;
@@ -79,6 +80,7 @@ impl BorgClient {
         &self,
         profile: &BackupProfile,
         archive_name: &str,
+        cwd: Option<&Path>,
         passphrase: Option<&str>,
         on_progress: impl Fn(ProgressEvent) + Send + 'static,
     ) -> Result<()> {
@@ -98,6 +100,10 @@ impl BorgClient {
         cmd.arg(&archive);
         for path in &profile.source_paths {
             cmd.arg(path);
+        }
+
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
         }
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -146,6 +152,7 @@ impl BorgClient {
         repo: &RepoConfig,
         archive_name: &str,
         destination: &Path,
+        paths: &[String],
         passphrase: Option<&str>,
         on_progress: impl Fn(ProgressEvent) + Send + 'static,
     ) -> Result<()> {
@@ -154,6 +161,9 @@ impl BorgClient {
         let mut cmd = self.base_command_with(passphrase);
         cmd.args(["extract", "--progress", "--log-json"]);
         cmd.arg(&archive);
+        for path in paths {
+            cmd.arg(path);
+        }
         cmd.current_dir(destination);
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -325,6 +335,36 @@ impl BorgClient {
         };
 
         Ok(archives)
+    }
+
+    pub async fn list_contents(
+        &self,
+        repo: &RepoConfig,
+        archive_name: &str,
+        passphrase: Option<&str>,
+    ) -> Result<Vec<ArchiveEntry>> {
+        let archive = format!("{}::{}", repo.ssh_url(), archive_name);
+
+        let output = self
+            .base_command_with(passphrase)
+            .args(["list", "--json-lines", &archive])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            return Err(BorgError::ProcessFailed {
+                message: "borg list (contents) failed".into(),
+                exit_code: output.status.code(),
+                stderr: String::from_utf8_lossy(&output.stderr).into(),
+            });
+        }
+
+        let entries = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<ArchiveEntry>(line).ok())
+            .collect();
+
+        Ok(entries)
     }
 }
 

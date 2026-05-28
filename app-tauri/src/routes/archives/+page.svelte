@@ -6,6 +6,7 @@
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
+  import ArchiveBrowser from '$lib/components/ArchiveBrowser.svelte';
 
   interface Archive {
     name: string;
@@ -36,6 +37,7 @@
   let confirmDeleteArchive = $state<string | null>(null);
   let deleteStatus = $state('');
   let cancelBtn = $state<HTMLButtonElement | null>(null);
+  let browsingArchive = $state<string | null>(null);
 
   $effect(() => {
     if (!confirmDeleteArchive) return;
@@ -73,14 +75,16 @@
     if (repoState.config) loadArchives(repoState.config);
   }
 
-  async function restoreArchive(archiveName: string) {
+  async function restoreArchive(archiveName: string, paths?: string[]) {
     if (!repoState.config || restoringArchive) return;
 
     const dest = await open({ directory: true, multiple: false, title: 'Select restore destination' });
     if (!dest) return;
 
     restoringArchive = archiveName;
-    restoreStatus = 'Restoring...';
+    restoreStatus = paths && paths.length > 0
+      ? `Restoring ${paths.length.toLocaleString()} selected items...`
+      : 'Restoring...';
     restoreFile = '';
     restoreFileCount = 0;
 
@@ -101,6 +105,7 @@
         repo: repoState.config,
         archiveName,
         destination: dest as string,
+        paths: paths && paths.length > 0 ? paths : null,
       });
       restoreStatus = `Restored to ${dest}`;
       notificationsState.notify(
@@ -194,6 +199,14 @@
           </div>
           <div class="archive-actions">
             <button
+              class="btn btn-secondary"
+              onclick={() => browsingArchive = archive.name}
+              disabled={!!restoringArchive || !!deletingArchive}
+              title="Browse archive contents"
+            >
+              Browse
+            </button>
+            <button
               class="btn btn-restore"
               onclick={() => restoreArchive(archive.name)}
               disabled={!!restoringArchive || !!deletingArchive}
@@ -236,6 +249,19 @@
         {restoreStatus}
       </div>
     {/if}
+  {/if}
+
+  {#if browsingArchive && repoState.config}
+    <ArchiveBrowser
+      repo={repoState.config}
+      archiveName={browsingArchive}
+      onClose={() => browsingArchive = null}
+      onRestore={(paths) => {
+        const name = browsingArchive!;
+        browsingArchive = null;
+        restoreArchive(name, paths);
+      }}
+    />
   {/if}
 
   {#if confirmDeleteArchive}
@@ -306,7 +332,7 @@
   }
 
   .error-banner {
-    background: oklch(65% 0.2 25 / 0.15);
+    background: var(--color-danger-muted);
     color: var(--color-danger);
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-md);
@@ -386,7 +412,7 @@
 
   .btn-restore:hover:not(:disabled) {
     background: var(--color-accent);
-    color: oklch(14% 0 0);
+    color: var(--color-on-accent);
   }
 
   .archive-actions {
@@ -402,7 +428,7 @@
   }
 
   .btn-delete:hover:not(:disabled) {
-    background: oklch(65% 0.2 25 / 0.12);
+    background: var(--color-danger-muted);
     color: var(--color-danger);
     border-color: var(--color-danger);
   }
@@ -410,7 +436,7 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: oklch(0% 0 0 / 0.5);
+    background: var(--color-backdrop);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -458,12 +484,12 @@
 
   .btn-delete-confirm {
     background: var(--color-danger);
-    color: oklch(14% 0 0);
+    color: var(--color-on-accent);
     border: 1px solid var(--color-danger);
   }
 
   .btn-delete-confirm:hover:not(:disabled) {
-    background: oklch(60% 0.22 25);
+    background: var(--color-danger-hover);
   }
 
   .restore-progress {
@@ -501,13 +527,13 @@
     margin-top: var(--space-4);
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-md);
-    background: oklch(75% 0.15 145 / 0.15);
+    background: var(--color-success-muted);
     color: var(--color-success);
     font-size: var(--text-sm);
   }
 
   .restore-result.error {
-    background: oklch(65% 0.2 25 / 0.15);
+    background: var(--color-danger-muted);
     color: var(--color-danger);
   }
 </style>

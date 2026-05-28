@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use borg_core::archive::ArchiveEntry;
 use borg_core::borg::{ArchiveInfo, BorgClient};
 use borg_core::config::RepoConfig;
 use tauri::{Emitter, Manager, State};
@@ -73,6 +74,22 @@ pub async fn list_archives(
     state
         .borg
         .list_archives(&repo, pass.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn list_archive_contents(
+    state: State<'_, AppState>,
+    repo: RepoConfig,
+    archive_name: String,
+) -> Result<Vec<ArchiveEntry>, String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
+    let pass = lookup_passphrase(&repo);
+    state
+        .borg
+        .list_contents(&repo, &archive_name, pass.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -179,7 +196,11 @@ pub async fn create_backup(
     borg_core::config::validate_exclude_patterns(&excludes).map_err(|e| e.to_string())?;
 
     let raw_paths: Vec<PathBuf> = source_paths.into_iter().map(PathBuf::from).collect();
-    let (backup_paths, snapshots) = borg_platform_win::vss::snapshot_sources(&raw_paths).await;
+    // FIXME: VSS snapshot path is `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\...`,
+    // which borg stores verbatim. The `?` makes the archive un-restorable on Windows.
+    // Tracked in .claude/PRPs/plans/fix-vss-paths-in-archive.plan.md — until then we
+    // back up live files without VSS.
+    let backup_paths = raw_paths;
 
     let pass = lookup_passphrase(&repo);
 
@@ -191,17 +212,19 @@ pub async fn create_backup(
         repo,
     };
 
-    let result = state
+    state
         .borg
-        .create(&profile, &archive_name, pass.as_deref(), move |event| {
-            let _ = app.emit("backup-progress", &event);
-        })
+        .create(
+            &profile,
+            &archive_name,
+            None,
+            pass.as_deref(),
+            move |event| {
+                let _ = app.emit("backup-progress", &event);
+            },
+        )
         .await
-        .map_err(|e| e.to_string());
-
-    borg_platform_win::vss::release_all(snapshots).await;
-
-    result
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -211,6 +234,7 @@ pub async fn restore_archive(
     repo: RepoConfig,
     archive_name: String,
     destination: String,
+    paths: Option<Vec<String>>,
 ) -> Result<(), String> {
     repo.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
@@ -220,6 +244,13 @@ pub async fn restore_archive(
         return Err(format!("destination does not exist: {}", destination));
     }
 
+    let paths = paths.unwrap_or_default();
+    for p in &paths {
+        if p.trim().is_empty() {
+            return Err("restore path cannot be empty".into());
+        }
+    }
+
     let pass = lookup_passphrase(&repo);
     state
         .borg
@@ -227,6 +258,7 @@ pub async fn restore_archive(
             &repo,
             &archive_name,
             &dest_path,
+            &paths,
             pass.as_deref(),
             move |event| {
                 let _ = app.emit("restore-progress", &event);

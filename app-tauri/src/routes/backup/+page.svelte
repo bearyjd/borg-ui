@@ -308,7 +308,7 @@
   }
 
   .warning-banner {
-    background: oklch(78% 0.16 80 / 0.15);
+    background: var(--color-warning-muted);
     color: var(--color-warning);
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-md);
@@ -396,7 +396,7 @@
 
   .btn-primary {
     background: var(--color-accent);
-    color: oklch(14% 0 0);
+    color: var(--color-on-accent);
   }
 
   .btn-primary:hover:not(:disabled) {
@@ -485,12 +485,12 @@
   }
 
   .status-message.error {
-    background: oklch(65% 0.2 25 / 0.15);
+    background: var(--color-danger-muted);
     color: var(--color-danger);
   }
 
   .status-message.success {
-    background: oklch(75% 0.15 145 / 0.15);
+    background: var(--color-success-muted);
     color: var(--color-success);
   }
 
