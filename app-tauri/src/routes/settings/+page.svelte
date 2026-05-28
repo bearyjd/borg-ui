@@ -1111,7 +1111,7 @@
 
   .btn-primary {
     background: var(--color-accent);
-    color: oklch(14% 0 0);
+    color: var(--color-on-accent);
   }
 
   .btn-primary:hover:not(:disabled) {
@@ -1139,12 +1139,12 @@
   }
 
   .test-result.success {
-    background: oklch(72% 0.16 145 / 0.15);
+    background: var(--color-success-muted);
     color: var(--color-success);
   }
 
   .test-result.error {
-    background: oklch(65% 0.2 25 / 0.15);
+    background: var(--color-danger-muted);
     color: var(--color-danger);
   }
 
@@ -1334,7 +1334,7 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: oklch(0% 0 0 / 0.5);
+    background: var(--color-backdrop);
     display: flex;
     align-items: center;
     justify-content: center;

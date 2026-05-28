@@ -6,6 +6,7 @@
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
+  import ArchiveBrowser from '$lib/components/ArchiveBrowser.svelte';
 
   interface Archive {
     name: string;
@@ -36,6 +37,7 @@
   let confirmDeleteArchive = $state<string | null>(null);
   let deleteStatus = $state('');
   let cancelBtn = $state<HTMLButtonElement | null>(null);
+  let browsingArchive = $state<string | null>(null);
 
   $effect(() => {
     if (!confirmDeleteArchive) return;
@@ -73,14 +75,16 @@
     if (repoState.config) loadArchives(repoState.config);
   }
 
-  async function restoreArchive(archiveName: string) {
+  async function restoreArchive(archiveName: string, paths?: string[]) {
     if (!repoState.config || restoringArchive) return;
 
     const dest = await open({ directory: true, multiple: false, title: 'Select restore destination' });
     if (!dest) return;
 
     restoringArchive = archiveName;
-    restoreStatus = 'Restoring...';
+    restoreStatus = paths && paths.length > 0
+      ? `Restoring ${paths.length.toLocaleString()} selected items...`
+      : 'Restoring...';
     restoreFile = '';
     restoreFileCount = 0;
 
@@ -101,21 +105,42 @@
         repo: repoState.config,
         archiveName,
         destination: dest as string,
+        paths: paths && paths.length > 0 ? paths : null,
       });
-      restoreStatus = `Restored to ${dest}`;
-      notificationsState.notify(
-        'Restore complete',
-        `Archive "${archiveName}" restored.`,
-      );
-      historyState.record({
-        id: `${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        kind: 'restore',
-        archive_name: archiveName,
-        outcome: 'success',
-        duration_seconds: Math.round((Date.now() - startMs) / 1000),
-        file_count: restoreFileCount || undefined,
-      }).catch((err) => console.warn('Failed to record history:', err));
+      if (restoreFileCount === 0) {
+        // borg exits 0 with no files extracted when no archive entries match
+        // the supplied PATHs. Surface that explicitly so users aren't told
+        // "restored" when nothing landed on disk.
+        restoreStatus = `Restore exited cleanly but no files were extracted — check that your selection matches paths inside the archive.`;
+        notificationsState.notify(
+          'Restore extracted 0 files',
+          `No archive entries matched the selection for "${archiveName}".`,
+        );
+        historyState.record({
+          id: `${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          kind: 'restore',
+          archive_name: archiveName,
+          outcome: 'failure',
+          duration_seconds: Math.round((Date.now() - startMs) / 1000),
+          error_message: 'borg extract matched 0 files',
+        }).catch((err) => console.warn('Failed to record history:', err));
+      } else {
+        restoreStatus = `Restored ${restoreFileCount.toLocaleString()} files to ${dest}`;
+        notificationsState.notify(
+          'Restore complete',
+          `Archive "${archiveName}" restored (${restoreFileCount.toLocaleString()} files).`,
+        );
+        historyState.record({
+          id: `${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          kind: 'restore',
+          archive_name: archiveName,
+          outcome: 'success',
+          duration_seconds: Math.round((Date.now() - startMs) / 1000),
+          file_count: restoreFileCount,
+        }).catch((err) => console.warn('Failed to record history:', err));
+      }
     } catch (e) {
       restoreStatus = `Restore failed: ${e}`;
       notificationsState.notify('Restore failed', 'See BorgUI for details.');
@@ -194,6 +219,14 @@
           </div>
           <div class="archive-actions">
             <button
+              class="btn btn-secondary"
+              onclick={() => browsingArchive = archive.name}
+              disabled={!!restoringArchive || !!deletingArchive}
+              title="Browse archive contents"
+            >
+              Browse
+            </button>
+            <button
               class="btn btn-restore"
               onclick={() => restoreArchive(archive.name)}
               disabled={!!restoringArchive || !!deletingArchive}
@@ -232,10 +265,27 @@
     {/if}
 
     {#if restoreStatus && !restoringArchive}
-      <div class="restore-result" class:error={restoreStatus.includes('failed')}>
+      <div
+        class="restore-result"
+        class:error={restoreStatus.includes('failed')}
+        class:warning={restoreStatus.includes('no files were extracted')}
+      >
         {restoreStatus}
       </div>
     {/if}
+  {/if}
+
+  {#if browsingArchive && repoState.config}
+    <ArchiveBrowser
+      repo={repoState.config}
+      archiveName={browsingArchive}
+      onClose={() => browsingArchive = null}
+      onRestore={(paths) => {
+        const name = browsingArchive!;
+        browsingArchive = null;
+        restoreArchive(name, paths);
+      }}
+    />
   {/if}
 
   {#if confirmDeleteArchive}
@@ -306,7 +356,7 @@
   }
 
   .error-banner {
-    background: oklch(65% 0.2 25 / 0.15);
+    background: var(--color-danger-muted);
     color: var(--color-danger);
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-md);
@@ -353,64 +403,16 @@
     flex-shrink: 0;
   }
 
-  .btn {
-    padding: var(--space-2) var(--space-4);
-    border-radius: var(--radius-md);
-    font-weight: 500;
-    font-size: var(--text-sm);
-    transition: all var(--duration-fast) var(--ease-out);
-    flex-shrink: 0;
-  }
-
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    background: var(--color-surface-hover);
-    color: var(--color-text-muted);
-    border: 1px solid var(--color-border);
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background: var(--color-surface-active);
-    color: var(--color-text);
-  }
-
-  .btn-restore {
-    background: var(--color-accent-muted);
-    color: var(--color-accent);
-    border: 1px solid transparent;
-  }
-
-  .btn-restore:hover:not(:disabled) {
-    background: var(--color-accent);
-    color: oklch(14% 0 0);
-  }
-
   .archive-actions {
     display: flex;
     gap: var(--space-2);
     flex-shrink: 0;
   }
 
-  .btn-delete {
-    background: transparent;
-    color: var(--color-text-dim);
-    border: 1px solid var(--color-border);
-  }
-
-  .btn-delete:hover:not(:disabled) {
-    background: oklch(65% 0.2 25 / 0.12);
-    color: var(--color-danger);
-    border-color: var(--color-danger);
-  }
-
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: oklch(0% 0 0 / 0.5);
+    background: var(--color-backdrop);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -456,16 +458,6 @@
     gap: var(--space-2);
   }
 
-  .btn-delete-confirm {
-    background: var(--color-danger);
-    color: oklch(14% 0 0);
-    border: 1px solid var(--color-danger);
-  }
-
-  .btn-delete-confirm:hover:not(:disabled) {
-    background: oklch(60% 0.22 25);
-  }
-
   .restore-progress {
     margin-top: var(--space-4);
     background: var(--color-surface);
@@ -501,13 +493,18 @@
     margin-top: var(--space-4);
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-md);
-    background: oklch(75% 0.15 145 / 0.15);
+    background: var(--color-success-muted);
     color: var(--color-success);
     font-size: var(--text-sm);
   }
 
   .restore-result.error {
-    background: oklch(65% 0.2 25 / 0.15);
+    background: var(--color-danger-muted);
     color: var(--color-danger);
+  }
+
+  .restore-result.warning {
+    background: var(--color-warning-muted);
+    color: var(--color-warning);
   }
 </style>
