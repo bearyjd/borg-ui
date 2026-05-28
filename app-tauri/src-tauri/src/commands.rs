@@ -3,6 +3,10 @@ use std::path::PathBuf;
 use borg_core::archive::ArchiveEntry;
 use borg_core::borg::{ArchiveInfo, BorgClient};
 use borg_core::config::RepoConfig;
+
+/// Internal name for one-off backups invoked directly from the Backup page.
+/// Borg ignores this field, but it shows up in tracing logs.
+const MANUAL_PROFILE_NAME: &str = "manual";
 use tauri::{Emitter, Manager, State};
 
 use crate::archive_naming::{self, TemplateContext};
@@ -205,7 +209,7 @@ pub async fn create_backup(
     let pass = lookup_passphrase(&repo);
 
     let profile = borg_core::config::BackupProfile {
-        name: "manual".into(),
+        name: MANUAL_PROFILE_NAME.into(),
         source_paths: backup_paths,
         excludes,
         compression,

@@ -183,7 +183,7 @@
         {checked}
         indeterminate={indeterminate || undefined}
         onchange={() => toggleNode(node)}
-        aria-label={node.path}
+        aria-label={node.name}
       />
       <span class="icon">{node.isDir ? '📁' : '📄'}</span>
       <span class="name" title={node.path}>{node.name}</span>
@@ -362,38 +362,4 @@
     font-size: var(--text-sm);
   }
 
-  .btn {
-    padding: var(--space-2) var(--space-4);
-    border-radius: var(--radius-md);
-    font-weight: 500;
-    font-size: var(--text-sm);
-    transition: all var(--duration-fast) var(--ease-out);
-  }
-
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    background: var(--color-surface-hover);
-    color: var(--color-text-muted);
-    border: 1px solid var(--color-border);
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background: var(--color-surface-active);
-    color: var(--color-text);
-  }
-
-  .btn-restore {
-    background: var(--color-accent-muted);
-    color: var(--color-accent);
-    border: 1px solid transparent;
-  }
-
-  .btn-restore:hover:not(:disabled) {
-    background: var(--color-accent);
-    color: var(--color-on-accent);
-  }
 </style>

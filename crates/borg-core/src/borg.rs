@@ -161,8 +161,11 @@ impl BorgClient {
         let mut cmd = self.base_command_with(passphrase);
         cmd.args(["extract", "--progress", "--log-json"]);
         cmd.arg(&archive);
+        // Borg treats positional PATHs as fnmatch patterns by default. For
+        // literal path-prefix matching (so a file named `whats up?.txt` works),
+        // pass each as a `pp:` pattern.
         for path in paths {
-            cmd.arg(path);
+            cmd.args(["--pattern", &format!("pp:{}", path)]);
         }
         cmd.current_dir(destination);
 
@@ -337,6 +340,10 @@ impl BorgClient {
         Ok(archives)
     }
 
+    // FIXME(perf): collects the full JSON-lines listing into memory before
+    // returning. For a 100k-entry archive that's ~30-50 MB of allocations.
+    // Replace with a streaming variant (line-by-line via tauri emit) once we
+    // hit a user with a very large archive.
     pub async fn list_contents(
         &self,
         repo: &RepoConfig,

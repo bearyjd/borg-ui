@@ -107,20 +107,40 @@
         destination: dest as string,
         paths: paths && paths.length > 0 ? paths : null,
       });
-      restoreStatus = `Restored to ${dest}`;
-      notificationsState.notify(
-        'Restore complete',
-        `Archive "${archiveName}" restored.`,
-      );
-      historyState.record({
-        id: `${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        kind: 'restore',
-        archive_name: archiveName,
-        outcome: 'success',
-        duration_seconds: Math.round((Date.now() - startMs) / 1000),
-        file_count: restoreFileCount || undefined,
-      }).catch((err) => console.warn('Failed to record history:', err));
+      if (restoreFileCount === 0) {
+        // borg exits 0 with no files extracted when no archive entries match
+        // the supplied PATHs. Surface that explicitly so users aren't told
+        // "restored" when nothing landed on disk.
+        restoreStatus = `Restore exited cleanly but no files were extracted — check that your selection matches paths inside the archive.`;
+        notificationsState.notify(
+          'Restore extracted 0 files',
+          `No archive entries matched the selection for "${archiveName}".`,
+        );
+        historyState.record({
+          id: `${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          kind: 'restore',
+          archive_name: archiveName,
+          outcome: 'failure',
+          duration_seconds: Math.round((Date.now() - startMs) / 1000),
+          error_message: 'borg extract matched 0 files',
+        }).catch((err) => console.warn('Failed to record history:', err));
+      } else {
+        restoreStatus = `Restored ${restoreFileCount.toLocaleString()} files to ${dest}`;
+        notificationsState.notify(
+          'Restore complete',
+          `Archive "${archiveName}" restored (${restoreFileCount.toLocaleString()} files).`,
+        );
+        historyState.record({
+          id: `${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          kind: 'restore',
+          archive_name: archiveName,
+          outcome: 'success',
+          duration_seconds: Math.round((Date.now() - startMs) / 1000),
+          file_count: restoreFileCount,
+        }).catch((err) => console.warn('Failed to record history:', err));
+      }
     } catch (e) {
       restoreStatus = `Restore failed: ${e}`;
       notificationsState.notify('Restore failed', 'See BorgUI for details.');
@@ -245,7 +265,11 @@
     {/if}
 
     {#if restoreStatus && !restoringArchive}
-      <div class="restore-result" class:error={restoreStatus.includes('failed')}>
+      <div
+        class="restore-result"
+        class:error={restoreStatus.includes('failed')}
+        class:warning={restoreStatus.includes('no files were extracted')}
+      >
         {restoreStatus}
       </div>
     {/if}
@@ -379,58 +403,10 @@
     flex-shrink: 0;
   }
 
-  .btn {
-    padding: var(--space-2) var(--space-4);
-    border-radius: var(--radius-md);
-    font-weight: 500;
-    font-size: var(--text-sm);
-    transition: all var(--duration-fast) var(--ease-out);
-    flex-shrink: 0;
-  }
-
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .btn-secondary {
-    background: var(--color-surface-hover);
-    color: var(--color-text-muted);
-    border: 1px solid var(--color-border);
-  }
-
-  .btn-secondary:hover:not(:disabled) {
-    background: var(--color-surface-active);
-    color: var(--color-text);
-  }
-
-  .btn-restore {
-    background: var(--color-accent-muted);
-    color: var(--color-accent);
-    border: 1px solid transparent;
-  }
-
-  .btn-restore:hover:not(:disabled) {
-    background: var(--color-accent);
-    color: var(--color-on-accent);
-  }
-
   .archive-actions {
     display: flex;
     gap: var(--space-2);
     flex-shrink: 0;
-  }
-
-  .btn-delete {
-    background: transparent;
-    color: var(--color-text-dim);
-    border: 1px solid var(--color-border);
-  }
-
-  .btn-delete:hover:not(:disabled) {
-    background: var(--color-danger-muted);
-    color: var(--color-danger);
-    border-color: var(--color-danger);
   }
 
   .modal-backdrop {
@@ -482,16 +458,6 @@
     gap: var(--space-2);
   }
 
-  .btn-delete-confirm {
-    background: var(--color-danger);
-    color: var(--color-on-accent);
-    border: 1px solid var(--color-danger);
-  }
-
-  .btn-delete-confirm:hover:not(:disabled) {
-    background: var(--color-danger-hover);
-  }
-
   .restore-progress {
     margin-top: var(--space-4);
     background: var(--color-surface);
@@ -535,5 +501,10 @@
   .restore-result.error {
     background: var(--color-danger-muted);
     color: var(--color-danger);
+  }
+
+  .restore-result.warning {
+    background: var(--color-warning-muted);
+    color: var(--color-warning);
   }
 </style>

@@ -253,4 +253,5 @@ Always include a CTA link to the next step (e.g. "configure your repository").
 
 | Date | Decision | Rationale |
 |---|---|---|
-| 2026-05-28 | Initial DESIGN.md codifies the existing system | After tree-view feature, audit found 19 hardcoded color literals across 4 files. Tokenized them, promoted three button variants to global, and wrote this document as the canon for future work. |
+| 2026-05-28 | Initial DESIGN.md | Codified the existing token system; tokenized 19 inline colors. |
+| 2026-05-28 | Promoted `.btn-*` variants to global | Avoid drift between routes that need the same button shape. |
