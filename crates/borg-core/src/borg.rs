@@ -1,14 +1,102 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::Notify;
 use tracing::{debug, warn};
 
 use crate::archive::ArchiveEntry;
 use crate::config::{BackupProfile, RepoConfig};
 use crate::error::{BorgError, Result};
 use crate::progress::ProgressEvent;
+
+/// Default timeout for short, interactive borg/ssh calls (version, info,
+/// listing archives). Long-running operations (create, extract, prune) are not
+/// time-limited — they rely on [`CancelToken`] instead.
+const QUICK_OP_TIMEOUT_SECS: u64 = 120;
+
+/// Timeout for interactive-but-potentially-large reads (listing the contents of
+/// one archive, which backs the archive browser). Generous, but bounded so a
+/// stalled SSH connection can't freeze the UI forever.
+const LIST_CONTENTS_TIMEOUT_SECS: u64 = 600;
+
+/// Result of a `create` or `extract` run. A borg exit code of `1` means the
+/// operation *succeeded* but emitted warnings (e.g. a file was locked or
+/// unreadable and was skipped) — the archive is still valid and restorable.
+/// Those warning lines are surfaced here so the UI can show them without
+/// treating the whole backup as a failure.
+#[derive(Debug, Default, Clone)]
+pub struct OpOutcome {
+    pub warnings: Vec<String>,
+}
+
+impl OpOutcome {
+    pub fn had_warnings(&self) -> bool {
+        !self.warnings.is_empty()
+    }
+}
+
+/// How borg's process exit code should be interpreted.
+enum ExitClass {
+    /// rc == 0
+    Ok,
+    /// rc == 1 — completed with warnings (still a success for our purposes).
+    Warning,
+    /// rc >= 2 (or signal/unknown) — a real failure.
+    Error,
+}
+
+fn classify_exit(code: Option<i32>) -> ExitClass {
+    match code {
+        Some(0) => ExitClass::Ok,
+        Some(1) => ExitClass::Warning,
+        _ => ExitClass::Error,
+    }
+}
+
+/// Cooperative cancellation handle shared between a caller (e.g. a "Cancel"
+/// button) and a running borg operation. Cancelling kills the borg child
+/// process and the operation resolves to [`BorgError::Cancelled`].
+#[derive(Clone, Default)]
+pub struct CancelToken {
+    flag: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Resolves as soon as the token is cancelled. Safe against the
+    /// notify-before-await race: the flag is re-checked after registering
+    /// interest in the notification.
+    async fn cancelled(&self) {
+        loop {
+            if self.is_cancelled() {
+                return;
+            }
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
 
 pub struct BorgClient {
     binary_path: PathBuf,
@@ -48,8 +136,48 @@ impl BorgClient {
         cmd
     }
 
+    /// Run a command to completion, applying an optional timeout and treating
+    /// borg's warning exit code (1) as success. Real failures (rc >= 2) become
+    /// [`BorgError::ProcessFailed`].
+    async fn run_checked(
+        &self,
+        mut cmd: Command,
+        op: &str,
+        timeout_secs: Option<u64>,
+    ) -> Result<std::process::Output> {
+        let output = match timeout_secs {
+            Some(secs) => tokio::time::timeout(Duration::from_secs(secs), cmd.output())
+                .await
+                .map_err(|_| BorgError::Timeout { seconds: secs })??,
+            None => cmd.output().await?,
+        };
+
+        match classify_exit(output.status.code()) {
+            ExitClass::Ok => Ok(output),
+            ExitClass::Warning => {
+                // rc==1 means borg completed but emitted warnings. These ops
+                // (prune/delete/init/list) don't stream warnings to the caller,
+                // so surface them in the log rather than swallowing them.
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.trim().is_empty() {
+                    warn!("borg {op} completed with warnings: {}", stderr.trim());
+                }
+                Ok(output)
+            }
+            ExitClass::Error => Err(BorgError::ProcessFailed {
+                message: format!("borg {op} failed"),
+                exit_code: output.status.code(),
+                stderr: String::from_utf8_lossy(&output.stderr).into(),
+            }),
+        }
+    }
+
     pub async fn version(&self) -> Result<String> {
-        let output = self.base_command().arg("--version").output().await?;
+        let mut cmd = self.base_command();
+        cmd.arg("--version");
+        let output = self
+            .run_checked(cmd, "version", Some(QUICK_OP_TIMEOUT_SECS))
+            .await?;
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
@@ -59,33 +187,116 @@ impl BorgClient {
         repo: &RepoConfig,
         passphrase: Option<&str>,
     ) -> Result<serde_json::Value> {
+        let mut cmd = self.base_command_with(passphrase);
+        cmd.args(["info", "--json", &repo.location()]);
         let output = self
-            .base_command_with(passphrase)
-            .args(["info", "--json", &repo.ssh_url()])
-            .output()
+            .run_checked(cmd, "info", Some(QUICK_OP_TIMEOUT_SECS))
             .await?;
-
-        if !output.status.success() {
-            return Err(BorgError::ProcessFailed {
-                message: "borg info failed".into(),
-                exit_code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).into(),
-            });
-        }
 
         Ok(serde_json::from_slice(&output.stdout)?)
     }
 
+    /// Spawn borg, stream its `--log-json` progress events to `on_progress`,
+    /// drain stdout so the child can never block on a full pipe, honour
+    /// `cancel`, and interpret the exit code with warning semantics. Shared by
+    /// [`create`](Self::create) and [`extract`](Self::extract).
+    async fn run_streaming(
+        &self,
+        mut cmd: Command,
+        op: &str,
+        cancel: &CancelToken,
+        on_progress: impl Fn(ProgressEvent) + Send + 'static,
+    ) -> Result<OpOutcome> {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let mut child = cmd.spawn()?;
+        let stderr = child.stderr.take().expect("stderr was piped");
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let mut reader = BufReader::new(stderr).lines();
+
+        let stderr_capture: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_clone = stderr_capture.clone();
+        let warn_clone = warnings.clone();
+
+        let reader_task = tokio::spawn(async move {
+            while let Ok(Some(line)) = reader.next_line().await {
+                match serde_json::from_str::<ProgressEvent>(&line) {
+                    Ok(event) => {
+                        if let ProgressEvent::LogMessage { levelname, message } = &event
+                            && matches!(
+                                levelname.to_ascii_uppercase().as_str(),
+                                "WARNING" | "ERROR" | "CRITICAL"
+                            )
+                        {
+                            warn_clone
+                                .lock()
+                                .expect("warn mutex poisoned")
+                                .push(message.clone());
+                        }
+                        on_progress(event);
+                    }
+                    Err(_) => debug!("borg stderr: {}", line),
+                }
+                stderr_clone
+                    .lock()
+                    .expect("stderr mutex poisoned")
+                    .push(line);
+            }
+        });
+
+        // Drain stdout (borg's `--json` summary) so a full pipe can never
+        // deadlock the child. We don't currently use the contents.
+        let stdout_task = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut sink = Vec::new();
+            let mut stdout = stdout;
+            let _ = stdout.read_to_end(&mut sink).await;
+        });
+
+        let status = tokio::select! {
+            res = child.wait() => res?,
+            _ = cancel.cancelled() => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                let _ = reader_task.await;
+                let _ = stdout_task.await;
+                return Err(BorgError::Cancelled);
+            }
+        };
+        let _ = reader_task.await;
+        let _ = stdout_task.await;
+
+        match classify_exit(status.code()) {
+            ExitClass::Ok => Ok(OpOutcome::default()),
+            ExitClass::Warning => Ok(OpOutcome {
+                warnings: warnings.lock().expect("warn mutex poisoned").clone(),
+            }),
+            ExitClass::Error => {
+                let captured = stderr_capture
+                    .lock()
+                    .expect("stderr mutex poisoned")
+                    .join("\n");
+                Err(BorgError::ProcessFailed {
+                    message: format!("borg {op} failed"),
+                    exit_code: status.code(),
+                    stderr: captured,
+                })
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         profile: &BackupProfile,
         archive_name: &str,
         cwd: Option<&Path>,
         passphrase: Option<&str>,
+        cancel: &CancelToken,
         on_progress: impl Fn(ProgressEvent) + Send + 'static,
-    ) -> Result<()> {
-        let repo_url = profile.repo.ssh_url();
-        let archive = format!("{}::{}", repo_url, archive_name);
+    ) -> Result<OpOutcome> {
+        let archive = format!("{}::{}", profile.repo.location(), archive_name);
 
         let mut cmd = self.base_command_with(passphrase);
         cmd.args(["create", "--json", "--progress", "--log-json"]);
@@ -106,47 +317,10 @@ impl BorgClient {
             cmd.current_dir(dir);
         }
 
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        let mut child = cmd.spawn()?;
-        let stderr = child.stderr.take().expect("stderr was piped");
-        let mut reader = BufReader::new(stderr).lines();
-
-        let stderr_capture: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let stderr_clone = stderr_capture.clone();
-
-        let reader_task = tokio::spawn(async move {
-            while let Ok(Some(line)) = reader.next_line().await {
-                if let Ok(event) = serde_json::from_str::<ProgressEvent>(&line) {
-                    on_progress(event);
-                } else {
-                    debug!("borg stderr: {}", line);
-                }
-                stderr_clone
-                    .lock()
-                    .expect("stderr mutex poisoned")
-                    .push(line);
-            }
-        });
-
-        let status = child.wait().await?;
-        let _ = reader_task.await;
-
-        if !status.success() {
-            let captured = stderr_capture
-                .lock()
-                .expect("stderr mutex poisoned")
-                .join("\n");
-            return Err(BorgError::ProcessFailed {
-                message: "borg create failed".into(),
-                exit_code: status.code(),
-                stderr: captured,
-            });
-        }
-
-        Ok(())
+        self.run_streaming(cmd, "create", cancel, on_progress).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn extract(
         &self,
         repo: &RepoConfig,
@@ -154,60 +328,28 @@ impl BorgClient {
         destination: &Path,
         paths: &[String],
         passphrase: Option<&str>,
+        cancel: &CancelToken,
         on_progress: impl Fn(ProgressEvent) + Send + 'static,
-    ) -> Result<()> {
-        let archive = format!("{}::{}", repo.ssh_url(), archive_name);
+    ) -> Result<OpOutcome> {
+        let archive = format!("{}::{}", repo.location(), archive_name);
 
         let mut cmd = self.base_command_with(passphrase);
         cmd.args(["extract", "--progress", "--log-json"]);
         cmd.arg(&archive);
-        // Borg treats positional PATHs as fnmatch patterns by default. For
-        // literal path-prefix matching (so a file named `whats up?.txt` works),
-        // pass each as a `pp:` pattern.
+        // Selective restore: borg matches positional PATHs using path-prefix
+        // (`pp:`) style by default, which is a *literal* match — so a stored
+        // path like `report?.txt` or `what's up?.txt` is matched exactly rather
+        // than as an fnmatch wildcard. We deliberately do NOT prefix an explicit
+        // `pp:` here: several borg builds (e.g. 1.2.x) reject the inline style
+        // prefix on `--pattern`/PATH with "Invalid pattern style", whereas the
+        // positional default is literal and works across versions.
         for path in paths {
-            cmd.args(["--pattern", &format!("pp:{}", path)]);
+            cmd.arg(path);
         }
         cmd.current_dir(destination);
 
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        let mut child = cmd.spawn()?;
-        let stderr = child.stderr.take().expect("stderr was piped");
-        let mut reader = BufReader::new(stderr).lines();
-
-        let stderr_capture: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let stderr_clone = stderr_capture.clone();
-
-        let reader_task = tokio::spawn(async move {
-            while let Ok(Some(line)) = reader.next_line().await {
-                if let Ok(event) = serde_json::from_str::<ProgressEvent>(&line) {
-                    on_progress(event);
-                } else {
-                    debug!("borg stderr: {}", line);
-                }
-                stderr_clone
-                    .lock()
-                    .expect("stderr mutex poisoned")
-                    .push(line);
-            }
-        });
-
-        let status = child.wait().await?;
-        let _ = reader_task.await;
-
-        if !status.success() {
-            let captured = stderr_capture
-                .lock()
-                .expect("stderr mutex poisoned")
-                .join("\n");
-            return Err(BorgError::ProcessFailed {
-                message: "borg extract failed".into(),
-                exit_code: status.code(),
-                stderr: captured,
-            });
-        }
-
-        Ok(())
+        self.run_streaming(cmd, "extract", cancel, on_progress)
+            .await
     }
 
     pub async fn prune(
@@ -235,17 +377,9 @@ impl BorgClient {
             cmd.args(["--keep-yearly", &n.to_string()]);
         }
 
-        cmd.arg(repo.ssh_url());
+        cmd.arg(repo.location());
 
-        let output = cmd.output().await?;
-        if !output.status.success() {
-            return Err(BorgError::ProcessFailed {
-                message: "borg prune failed".into(),
-                exit_code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).into(),
-            });
-        }
-
+        self.run_checked(cmd, "prune", None).await?;
         Ok(())
     }
 
@@ -256,23 +390,15 @@ impl BorgClient {
         passphrase: Option<&str>,
     ) -> Result<()> {
         let mut cmd = self.base_command();
-        cmd.args(["init", "--encryption", encryption, &repo.ssh_url()]);
+        cmd.args(["init", "--encryption", encryption, &repo.location()]);
 
         if let Some(pass) = passphrase {
             cmd.env("BORG_PASSPHRASE", pass);
             cmd.env("BORG_NEW_PASSPHRASE", pass);
         }
 
-        let output = cmd.output().await?;
-
-        if !output.status.success() {
-            return Err(BorgError::ProcessFailed {
-                message: "borg init failed".into(),
-                exit_code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).into(),
-            });
-        }
-
+        self.run_checked(cmd, "init", Some(QUICK_OP_TIMEOUT_SECS))
+            .await?;
         Ok(())
     }
 
@@ -282,21 +408,11 @@ impl BorgClient {
         archive_name: &str,
         passphrase: Option<&str>,
     ) -> Result<()> {
-        let archive = format!("{}::{}", repo.ssh_url(), archive_name);
-        let output = self
-            .base_command_with(passphrase)
-            .args(["delete", &archive])
-            .output()
+        let archive = format!("{}::{}", repo.location(), archive_name);
+        let mut cmd = self.base_command_with(passphrase);
+        cmd.args(["delete", &archive]);
+        self.run_checked(cmd, "delete", Some(QUICK_OP_TIMEOUT_SECS))
             .await?;
-
-        if !output.status.success() {
-            return Err(BorgError::ProcessFailed {
-                message: "borg delete failed".into(),
-                exit_code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).into(),
-            });
-        }
-
         Ok(())
     }
 
@@ -305,19 +421,11 @@ impl BorgClient {
         repo: &RepoConfig,
         passphrase: Option<&str>,
     ) -> Result<Vec<ArchiveInfo>> {
+        let mut cmd = self.base_command_with(passphrase);
+        cmd.args(["list", "--json", &repo.location()]);
         let output = self
-            .base_command_with(passphrase)
-            .args(["list", "--json", &repo.ssh_url()])
-            .output()
+            .run_checked(cmd, "list", Some(QUICK_OP_TIMEOUT_SECS))
             .await?;
-
-        if !output.status.success() {
-            return Err(BorgError::ProcessFailed {
-                message: "borg list failed".into(),
-                exit_code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).into(),
-            });
-        }
 
         let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)?;
         let archives = match parsed["archives"].as_array() {
@@ -350,21 +458,13 @@ impl BorgClient {
         archive_name: &str,
         passphrase: Option<&str>,
     ) -> Result<Vec<ArchiveEntry>> {
-        let archive = format!("{}::{}", repo.ssh_url(), archive_name);
+        let archive = format!("{}::{}", repo.location(), archive_name);
 
+        let mut cmd = self.base_command_with(passphrase);
+        cmd.args(["list", "--json-lines", &archive]);
         let output = self
-            .base_command_with(passphrase)
-            .args(["list", "--json-lines", &archive])
-            .output()
+            .run_checked(cmd, "list (contents)", Some(LIST_CONTENTS_TIMEOUT_SECS))
             .await?;
-
-        if !output.status.success() {
-            return Err(BorgError::ProcessFailed {
-                message: "borg list (contents) failed".into(),
-                exit_code: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).into(),
-            });
-        }
 
         let entries = String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -552,5 +652,54 @@ mod tests {
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
         let passcommand = envs.iter().find(|(k, _)| *k == "BORG_PASSCOMMAND");
         assert!(passcommand.is_none());
+    }
+
+    #[test]
+    fn classify_exit_treats_one_as_warning() {
+        assert!(matches!(classify_exit(Some(0)), ExitClass::Ok));
+        assert!(matches!(classify_exit(Some(1)), ExitClass::Warning));
+        assert!(matches!(classify_exit(Some(2)), ExitClass::Error));
+        assert!(matches!(classify_exit(Some(128)), ExitClass::Error));
+        // A process killed by a signal reports no exit code -> treat as error.
+        assert!(matches!(classify_exit(None), ExitClass::Error));
+    }
+
+    #[test]
+    fn op_outcome_reports_warnings() {
+        assert!(!OpOutcome::default().had_warnings());
+        let with = OpOutcome {
+            warnings: vec!["skipped locked.txt".into()],
+        };
+        assert!(with.had_warnings());
+    }
+
+    #[tokio::test]
+    async fn cancel_token_resolves_when_cancelled() {
+        let token = CancelToken::new();
+        assert!(!token.is_cancelled());
+        let t2 = token.clone();
+        token.cancel();
+        assert!(token.is_cancelled());
+        assert!(t2.is_cancelled());
+        // cancelled() must return promptly for an already-cancelled token.
+        tokio::time::timeout(Duration::from_secs(1), t2.cancelled())
+            .await
+            .expect("cancelled() should resolve immediately once cancelled");
+    }
+
+    #[tokio::test]
+    async fn cancel_token_wakes_a_pending_waiter() {
+        let token = CancelToken::new();
+        let waiter = token.clone();
+        let handle = tokio::spawn(async move {
+            waiter.cancelled().await;
+        });
+        // Give the waiter a moment to start awaiting, then cancel.
+        tokio::task::yield_now().await;
+        token.cancel();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("waiter should wake within timeout")
+            .expect("waiter task should not panic");
     }
 }

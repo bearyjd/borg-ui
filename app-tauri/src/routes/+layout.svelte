@@ -4,7 +4,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { repoState } from '$lib/stores/repo.svelte';
+  import { repoState, describeRepo } from '$lib/stores/repo.svelte';
   import { scheduleState } from '$lib/stores/schedule.svelte';
   import { retentionState } from '$lib/stores/retention.svelte';
   import { profilesState } from '$lib/stores/profiles.svelte';
@@ -22,7 +22,8 @@
     { href: '/settings', label: 'Settings', icon: '⚙' },
   ];
 
-  let connected = $derived(repoState.connected);
+  let connected = $derived(repoState.hasRepo);
+  let repoSummary = $derived(repoState.config ? describeRepo(repoState.config) : '');
   let unlistenTray: UnlistenFn | undefined;
 
   async function switchProfile(id: string) {
@@ -109,7 +110,9 @@
     <div class="sidebar-footer">
       <div class="connection-status">
         <span class="status-dot" class:connected></span>
-        <span class="status-text">{connected ? 'Repo connected' : 'No repo connected'}</span>
+        <span class="status-text" title={connected ? repoSummary : ''}>
+          {connected ? repoSummary : 'No repo connected'}
+        </span>
       </div>
     </div>
   </nav>
@@ -258,6 +261,10 @@
   .status-text {
     font-size: var(--text-xs);
     color: var(--color-text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
 
   .content {

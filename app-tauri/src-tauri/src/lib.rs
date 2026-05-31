@@ -40,9 +40,7 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .manage(AppState {
-            borg: BorgClient::new(borg_path),
-        })
+        .manage(AppState::new(BorgClient::new(borg_path)))
         .invoke_handler(tauri::generate_handler![
             commands::get_borg_version,
             commands::test_ssh_connection,
@@ -55,7 +53,9 @@ pub fn run() {
             commands::load_retention_config,
             commands::save_retention_config,
             commands::create_backup,
+            commands::cancel_backup,
             commands::restore_archive,
+            commands::cancel_restore,
             commands::load_repo_config,
             commands::save_repo_config,
             commands::load_schedule_config,

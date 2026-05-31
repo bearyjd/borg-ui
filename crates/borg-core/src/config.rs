@@ -18,7 +18,31 @@ const SSH_FORBIDDEN: &[char] = &[
 const PATH_FORBIDDEN: &[char] = &[';', '&', '|', '`', '$', '\'', '"', '\n', '\r', '\0'];
 
 impl RepoConfig {
+    /// A repo is "local" (a path on disk — external drive, USB, or mounted
+    /// network share) when both the SSH host and user are blank. In that mode
+    /// `repo_path` is used directly and no SSH connection is made. Any other
+    /// combination is treated as an SSH repo and validated as such.
+    pub fn is_local(&self) -> bool {
+        self.ssh_host.trim().is_empty() && self.ssh_user.trim().is_empty()
+    }
+
     pub fn validate(&self) -> Result<()> {
+        if self.repo_path.trim().is_empty() {
+            return Err(BorgError::InvalidConfig {
+                message: "repo_path cannot be empty".into(),
+            });
+        }
+        if self.repo_path.chars().any(|c| PATH_FORBIDDEN.contains(&c)) {
+            return Err(BorgError::InvalidConfig {
+                message: "repo_path contains invalid characters".into(),
+            });
+        }
+
+        // Local repos only need a valid path; SSH fields are ignored.
+        if self.is_local() {
+            return Ok(());
+        }
+
         if self.ssh_host.trim().is_empty() {
             return Err(BorgError::InvalidConfig {
                 message: "ssh_host cannot be empty".into(),
@@ -27,11 +51,6 @@ impl RepoConfig {
         if self.ssh_user.trim().is_empty() {
             return Err(BorgError::InvalidConfig {
                 message: "ssh_user cannot be empty".into(),
-            });
-        }
-        if self.repo_path.trim().is_empty() {
-            return Err(BorgError::InvalidConfig {
-                message: "repo_path cannot be empty".into(),
             });
         }
         if self.ssh_port == 0 {
@@ -49,11 +68,6 @@ impl RepoConfig {
                 message: "ssh_user contains invalid characters".into(),
             });
         }
-        if self.repo_path.chars().any(|c| PATH_FORBIDDEN.contains(&c)) {
-            return Err(BorgError::InvalidConfig {
-                message: "repo_path contains invalid characters".into(),
-            });
-        }
         Ok(())
     }
 
@@ -62,6 +76,17 @@ impl RepoConfig {
             "ssh://{}@{}:{}/{}",
             self.ssh_user, self.ssh_host, self.ssh_port, self.repo_path
         )
+    }
+
+    /// The repository location string passed to borg. For local repos this is
+    /// the on-disk path; for SSH repos it is the `ssh://` URL. Use this (not
+    /// `ssh_url`) whenever invoking borg against the repository.
+    pub fn location(&self) -> String {
+        if self.is_local() {
+            self.repo_path.clone()
+        } else {
+            self.ssh_url()
+        }
     }
 }
 
@@ -501,6 +526,64 @@ mod tests {
         };
         let err = repo.validate().unwrap_err();
         assert!(matches!(err, crate::error::BorgError::InvalidConfig { .. }));
+    }
+
+    fn local_repo(path: &str) -> RepoConfig {
+        RepoConfig {
+            ssh_host: String::new(),
+            ssh_port: 0,
+            ssh_user: String::new(),
+            repo_path: path.into(),
+            ssh_key_path: None,
+        }
+    }
+
+    #[test]
+    fn local_repo_is_detected_when_host_and_user_blank() {
+        assert!(local_repo("/mnt/usb/backups").is_local());
+        // A Windows-style path is a valid local repo.
+        assert!(local_repo("D:\\Backups\\pc").is_local());
+    }
+
+    #[test]
+    fn ssh_repo_is_not_local() {
+        let repo = RepoConfig {
+            ssh_host: "backup.example.com".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "/data/repo".into(),
+            ssh_key_path: None,
+        };
+        assert!(!repo.is_local());
+    }
+
+    #[test]
+    fn local_repo_validates_with_only_a_path() {
+        assert!(local_repo("/mnt/usb/backups").validate().is_ok());
+        assert!(local_repo("D:\\Backups\\pc").validate().is_ok());
+    }
+
+    #[test]
+    fn local_repo_rejects_empty_path() {
+        assert!(local_repo("").validate().is_err());
+    }
+
+    #[test]
+    fn local_repo_rejects_injection_in_path() {
+        assert!(local_repo("/mnt/usb; rm -rf /").validate().is_err());
+    }
+
+    #[test]
+    fn location_returns_path_for_local_and_url_for_ssh() {
+        assert_eq!(local_repo("/mnt/usb/repo").location(), "/mnt/usb/repo");
+        let ssh = RepoConfig {
+            ssh_host: "host.com".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "/data/repo".into(),
+            ssh_key_path: None,
+        };
+        assert_eq!(ssh.location(), "ssh://borg@host.com:22//data/repo");
     }
 
     #[test]

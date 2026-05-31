@@ -2,12 +2,16 @@
   import { invoke } from '@tauri-apps/api/core';
   import { open, save as saveDialog } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
-  import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
-  import { scheduleState, type ScheduleConfig } from '$lib/stores/schedule.svelte';
+  import { repoState, isLocalRepo, type RepoConfig } from '$lib/stores/repo.svelte';
+  import { scheduleState, nextRun, type ScheduleConfig } from '$lib/stores/schedule.svelte';
   import { retentionState, type RetentionConfig } from '$lib/stores/retention.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { profilesState } from '$lib/stores/profiles.svelte';
+  import FieldHelp from '$lib/components/FieldHelp.svelte';
 
+  type RepoType = 'ssh' | 'local';
+
+  let repoType = $state<RepoType>('ssh');
   let sshHost = $state('');
   let sshPort = $state(22);
   let sshUser = $state('');
@@ -17,6 +21,19 @@
   let saving = $state(false);
   let testResult = $state('');
   let saveResult = $state('');
+
+  // For a local repo, "configured" means a folder path is filled in. For SSH,
+  // we need host + user + path. Used to enable Save/Init/Prune/passphrase.
+  let repoConfigured = $derived(
+    repoType === 'local'
+      ? repoPath.trim() !== ''
+      : sshHost.trim() !== '' && repoPath.trim() !== ''
+  );
+
+  async function browseLocalRepoFolder() {
+    const selected = await open({ directory: true, multiple: false, title: 'Select backup folder' });
+    if (selected) repoPath = selected as string;
+  }
 
   const EXCLUDE_PRESETS = ['*.tmp', '*.cache', 'node_modules', '.git', 'target', '__pycache__', '.venv', 'dist', 'build'];
 
@@ -63,7 +80,9 @@
     }
     const repo = currentRepoFromForm();
     if (!repo) {
-      profileResult = 'Fill in SSH host, user, and repo path first';
+      profileResult = repoType === 'local'
+        ? 'Choose a backup folder first'
+        : 'Fill in SSH host, user, and repo path first';
       return;
     }
     try {
@@ -77,16 +96,30 @@
     }
   }
 
-  async function renameActive() {
+  let renameModalOpen = $state(false);
+  let renameInput = $state('');
+  let deleteModalOpen = $state(false);
+
+  function openRenameModal() {
+    if (!profilesState.activeId) return;
+    renameInput = profilesState.active?.name ?? '';
+    renameModalOpen = true;
+  }
+
+  async function confirmRename() {
     const id = profilesState.activeId;
-    if (!id) return;
-    const newName = prompt('New profile name', profilesState.active?.name ?? '');
-    if (!newName) return;
+    const newName = renameInput.trim();
+    if (!id || !newName) {
+      renameModalOpen = false;
+      return;
+    }
     try {
       await profilesState.rename(id, newName);
       profileResult = `Renamed to "${newName}"`;
     } catch (e) {
       profileResult = `Failed: ${e}`;
+    } finally {
+      renameModalOpen = false;
     }
   }
 
@@ -127,20 +160,29 @@
     }
   }
 
-  async function deleteActive() {
-    const id = profilesState.activeId;
-    if (!id) return;
+  function openDeleteModal() {
+    if (!profilesState.activeId) return;
     if (profilesState.profiles.length <= 1) {
       profileResult = 'Cannot delete the only profile';
       return;
     }
-    if (!confirm(`Delete profile "${profilesState.active?.name}"? Repo config is removed; archives are not touched.`)) return;
+    deleteModalOpen = true;
+  }
+
+  async function confirmDeleteProfile() {
+    const id = profilesState.activeId;
+    if (!id) {
+      deleteModalOpen = false;
+      return;
+    }
     try {
       await profilesState.remove(id);
       await repoState.load();
       profileResult = 'Profile deleted';
     } catch (e) {
       profileResult = `Failed: ${e}`;
+    } finally {
+      deleteModalOpen = false;
     }
   }
 
@@ -149,8 +191,19 @@
   let notificationsEnabled = $state(notificationsState.enabled);
   let notificationsResult = $state('');
 
-  function currentRepoFromForm(): RepoConfig | null {
-    if (!sshHost || !repoPath || !sshUser) return null;
+  /** Build a RepoConfig from the current form, honoring the repo type. */
+  function buildRepoConfig(): RepoConfig {
+    if (repoType === 'local') {
+      // The empty-host/empty-user convention IS the local marker — the backend
+      // then uses repo_path directly as an on-disk path.
+      return {
+        ssh_host: '',
+        ssh_port: 0,
+        ssh_user: '',
+        repo_path: repoPath,
+        ssh_key_path: null,
+      };
+    }
     return {
       ssh_host: sshHost,
       ssh_port: sshPort,
@@ -158,6 +211,12 @@
       repo_path: repoPath,
       ssh_key_path: sshKeyPath || null,
     };
+  }
+
+  function currentRepoFromForm(): RepoConfig | null {
+    if (!repoConfigured) return null;
+    if (repoType === 'ssh' && !sshUser) return null;
+    return buildRepoConfig();
   }
 
   async function refreshPassphraseStatus() {
@@ -212,16 +271,22 @@
     }
   }
 
-  async function clearPassphrase() {
+  let clearPassphraseModalOpen = $state(false);
+
+  async function confirmClearPassphrase() {
     const repo = currentRepoFromForm();
-    if (!repo) return;
-    if (!confirm('Remove the passphrase from the system keychain? Backups will fail until you set it again.')) return;
+    if (!repo) {
+      clearPassphraseModalOpen = false;
+      return;
+    }
     try {
       await invoke('clear_repo_passphrase', { repo });
       hasPassphrase = false;
       passphraseResult = 'Passphrase removed from keychain.';
     } catch (e) {
       passphraseResult = `Failed to clear passphrase: ${e}`;
+    } finally {
+      clearPassphraseModalOpen = false;
     }
   }
 
@@ -246,6 +311,22 @@
   let scheduleExcludeInput = $state('');
   let scheduleSaving = $state(false);
   let scheduleResult = $state('');
+
+  let scheduleNextRunLabel = $derived.by(() => {
+    if (!scheduleEnabled) return '';
+    const schedule = scheduleType === 'hourly'
+      ? { type: 'hourly' as const }
+      : { type: 'daily' as const, hour: scheduleHour, minute: scheduleMinute };
+    const next = nextRun({ enabled: true, source_paths: [], schedule, excludes: [] });
+    if (!next) return '';
+    return next.toLocaleString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  });
 
   function addScheduleExclude(pattern: string) {
     const trimmed = pattern.trim();
@@ -290,8 +371,9 @@
   $effect(() => {
     const r = repoState.config;
     if (r) {
+      repoType = isLocalRepo(r) ? 'local' : 'ssh';
       sshHost = r.ssh_host;
-      sshPort = r.ssh_port;
+      sshPort = r.ssh_port || 22;
       sshUser = r.ssh_user;
       repoPath = r.repo_path;
       sshKeyPath = r.ssh_key_path ?? '';
@@ -320,14 +402,7 @@
     saving = true;
     saveResult = '';
     try {
-      const repo: RepoConfig = {
-        ssh_host: sshHost,
-        ssh_port: sshPort,
-        ssh_user: sshUser,
-        repo_path: repoPath,
-        ssh_key_path: sshKeyPath || null,
-      };
-      await repoState.save(repo);
+      await repoState.save(buildRepoConfig());
       saveResult = 'Settings saved.';
     } catch (e) {
       saveResult = `Save failed: ${e}`;
@@ -351,15 +426,8 @@
 
     initing = true;
     try {
-      const repo: RepoConfig = {
-        ssh_host: sshHost,
-        ssh_port: sshPort,
-        ssh_user: sshUser,
-        repo_path: repoPath,
-        ssh_key_path: sshKeyPath || null,
-      };
       await invoke('init_repo', {
-        repo,
+        repo: buildRepoConfig(),
         encryption: initEncryption,
         passphrase: needsPassphrase ? initPassphrase : null,
       });
@@ -486,14 +554,7 @@
     retentionPruning = true;
     retentionResult = '';
     try {
-      const repo: RepoConfig = {
-        ssh_host: sshHost,
-        ssh_port: sshPort,
-        ssh_user: sshUser,
-        repo_path: repoPath,
-        ssh_key_path: sshKeyPath || null,
-      };
-      await invoke('prune_repo', { repo, retention: currentRetention() });
+      await invoke('prune_repo', { repo: buildRepoConfig(), retention: currentRetention() });
       retentionResult = 'Prune completed successfully.';
     } catch (e) {
       retentionResult = `Prune failed: ${e}`;
@@ -541,16 +602,22 @@
   <form class="settings-form" onsubmit={(e) => { e.preventDefault(); addProfile(); }}>
     <fieldset class="form-group">
       <legend>Profiles</legend>
-      <p class="hint">A profile bundles a repository plus its schedule and retention settings. Switch profiles via the picker in the sidebar.</p>
+      <FieldHelp
+        text="A profile bundles one backup destination together with its schedule and retention rules. You only need more than one if you back up different things to different places. Switch between them with the picker in the sidebar."
+        examples={[
+          { input: 'Documents → office server' },
+          { input: 'Photos → USB drive' },
+        ]}
+      />
 
       {#if profilesState.active}
         <div class="profile-current">
           <span class="field-label">Active</span>
           <code>{profilesState.active.name}</code>
           <div class="profile-actions">
-            <button type="button" class="btn btn-secondary" onclick={renameActive}>Rename</button>
+            <button type="button" class="btn btn-secondary" onclick={openRenameModal}>Rename</button>
             <button type="button" class="btn btn-secondary" onclick={exportActive}>Export</button>
-            <button type="button" class="btn btn-secondary" onclick={deleteActive} disabled={profilesState.profiles.length <= 1}>Delete</button>
+            <button type="button" class="btn btn-secondary" onclick={openDeleteModal} disabled={profilesState.profiles.length <= 1}>Delete</button>
           </div>
         </div>
       {/if}
@@ -576,7 +643,21 @@
     <form class="settings-form" onsubmit={(e) => { e.preventDefault(); saveArchiveTemplate(); }}>
       <fieldset class="form-group">
         <legend>Archive Naming</legend>
-        <p class="hint">Template for new archive names. Variables: <code>{'{date}'}</code>, <code>{'{time}'}</code>, <code>{'{datetime}'}</code>, <code>{'{hostname}'}</code>, <code>{'{profile}'}</code>, <code>{'{random}'}</code>. Leave blank to use the default <code>{'{datetime}-{random}'}</code>.</p>
+        <FieldHelp text="Each backup is saved under a name built from this template. Leave it blank to use the sensible default. Variables you can use:" />
+        <ul class="var-help">
+          <li><code>{'{date}'}</code> <span>today's date, e.g. 2026-05-31</span></li>
+          <li><code>{'{time}'}</code> <span>the time, e.g. 143015</span></li>
+          <li><code>{'{datetime}'}</code> <span>date and time together</span></li>
+          <li><code>{'{hostname}'}</code> <span>this PC's name, e.g. her-pc</span></li>
+          <li><code>{'{profile}'}</code> <span>the active profile name</span></li>
+          <li><code>{'{random}'}</code> <span>a few random characters, keeps names unique</span></li>
+        </ul>
+        <FieldHelp
+          examples={[
+            { input: '{datetime}-{random}', output: '2026-05-31T143015-a1b2' },
+            { input: '{hostname}-{date}', output: 'her-pc-2026-05-31' },
+          ]}
+        />
 
         <div class="field">
           <label for="archive-template">Template</label>
@@ -605,47 +686,100 @@
 
   <form class="settings-form" onsubmit={(e) => { e.preventDefault(); save(); }}>
     <fieldset class="form-group">
-      <legend>SSH Connection</legend>
+      <legend>Connection</legend>
+      <FieldHelp text="Where should your backups be stored? Pick the kind of destination, then fill in the details below." />
 
-      <div class="field">
-        <label for="ssh-host">Host</label>
-        <input id="ssh-host" type="text" bind:value={sshHost} placeholder="backup.example.com" />
+      <div class="repo-type-toggle" role="radiogroup" aria-label="Repository type">
+        <button
+          type="button"
+          class="repo-type-option"
+          class:active={repoType === 'ssh'}
+          role="radio"
+          aria-checked={repoType === 'ssh'}
+          onclick={() => (repoType = 'ssh')}
+        >
+          <span class="repo-type-title">Backup server (SSH)</span>
+          <span class="repo-type-sub">A remote server you connect to over the internet.</span>
+        </button>
+        <button
+          type="button"
+          class="repo-type-option"
+          class:active={repoType === 'local'}
+          role="radio"
+          aria-checked={repoType === 'local'}
+          onclick={() => (repoType = 'local')}
+        >
+          <span class="repo-type-title">Local folder / USB / network drive</span>
+          <span class="repo-type-sub">A folder on this PC, an external/USB drive, or a network share. No server needed.</span>
+        </button>
       </div>
 
-      <div class="field-row">
+      {#if repoType === 'local'}
         <div class="field">
-          <label for="ssh-user">User</label>
-          <input id="ssh-user" type="text" bind:value={sshUser} placeholder="borg" />
+          <label for="local-path">Backup folder path</label>
+          <div class="inline-row">
+            <input id="local-path" type="text" bind:value={repoPath} placeholder="E:\Backups\her-pc" />
+            <button type="button" class="btn btn-secondary" onclick={browseLocalRepoFolder}>Browse…</button>
+          </div>
+          <FieldHelp
+            text="Back up to a folder on this PC, an external/USB drive, or a network share. Pick or type the folder where the backup should live."
+            examples={[
+              { input: 'E:\\Backups\\her-pc' },
+              { input: '\\\\nas\\backups\\her-pc' },
+            ]}
+          />
         </div>
-        <div class="field field-sm">
-          <label for="ssh-port">Port</label>
-          <input id="ssh-port" type="number" bind:value={sshPort} />
+
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" disabled={saving || !repoConfigured}>
+            {saving ? 'Saving...' : 'Save'}
+          </button>
         </div>
-      </div>
-
-      <div class="field">
-        <label for="repo-path">Repository Path</label>
-        <input id="repo-path" type="text" bind:value={repoPath} placeholder="/data/backups/my-pc" />
-      </div>
-
-      <div class="field">
-        <label for="ssh-key">SSH Key Path (optional)</label>
-        <input id="ssh-key" type="text" bind:value={sshKeyPath} placeholder="C:\Users\you\.ssh\id_ed25519" />
-      </div>
-
-      <div class="form-actions">
-        <button type="button" class="btn btn-secondary" onclick={testConnection} disabled={testing || !sshHost}>
-          {testing ? 'Testing...' : 'Test Connection'}
-        </button>
-        <button type="submit" class="btn btn-primary" disabled={saving || !sshHost || !repoPath}>
-          {saving ? 'Saving...' : 'Save'}
-        </button>
-      </div>
-
-      {#if testResult}
-        <div class="test-result" class:success={testResult.includes('successful')} class:error={testResult.includes('Error') || testResult.includes('failed')}>
-          {testResult}
+      {:else}
+        <div class="field">
+          <label for="ssh-host">Host</label>
+          <input id="ssh-host" type="text" bind:value={sshHost} placeholder="backup.example.com" />
+          <FieldHelp text="The address of your backup server." examples={[{ input: 'backup.example.com' }]} />
         </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="ssh-user">User</label>
+            <input id="ssh-user" type="text" bind:value={sshUser} placeholder="borg" />
+          </div>
+          <div class="field field-sm">
+            <label for="ssh-port">Port</label>
+            <input id="ssh-port" type="number" bind:value={sshPort} />
+          </div>
+        </div>
+        <FieldHelp text="The login name on the server, and the SSH port (almost always 22)." examples={[{ input: 'user borg' }, { input: 'port 22' }]} />
+
+        <div class="field">
+          <label for="repo-path">Repository Path</label>
+          <input id="repo-path" type="text" bind:value={repoPath} placeholder="/backups/her-pc" />
+          <FieldHelp text="The folder on the server where this PC's backups are kept." examples={[{ input: '/backups/her-pc' }]} />
+        </div>
+
+        <div class="field">
+          <label for="ssh-key">SSH Key Path (optional)</label>
+          <input id="ssh-key" type="text" bind:value={sshKeyPath} placeholder="C:\Users\her\.ssh\id_ed25519" />
+          <FieldHelp text="A key file that lets you log in without typing the server password each time. Leave blank if you don't use one." examples={[{ input: 'C:\\Users\\her\\.ssh\\id_ed25519' }]} />
+        </div>
+
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick={testConnection} disabled={testing || !sshHost}>
+            {testing ? 'Testing...' : 'Test Connection'}
+          </button>
+          <button type="submit" class="btn btn-primary" disabled={saving || !sshHost || !repoPath}>
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+
+        {#if testResult}
+          <div class="test-result" class:success={testResult.includes('successful')} class:error={testResult.includes('Error') || testResult.includes('failed')}>
+            {testResult}
+          </div>
+        {/if}
       {/if}
 
       {#if saveResult}
@@ -659,7 +793,7 @@
   <form class="settings-form" onsubmit={(e) => { e.preventDefault(); initRepo(); }}>
     <fieldset class="form-group">
       <legend>Initialize Repository</legend>
-      <p class="hint">Create a new borg repository at the configured path. Skip if you're connecting to an existing repo.</p>
+      <FieldHelp text="“Initialize” sets up a fresh, empty backup repository at the destination above. Do this once for a brand-new destination. Skip it if you're connecting to a backup that already exists — initializing again is not needed." />
 
       <div class="field">
         <label for="init-encryption">Encryption</label>
@@ -672,6 +806,21 @@
           <option value="authenticated">authenticated (no encryption)</option>
           <option value="none">none (no encryption, no auth)</option>
         </select>
+        <ul class="var-help">
+          <li><code>repokey-blake2</code> <span>recommended — encrypts your files; the key lives inside the repository</span></li>
+          <li><code>repokey</code> <span>same idea, slightly slower checksum</span></li>
+          <li><code>keyfile-blake2</code> <span>encrypts your files; key stored on this PC (back it up!)</span></li>
+          <li><code>keyfile</code> <span>same, slightly slower checksum</span></li>
+          <li><code>authenticated</code> <span>tamper-detection only</span></li>
+          <li><code>none</code> <span>no protection at all</span></li>
+        </ul>
+      </div>
+
+      <div class="warning-box">
+        <strong>Heads up:</strong> <code>none</code>, <code>authenticated</code> and
+        <code>authenticated-blake2</code> do <strong>not</strong> encrypt your file contents.
+        Anyone with access to the backup could read your files. For private data, keep the
+        recommended <code>repokey-blake2</code>.
       </div>
 
       {#if needsPassphrase}
@@ -683,10 +832,14 @@
           <label for="init-passphrase-confirm">Confirm passphrase</label>
           <input id="init-passphrase-confirm" type="password" bind:value={initPassphraseConfirm} autocomplete="new-password" />
         </div>
+        <div class="warning-box">
+          Write down your passphrase and keep it somewhere safe. Without it, your backups
+          can never be restored — not by you, not by anyone.
+        </div>
       {/if}
 
       <div class="form-actions">
-        <button type="submit" class="btn btn-primary" disabled={initing || !sshHost || !repoPath}>
+        <button type="submit" class="btn btn-primary" disabled={initing || !repoConfigured}>
           {initing ? 'Initializing...' : 'Create Repository'}
         </button>
       </div>
@@ -702,7 +855,7 @@
   <form class="settings-form" onsubmit={(e) => e.preventDefault()}>
     <fieldset class="form-group">
       <legend>Repository Passphrase</legend>
-      <p class="hint">Stored in your OS keychain (Windows Credential Manager, macOS Keychain, or Secret Service). Used automatically for borg commands that need it.</p>
+      <FieldHelp text="This is the passphrase that encrypts the repository itself — the one you chose when you initialized it. It is NOT the SSH key password. It's saved securely in Windows Credential Manager and used automatically for every backup and restore, so you won't be asked for it each time." />
 
       <div class="passphrase-status">
         <span class="status-dot" class:set={hasPassphrase}></span>
@@ -718,11 +871,11 @@
       </div>
 
       <div class="form-actions">
-        <button type="button" class="btn btn-primary" onclick={openPassphraseModal} disabled={!sshHost || !repoPath}>
+        <button type="button" class="btn btn-primary" onclick={openPassphraseModal} disabled={!repoConfigured}>
           {hasPassphrase ? 'Change passphrase' : 'Set passphrase'}
         </button>
         {#if hasPassphrase}
-          <button type="button" class="btn btn-secondary" onclick={clearPassphrase}>
+          <button type="button" class="btn btn-secondary" onclick={() => (clearPassphraseModalOpen = true)}>
             Clear
           </button>
         {/if}
@@ -739,7 +892,9 @@
   <form class="settings-form" onsubmit={(e) => { e.preventDefault(); saveRetention(); }}>
     <fieldset class="form-group">
       <legend>Retention Policy</legend>
-      <p class="hint">Set how many backups to keep per time bucket. Empty = no limit for that bucket. Pruning removes archives that fall outside the policy.</p>
+      <FieldHelp text="Old backups add up over time. This policy thins them out automatically: it keeps a recent few of each kind and deletes (prunes) the older ones that fall outside the rules. Leave a box empty to keep unlimited backups for that period." />
+      <FieldHelp text="A common, comfortable setup: keep 7 daily + 4 weekly + 6 monthly. That's roughly six months of history, automatically thinned so it never balloons." />
+      <FieldHelp text='"Run Prune Now" applies these rules immediately. Saving the policy makes scheduled backups apply it for you.' />
 
       <div class="field-row">
         <div class="field field-sm">
@@ -770,7 +925,7 @@
         <button type="submit" class="btn btn-secondary" disabled={retentionSaving || retentionPruning}>
           {retentionSaving ? 'Saving...' : 'Save Policy'}
         </button>
-        <button type="button" class="btn btn-primary" onclick={runPrune} disabled={retentionPruning || retentionSaving || !sshHost || !repoPath}>
+        <button type="button" class="btn btn-primary" onclick={runPrune} disabled={retentionPruning || retentionSaving || !repoConfigured}>
           {retentionPruning ? 'Pruning...' : 'Run Prune Now'}
         </button>
       </div>
@@ -786,7 +941,7 @@
   <form class="settings-form" onsubmit={(e) => e.preventDefault()}>
     <fieldset class="form-group">
       <legend>Notifications</legend>
-      <p class="hint">Show a desktop notification when a backup or restore completes or fails.</p>
+      <FieldHelp text="Show a desktop notification when a backup or restore finishes or fails. The first time you turn this on, Windows will ask for permission to show notifications — choose Allow. If you miss that prompt, you can enable notifications for BorgUI later in Windows Settings." />
 
       <div class="field">
         <label class="toggle-row">
@@ -806,6 +961,7 @@
   <form class="settings-form" onsubmit={(e) => { e.preventDefault(); saveSchedule(); }}>
     <fieldset class="form-group">
       <legend>Scheduled Backups</legend>
+      <FieldHelp text="Let BorgUI back up on its own using Windows Task Scheduler. Because Windows runs it, scheduled backups happen even when this app is closed — you just need BorgUI installed on the PC, not open. Choose “Every hour” for frequent protection, or “Daily” to run once at a set time (a quiet hour like 2:00 AM is a good choice)." />
 
       <div class="field">
         <label class="toggle-row">
@@ -822,6 +978,13 @@
             <option value="daily">Daily</option>
           </select>
         </div>
+
+        {#if scheduleNextRunLabel}
+          <div class="next-run">
+            <span class="next-run-label">Next run</span>
+            <span class="next-run-value">{scheduleNextRunLabel}</span>
+          </div>
+        {/if}
 
         {#if scheduleType === 'daily'}
           <div class="field-row">
@@ -908,6 +1071,75 @@
     </fieldset>
   </form>
 
+  {#if renameModalOpen}
+    <div class="modal-backdrop" onclick={() => (renameModalOpen = false)} role="presentation">
+      <div
+        class="modal"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={() => {}}
+        role="dialog"
+        tabindex="-1"
+        aria-modal="true"
+        aria-labelledby="rename-title"
+      >
+        <h2 id="rename-title">Rename profile</h2>
+        <form onsubmit={(e) => { e.preventDefault(); confirmRename(); }}>
+          <div class="field">
+            <label for="rename-input">Profile name</label>
+            <!-- svelte-ignore a11y_autofocus -->
+            <input id="rename-input" type="text" bind:value={renameInput} autofocus />
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" onclick={() => (renameModalOpen = false)}>Cancel</button>
+            <button type="submit" class="btn btn-primary" disabled={!renameInput.trim()}>Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  {/if}
+
+  {#if deleteModalOpen}
+    <div class="modal-backdrop" onclick={() => (deleteModalOpen = false)} role="presentation">
+      <div
+        class="modal"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={() => {}}
+        role="dialog"
+        tabindex="-1"
+        aria-modal="true"
+        aria-labelledby="delete-profile-title"
+      >
+        <h2 id="delete-profile-title">Delete profile?</h2>
+        <p>This removes the profile <code>{profilesState.active?.name}</code> and its settings (connection, schedule, retention). Your backups in the repository are NOT deleted.</p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" onclick={() => (deleteModalOpen = false)}>Cancel</button>
+          <button type="button" class="btn btn-delete-confirm" onclick={confirmDeleteProfile}>Delete</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if clearPassphraseModalOpen}
+    <div class="modal-backdrop" onclick={() => (clearPassphraseModalOpen = false)} role="presentation">
+      <div
+        class="modal"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={() => {}}
+        role="dialog"
+        tabindex="-1"
+        aria-modal="true"
+        aria-labelledby="clear-pass-title"
+      >
+        <h2 id="clear-pass-title">Remove passphrase?</h2>
+        <p>This removes the saved passphrase from Windows Credential Manager. Backups and restores will fail until you set it again. Your existing backups are not affected.</p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" onclick={() => (clearPassphraseModalOpen = false)}>Cancel</button>
+          <button type="button" class="btn btn-delete-confirm" onclick={confirmClearPassphrase}>Remove</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if passphraseModalOpen}
     <div class="modal-backdrop" onclick={() => (passphraseModalOpen = false)} role="presentation">
       <div
@@ -987,13 +1219,6 @@
     padding: 0 var(--space-2);
   }
 
-  .form-group .hint {
-    margin-top: var(--space-3);
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-    line-height: 1.5;
-  }
-
   .profile-current {
     display: flex;
     align-items: center;
@@ -1041,6 +1266,129 @@
 
   .settings-form + .settings-form {
     margin-top: var(--space-6);
+  }
+
+  .var-help {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-top: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+  }
+
+  .var-help li {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+  }
+
+  .var-help code {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--color-accent);
+    flex-shrink: 0;
+    min-width: 7.5rem;
+  }
+
+  .var-help span {
+    color: var(--color-text-dim);
+    line-height: 1.4;
+  }
+
+  .warning-box {
+    margin-top: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-sm);
+    background: var(--color-warning-muted);
+    border: 1px solid var(--color-warning);
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+
+  .warning-box strong {
+    color: var(--color-warning);
+  }
+
+  .warning-box code {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--color-warning);
+  }
+
+  .repo-type-toggle {
+    display: flex;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+  }
+
+  .repo-type-option {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    text-align: left;
+    padding: var(--space-3) var(--space-4);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all var(--duration-fast) var(--ease-out);
+  }
+
+  .repo-type-option:hover {
+    border-color: var(--color-text-muted);
+  }
+
+  .repo-type-option.active {
+    border-color: var(--color-accent);
+    background: var(--color-accent-muted);
+  }
+
+  .repo-type-title {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .repo-type-option.active .repo-type-title {
+    color: var(--color-accent);
+  }
+
+  .repo-type-sub {
+    font-size: var(--text-xs);
+    color: var(--color-text-dim);
+    line-height: 1.4;
+  }
+
+  .next-run {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    margin-top: var(--space-4);
+    padding: var(--space-2) var(--space-3);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+  }
+
+  .next-run-label {
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-dim);
+    font-weight: 600;
+  }
+
+  .next-run-value {
+    font-size: var(--text-sm);
+    font-family: var(--font-mono);
+    color: var(--color-accent);
   }
 
   .field {
@@ -1363,6 +1711,15 @@
     color: var(--color-text-muted);
     font-size: var(--text-sm);
     line-height: 1.5;
+  }
+
+  .modal code {
+    font-family: var(--font-mono);
+    color: var(--color-text);
+    background: var(--color-surface-hover);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
   }
 
   .modal-actions {

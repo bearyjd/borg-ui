@@ -131,6 +131,11 @@
     {:else if entries.length === 0}
       <div class="browser-state">Archive is empty.</div>
     {:else}
+      <p class="browser-help">
+        Tick the files and folders you want back. "Restore selected" then asks
+        where to put them and rebuilds their original folder structure inside
+        the folder you choose.
+      </p>
       <div class="browser-actions">
         <button class="link-btn" onclick={selectAll}>Select all</button>
         <button class="link-btn" onclick={clearAll} disabled={selected.size === 0}>Clear</button>
@@ -185,7 +190,18 @@
         onchange={() => toggleNode(node)}
         aria-label={node.name}
       />
-      <span class="icon">{node.isDir ? '📁' : '📄'}</span>
+      <span class="icon" class:dir={node.isDir} aria-hidden="true">
+        {#if node.isDir}
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
+            <path d="M1.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" />
+          </svg>
+        {:else}
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
+            <path d="M3.5 1.5h6L13 5v9.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z" />
+            <path d="M9.5 1.5V5H13" />
+          </svg>
+        {/if}
+      </span>
       <span class="name" title={node.path}>{node.name}</span>
       {#if !node.isDir}
         <span class="size">{formatSize(node.size)}</span>
@@ -331,6 +347,19 @@
 
   .icon {
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    color: var(--color-text-dim);
+  }
+
+  .icon.dir {
+    color: var(--color-accent);
+  }
+
+  .browser-help {
+    font-size: var(--text-xs);
+    color: var(--color-text-dim);
+    line-height: 1.5;
   }
 
   .name {

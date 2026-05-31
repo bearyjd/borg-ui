@@ -3,7 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { open } from '@tauri-apps/plugin-dialog';
-  import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
+  import { repoState, isLocalRepo, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
   import ArchiveBrowser from '$lib/components/ArchiveBrowser.svelte';
@@ -32,6 +32,19 @@
   let restoreStatus = $state('');
   let restoreFile = $state('');
   let restoreFileCount = $state(0);
+  let restoreCancelling = $state(false);
+  let restoreWarnings = $state<string[]>([]);
+
+  async function cancelRestore() {
+    if (!restoringArchive || restoreCancelling) return;
+    restoreCancelling = true;
+    restoreStatus = 'Cancelling restore...';
+    try {
+      await invoke<boolean>('cancel_restore');
+    } catch (e) {
+      console.warn('Failed to request cancel:', e);
+    }
+  }
 
   let deletingArchive = $state('');
   let confirmDeleteArchive = $state<string | null>(null);
@@ -53,7 +66,8 @@
 
   $effect(() => {
     const r = repoState.config;
-    if (r && r.ssh_host && untrack(() => !loading)) {
+    const ready = r && (r.ssh_host || (isLocalRepo(r) && r.repo_path));
+    if (ready && untrack(() => !loading)) {
       loadArchives(r);
     }
   });
@@ -82,6 +96,8 @@
     if (!dest) return;
 
     restoringArchive = archiveName;
+    restoreCancelling = false;
+    restoreWarnings = [];
     restoreStatus = paths && paths.length > 0
       ? `Restoring ${paths.length.toLocaleString()} selected items...`
       : 'Restoring...';
@@ -101,12 +117,13 @@
         }
       });
 
-      await invoke('restore_archive', {
+      const result = await invoke<string[]>('restore_archive', {
         repo: repoState.config,
         archiveName,
         destination: dest as string,
         paths: paths && paths.length > 0 ? paths : null,
       });
+      restoreWarnings = Array.isArray(result) ? result : [];
       if (restoreFileCount === 0) {
         // borg exits 0 with no files extracted when no archive entries match
         // the supplied PATHs. Surface that explicitly so users aren't told
@@ -126,7 +143,9 @@
           error_message: 'borg extract matched 0 files',
         }).catch((err) => console.warn('Failed to record history:', err));
       } else {
-        restoreStatus = `Restored ${restoreFileCount.toLocaleString()} files to ${dest}`;
+        restoreStatus = restoreWarnings.length > 0
+          ? `Restored ${restoreFileCount.toLocaleString()} files to ${dest} (${restoreWarnings.length} warning${restoreWarnings.length === 1 ? '' : 's'})`
+          : `Restored ${restoreFileCount.toLocaleString()} files to ${dest}`;
         notificationsState.notify(
           'Restore complete',
           `Archive "${archiveName}" restored (${restoreFileCount.toLocaleString()} files).`,
@@ -142,6 +161,12 @@
         }).catch((err) => console.warn('Failed to record history:', err));
       }
     } catch (e) {
+      if (String(e).toLowerCase().includes('operation cancelled')) {
+        restoreStatus =
+          'Restore cancelled. Some files may already have been written to the destination folder.';
+        // Cancelled restore is not a failure; skip history.
+        return;
+      }
       restoreStatus = `Restore failed: ${e}`;
       notificationsState.notify('Restore failed', 'See BorgUI for details.');
       historyState.record({
@@ -156,6 +181,7 @@
     } finally {
       unlisten?.();
       restoringArchive = '';
+      restoreCancelling = false;
     }
   }
 
@@ -254,7 +280,19 @@
 
     {#if restoringArchive}
       <div class="restore-progress">
-        <div class="restore-progress-header">Restoring: <code>{restoringArchive}</code></div>
+        <div class="restore-progress-top">
+          <div class="restore-progress-header">
+            {restoreCancelling ? 'Cancelling restore of' : 'Restoring'}: <code>{restoringArchive}</code>
+          </div>
+          <button
+            type="button"
+            class="btn btn-cancel"
+            onclick={cancelRestore}
+            disabled={restoreCancelling}
+          >
+            {restoreCancelling ? 'Cancelling…' : 'Cancel'}
+          </button>
+        </div>
         {#if restoreFile}
           <code class="restore-file">{restoreFile}</code>
         {/if}
@@ -264,11 +302,32 @@
       </div>
     {/if}
 
+    {#if restoreWarnings.length > 0 && !restoringArchive}
+      <div class="warnings-panel">
+        <div class="warnings-head">
+          <span class="warnings-icon" aria-hidden="true">!</span>
+          <div>
+            <strong>Completed with {restoreWarnings.length} warning{restoreWarnings.length === 1 ? '' : 's'}</strong>
+            <p>Your files were restored. These notes are usually harmless — for example a pattern that matched nothing.</p>
+          </div>
+        </div>
+        <details class="warnings-details">
+          <summary>Show details</summary>
+          <ul class="warnings-list">
+            {#each restoreWarnings as w, i (i)}
+              <li><code>{w}</code></li>
+            {/each}
+          </ul>
+        </details>
+      </div>
+    {/if}
+
     {#if restoreStatus && !restoringArchive}
       <div
         class="restore-result"
         class:error={restoreStatus.includes('failed')}
-        class:warning={restoreStatus.includes('no files were extracted')}
+        class:warning={restoreStatus.includes('no files were extracted') || restoreStatus.includes('warning')}
+        class:cancelled={restoreStatus.includes('cancelled')}
       >
         {restoreStatus}
       </div>
@@ -506,5 +565,109 @@
   .restore-result.warning {
     background: var(--color-warning-muted);
     color: var(--color-warning);
+  }
+
+  .restore-result.cancelled {
+    background: var(--color-surface-hover);
+    color: var(--color-text-muted);
+  }
+
+  .restore-progress-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .btn-cancel {
+    background: transparent;
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger);
+  }
+
+  .btn-cancel:hover:not(:disabled) {
+    background: var(--color-danger-muted);
+  }
+
+  .warnings-panel {
+    margin-top: var(--space-4);
+    background: var(--color-warning-muted);
+    border: 1px solid var(--color-warning);
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .warnings-head {
+    display: flex;
+    gap: var(--space-3);
+    align-items: flex-start;
+  }
+
+  .warnings-icon {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--color-warning);
+    color: var(--color-on-accent);
+    font-weight: 700;
+    font-size: var(--text-xs);
+  }
+
+  .warnings-head strong {
+    display: block;
+    color: var(--color-warning);
+    font-size: var(--text-sm);
+  }
+
+  .warnings-head p {
+    margin-top: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    line-height: 1.5;
+  }
+
+  .warnings-details summary {
+    cursor: pointer;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    list-style: none;
+  }
+
+  .warnings-details summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .warnings-details summary::before {
+    content: '▸ ';
+    color: var(--color-text-dim);
+  }
+
+  .warnings-details[open] summary::before {
+    content: '▾ ';
+  }
+
+  .warnings-list {
+    list-style: none;
+    margin-top: var(--space-2);
+    padding: var(--space-2);
+    background: var(--color-bg);
+    border-radius: var(--radius-sm);
+    max-height: 160px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .warnings-list code {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    word-break: break-all;
   }
 </style>

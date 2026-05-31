@@ -1,8 +1,15 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use borg_core::archive::ArchiveEntry;
-use borg_core::borg::{ArchiveInfo, BorgClient};
+use borg_core::borg::{ArchiveInfo, BorgClient, CancelToken};
 use borg_core::config::RepoConfig;
+
+/// Registry key for the single in-flight backup operation.
+const BACKUP_OP: &str = "backup";
+/// Registry key for the single in-flight restore operation.
+const RESTORE_OP: &str = "restore";
 
 /// Internal name for one-off backups invoked directly from the Backup page.
 /// Borg ignores this field, but it shows up in tracing logs.
@@ -34,6 +41,56 @@ async fn write_profiles(app: &tauri::AppHandle, data: &ProfilesData) -> Result<(
 
 pub struct AppState {
     pub borg: BorgClient,
+    /// Cancellation tokens for in-flight long-running operations, keyed by
+    /// [`BACKUP_OP`] / [`RESTORE_OP`]. Used so the UI can stop a running
+    /// backup or restore.
+    cancels: Mutex<HashMap<String, CancelToken>>,
+}
+
+impl AppState {
+    pub fn new(borg: BorgClient) -> Self {
+        Self {
+            borg,
+            cancels: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Register a fresh cancel token for `key`. Fails with `busy_msg` if an
+    /// operation is already registered under that key, so a second concurrent
+    /// backup/restore can't orphan the first one's cancellation. The backend
+    /// enforces this invariant rather than trusting the UI to gate it.
+    fn try_register_cancel(&self, key: &str, busy_msg: &str) -> Result<CancelToken, String> {
+        let mut map = self.cancels.lock().expect("cancel registry poisoned");
+        if map.contains_key(key) {
+            return Err(busy_msg.to_string());
+        }
+        let token = CancelToken::new();
+        map.insert(key.to_string(), token.clone());
+        Ok(token)
+    }
+
+    fn unregister_cancel(&self, key: &str) {
+        self.cancels
+            .lock()
+            .expect("cancel registry poisoned")
+            .remove(key);
+    }
+
+    /// Signal cancellation for `key`. Returns true if an operation was running.
+    fn signal_cancel(&self, key: &str) -> bool {
+        match self
+            .cancels
+            .lock()
+            .expect("cancel registry poisoned")
+            .get(key)
+        {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 #[tauri::command]
@@ -190,7 +247,7 @@ pub async fn create_backup(
     source_paths: Vec<String>,
     archive_name: String,
     excludes: Option<Vec<String>>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     repo.validate().map_err(|e| e.to_string())?;
     let compression = borg_core::config::Compression::default();
     compression.validate().map_err(|e| e.to_string())?;
@@ -200,10 +257,12 @@ pub async fn create_backup(
     borg_core::config::validate_exclude_patterns(&excludes).map_err(|e| e.to_string())?;
 
     let raw_paths: Vec<PathBuf> = source_paths.into_iter().map(PathBuf::from).collect();
-    // FIXME: VSS snapshot path is `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\...`,
-    // which borg stores verbatim. The `?` makes the archive un-restorable on Windows.
-    // Tracked in .claude/PRPs/plans/fix-vss-paths-in-archive.plan.md — until then we
-    // back up live files without VSS.
+    // NOTE: VSS snapshots are intentionally not used here. The shadow-copy path
+    // (`\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\...`) is stored verbatim
+    // by borg and the `?` makes the archive un-restorable on Windows (tracked in
+    // .claude/PRPs/plans/fix-vss-paths-in-archive.plan.md). We back up live files
+    // instead. Files that are exclusively locked at backup time are skipped with
+    // a warning rather than failing the whole backup (see the returned warnings).
     let backup_paths = raw_paths;
 
     let pass = lookup_passphrase(&repo);
@@ -216,19 +275,37 @@ pub async fn create_backup(
         repo,
     };
 
-    state
+    let cancel = state.try_register_cancel(BACKUP_OP, "a backup is already running")?;
+    let result = state
         .borg
         .create(
             &profile,
             &archive_name,
             None,
             pass.as_deref(),
+            &cancel,
             move |event| {
                 let _ = app.emit("backup-progress", &event);
             },
         )
-        .await
+        .await;
+    state.unregister_cancel(BACKUP_OP);
+
+    result
+        .map(|outcome| outcome.warnings)
         .map_err(|e| e.to_string())
+}
+
+/// Cancel a running backup. Returns true if a backup was in progress.
+#[tauri::command]
+pub async fn cancel_backup(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.signal_cancel(BACKUP_OP))
+}
+
+/// Cancel a running restore. Returns true if a restore was in progress.
+#[tauri::command]
+pub async fn cancel_restore(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.signal_cancel(RESTORE_OP))
 }
 
 #[tauri::command]
@@ -239,7 +316,7 @@ pub async fn restore_archive(
     archive_name: String,
     destination: String,
     paths: Option<Vec<String>>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     repo.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
 
@@ -256,7 +333,8 @@ pub async fn restore_archive(
     }
 
     let pass = lookup_passphrase(&repo);
-    state
+    let cancel = state.try_register_cancel(RESTORE_OP, "a restore is already running")?;
+    let result = state
         .borg
         .extract(
             &repo,
@@ -264,11 +342,16 @@ pub async fn restore_archive(
             &dest_path,
             &paths,
             pass.as_deref(),
+            &cancel,
             move |event| {
                 let _ = app.emit("restore-progress", &event);
             },
         )
-        .await
+        .await;
+    state.unregister_cancel(RESTORE_OP);
+
+    result
+        .map(|outcome| outcome.warnings)
         .map_err(|e| e.to_string())
 }
 
