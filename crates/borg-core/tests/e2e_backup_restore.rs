@@ -347,3 +347,96 @@ async fn prune_and_delete_manage_archives() {
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].name, "a2");
 }
+
+/// diff between two archives reports added / removed / modified paths.
+#[tokio::test]
+async fn diff_reports_added_removed_and_modified() {
+    use borg_core::borg::DiffStatus;
+
+    let client = borg_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let src = tmp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("keep.txt"), b"unchanged").unwrap();
+    fs::write(src.join("change.txt"), b"original").unwrap();
+    fs::write(src.join("gone.txt"), b"will be removed").unwrap();
+
+    let repo = local_repo(&repo_path);
+    client.init_repo(&repo, "none", None).await.unwrap();
+    let prof = profile(repo.clone(), vec![PathBuf::from(".")], vec![]);
+    let cancel = CancelToken::new();
+    client
+        .create(&prof, "before", Some(&src), None, &cancel, |_| {})
+        .await
+        .unwrap();
+
+    // Mutate the source: modify one file, delete one, add one.
+    fs::write(src.join("change.txt"), b"original plus much more content").unwrap();
+    fs::remove_file(src.join("gone.txt")).unwrap();
+    fs::write(src.join("fresh.txt"), b"brand new").unwrap();
+    client
+        .create(&prof, "after", Some(&src), None, &cancel, |_| {})
+        .await
+        .unwrap();
+
+    let diff = client
+        .diff_archives(&repo, "before", "after", None)
+        .await
+        .expect("diff should succeed");
+
+    let find = |needle: &str| diff.iter().find(|e| e.path.ends_with(needle));
+    assert_eq!(
+        find("fresh.txt").map(|e| e.status),
+        Some(DiffStatus::Added),
+        "fresh.txt should be Added; diff: {diff:?}"
+    );
+    assert_eq!(
+        find("gone.txt").map(|e| e.status),
+        Some(DiffStatus::Removed),
+        "gone.txt should be Removed; diff: {diff:?}"
+    );
+    let changed = find("change.txt").expect("change.txt should be in the diff");
+    assert_eq!(changed.status, DiffStatus::Modified);
+    assert!(
+        changed.added > 0,
+        "a longer file should report added bytes; got {changed:?}"
+    );
+    // An unchanged file should not appear as a content change.
+    assert!(
+        find("keep.txt").is_none_or(|e| e.status == DiffStatus::Changed),
+        "keep.txt content must not change; got {:?}",
+        find("keep.txt")
+    );
+}
+
+/// compact runs cleanly after a delete and returns a summary string.
+#[tokio::test]
+async fn compact_runs_after_delete() {
+    let client = borg_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let src = tmp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("data.bin"), vec![7u8; 4096]).unwrap();
+
+    let repo = local_repo(&repo_path);
+    client.init_repo(&repo, "none", None).await.unwrap();
+    let prof = profile(repo.clone(), vec![PathBuf::from(".")], vec![]);
+    let cancel = CancelToken::new();
+    client
+        .create(&prof, "c1", Some(&src), None, &cancel, |_| {})
+        .await
+        .unwrap();
+    client.delete_archive(&repo, "c1", None).await.unwrap();
+
+    let summary = client
+        .compact(&repo, None)
+        .await
+        .expect("compact should succeed on a valid repo");
+    assert!(!summary.is_empty(), "compact should return a summary line");
+
+    // The repo is still usable afterwards (list works, returns no archives).
+    let archives = client.list_archives(&repo, None).await.unwrap();
+    assert!(archives.is_empty(), "c1 was deleted before compaction");
+}

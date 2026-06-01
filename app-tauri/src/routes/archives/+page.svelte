@@ -7,6 +7,7 @@
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
   import ArchiveBrowser from '$lib/components/ArchiveBrowser.svelte';
+  import DiffViewer from '$lib/components/DiffViewer.svelte';
 
   interface Archive {
     name: string;
@@ -53,6 +54,18 @@
   let cancelBtn = $state<HTMLButtonElement | null>(null);
   let browsingArchive = $state<string | null>(null);
 
+  // Archive comparison: pick a baseline archive, then a second to diff against.
+  let compareFrom = $state<string | null>(null);
+  let comparing = $state<{ a: string; b: string } | null>(null);
+
+  // Repository compaction (reclaims space left by prune/delete).
+  let compacting = $state(false);
+  let compactStatus = $state('');
+
+  // A borg-touching operation is in flight; gate the per-archive actions so two
+  // operations can't fight over the repository lock.
+  let busy = $derived(!!restoringArchive || !!deletingArchive || compacting);
+
   $effect(() => {
     if (!confirmDeleteArchive) return;
 
@@ -64,6 +77,40 @@
 
     return () => window.removeEventListener('keydown', handler);
   });
+
+  $effect(() => {
+    if (!compareFrom) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') compareFrom = null;
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  });
+
+  function toggleCompare(name: string) {
+    if (compareFrom === null) {
+      compareFrom = name;
+    } else if (compareFrom === name) {
+      compareFrom = null;
+    } else {
+      comparing = { a: compareFrom, b: name };
+      compareFrom = null;
+    }
+  }
+
+  async function compactRepo() {
+    if (!repoState.config || busy) return;
+    compacting = true;
+    compactStatus = '';
+    try {
+      const summary = await invoke<string>('compact_repo', { repo: repoState.config });
+      compactStatus = summary || 'Compaction complete.';
+    } catch (e) {
+      compactStatus = `Compaction failed: ${e}`;
+    } finally {
+      compacting = false;
+    }
+  }
 
   let loadedKey = $state<string | null>(null);
   let pendingRepo = $state<RepoConfig | null>(null);
@@ -264,12 +311,28 @@
         <p class="subtitle">Browse and restore from backup archives</p>
       </div>
       {#if repoAvailable}
-        <button class="btn btn-secondary" onclick={refresh} disabled={loading}>
-          {loading ? 'Loading...' : 'Refresh'}
-        </button>
+        <div class="header-actions">
+          <button
+            class="btn btn-secondary"
+            onclick={compactRepo}
+            disabled={busy || loading}
+            title="Reclaim disk space left behind by deleted or pruned archives"
+          >
+            {compacting ? 'Compacting...' : 'Compact'}
+          </button>
+          <button class="btn btn-secondary" onclick={refresh} disabled={busy || loading}>
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
       {/if}
     </div>
   </header>
+
+  {#if compactStatus}
+    <div class="restore-result" class:error={compactStatus.includes('failed')}>
+      {compactStatus}
+    </div>
+  {/if}
 
   {#if !repoAvailable}
     <div class="empty-state">
@@ -284,18 +347,41 @@
       <p>No archives found. <a href="/backup">Create your first backup</a> to get started.</p>
     </div>
   {:else}
+    {#if compareFrom}
+      <div class="compare-banner">
+        Comparing from <code>{compareFrom}</code> — pick a second archive to see what
+        changed, or press Esc to cancel.
+      </div>
+    {/if}
     <div class="archive-list">
       {#each archives as archive}
-        <div class="archive-row">
+        <div class="archive-row" class:compare-base={compareFrom === archive.name}>
           <div class="archive-info">
             <div class="archive-name">{archive.name}</div>
             <div class="archive-date">{archive.start}</div>
           </div>
           <div class="archive-actions">
             <button
+              class="btn btn-ghost"
+              class:active={compareFrom === archive.name}
+              onclick={() => toggleCompare(archive.name)}
+              disabled={busy}
+              title={compareFrom === null
+                ? 'Pick this archive as the comparison baseline'
+                : compareFrom === archive.name
+                  ? 'Cancel comparison'
+                  : `Compare ${compareFrom} → ${archive.name}`}
+            >
+              {compareFrom === archive.name
+                ? '✕ Base'
+                : compareFrom
+                  ? 'Compare ▸'
+                  : 'Compare'}
+            </button>
+            <button
               class="btn btn-secondary"
               onclick={() => browsingArchive = archive.name}
-              disabled={!!restoringArchive || !!deletingArchive}
+              disabled={busy}
               title="Browse archive contents"
             >
               Browse
@@ -303,14 +389,14 @@
             <button
               class="btn btn-restore"
               onclick={() => restoreArchive(archive.name)}
-              disabled={!!restoringArchive || !!deletingArchive}
+              disabled={busy}
             >
               {restoringArchive === archive.name ? 'Restoring...' : 'Restore'}
             </button>
             <button
               class="btn btn-delete"
               onclick={() => confirmDeleteArchive = archive.name}
-              disabled={!!restoringArchive || !!deletingArchive}
+              disabled={busy}
               title="Delete archive"
             >
               {deletingArchive === archive.name ? 'Deleting...' : 'Delete'}
@@ -397,6 +483,15 @@
     />
   {/if}
 
+  {#if comparing && repoState.config}
+    <DiffViewer
+      repo={repoState.config}
+      archiveA={comparing.a}
+      archiveB={comparing.b}
+      onClose={() => comparing = null}
+    />
+  {/if}
+
   {#if confirmDeleteArchive}
     <div
       class="modal-backdrop"
@@ -436,6 +531,51 @@
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex-shrink: 0;
+  }
+
+  .compare-banner {
+    margin-bottom: var(--space-3);
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-md);
+    background: var(--color-accent-muted, var(--color-surface-hover));
+    border: 1px solid var(--color-accent);
+    color: var(--color-text);
+    font-size: var(--text-sm);
+  }
+
+  .compare-banner code {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    background: var(--color-surface);
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+  }
+
+  .archive-row.compare-base {
+    border-color: var(--color-accent);
+  }
+
+  .btn-ghost {
+    background: transparent;
+    border: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+  }
+
+  .btn-ghost:hover:not(:disabled) {
+    border-color: var(--color-accent);
+    color: var(--color-text);
+  }
+
+  .btn-ghost.active {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+    font-weight: 600;
   }
 
   .page-header h1 {
