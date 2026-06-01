@@ -1,18 +1,23 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { repoState } from '$lib/stores/repo.svelte';
+  import { repoState, describeRepo } from '$lib/stores/repo.svelte';
+  import { scheduleState, describeSchedule, nextRun } from '$lib/stores/schedule.svelte';
   import { historyState, type BackupEvent } from '$lib/stores/history.svelte';
+  import { formatBytes } from '$lib/format';
 
   let borgVersion = $state('checking...');
   let borgError = $state('');
 
-  let repoHost = $derived(
-    repoState.config
-      ? `${repoState.config.ssh_user}@${repoState.config.ssh_host}:${repoState.config.repo_path}`
-      : ''
+  let repoHost = $derived(repoState.config ? describeRepo(repoState.config) : '');
+  let hasRepo = $derived(repoState.hasRepo);
+  let schedule = $derived(scheduleState.config);
+  let scheduleLabel = $derived(
+    schedule && schedule.enabled ? describeSchedule(schedule) : ''
   );
-  let connected = $derived(repoState.connected);
+  let scheduleNext = $derived(
+    schedule && schedule.enabled ? nextRun(schedule) : null
+  );
   let events = $derived(historyState.events);
   let lastBackup = $derived(
     [...events]
@@ -43,11 +48,12 @@
     return remMin === 0 ? `${hr}h` : `${hr}h ${remMin}m`;
   }
 
-  function formatBytes(bytes: number): string {
-    if (bytes === 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+  function formatNextRun(date: Date): string {
+    return date.toLocaleString(undefined, {
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   }
 
   onMount(async () => {
@@ -61,6 +67,11 @@
       await historyState.load();
     } catch (e) {
       console.warn('Failed to load history:', e);
+    }
+    try {
+      await scheduleState.load();
+    } catch (e) {
+      console.warn('Failed to load schedule:', e);
     }
   });
 </script>
@@ -98,7 +109,7 @@
 
     <div class="status-card">
       <div class="card-label">Repository</div>
-      {#if connected}
+      {#if hasRepo}
         <div class="card-value connected">{repoHost}</div>
       {:else}
         <div class="card-value dimmed">Not connected</div>
@@ -108,9 +119,54 @@
 
     <div class="status-card">
       <div class="card-label">Next Scheduled</div>
-      <div class="card-value dimmed">Not scheduled</div>
+      {#if scheduleLabel}
+        <div class="card-value">{scheduleLabel}</div>
+        {#if scheduleNext}
+          <div class="card-detail">Next run {formatNextRun(scheduleNext)}</div>
+        {/if}
+      {:else}
+        <div class="card-value dimmed">Not scheduled</div>
+        <a href="/settings" class="card-action">Set up →</a>
+      {/if}
     </div>
   </div>
+
+  {#if !hasRepo}
+    <section class="first-run">
+      <h2>Let's get you set up</h2>
+      <p class="first-run-intro">Four quick steps and your PC is protected. Do them in order.</p>
+      <ol class="checklist">
+        <li>
+          <span class="step-num">1</span>
+          <div class="step-body">
+            <a href="/settings">Choose a backup destination</a>
+            <p>A backup server (SSH) or a local folder, USB drive, or network share.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">2</span>
+          <div class="step-body">
+            <a href="/settings">Initialize or connect the repository</a>
+            <p>Create a fresh repository for a new destination, or connect to one you already have.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">3</span>
+          <div class="step-body">
+            <a href="/settings">Set your passphrase</a>
+            <p>The password that unlocks your encrypted backups. Keep it somewhere safe.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-num">4</span>
+          <div class="step-body">
+            <a href="/backup">Run your first backup</a>
+            <p>Pick the folders you care about and let BorgUI do the rest.</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+  {/if}
 
   <section class="recent-section">
     <h2>Recent Activity</h2>
@@ -231,6 +287,65 @@
     font-size: var(--text-xl);
     font-weight: 600;
     margin-bottom: var(--space-4);
+  }
+
+  .first-run {
+    background: var(--color-surface);
+    border: 1px solid var(--color-accent-muted);
+    border-radius: var(--radius-lg);
+    padding: var(--space-6);
+    margin-bottom: var(--space-8);
+  }
+
+  .first-run h2 {
+    font-size: var(--text-xl);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .first-run-intro {
+    margin-top: var(--space-1);
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+  }
+
+  .checklist {
+    list-style: none;
+    margin-top: var(--space-6);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .checklist li {
+    display: flex;
+    gap: var(--space-3);
+    align-items: flex-start;
+  }
+
+  .step-num {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--color-accent-muted);
+    color: var(--color-accent);
+    font-size: var(--text-xs);
+    font-weight: 700;
+  }
+
+  .step-body a {
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+
+  .step-body p {
+    margin-top: 2px;
+    font-size: var(--text-xs);
+    color: var(--color-text-dim);
+    line-height: 1.5;
   }
 
   .empty-state {
