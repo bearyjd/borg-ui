@@ -7,6 +7,7 @@
   import FieldHelp from '$lib/components/FieldHelp.svelte';
   import ProfilesSection from '$lib/components/settings/ProfilesSection.svelte';
   import ArchiveNamingSection from '$lib/components/settings/ArchiveNamingSection.svelte';
+  import CommandsSection from '$lib/components/settings/CommandsSection.svelte';
   import NotificationsSection from '$lib/components/settings/NotificationsSection.svelte';
   import ScheduleSection from '$lib/components/settings/ScheduleSection.svelte';
   import RetentionSection from '$lib/components/settings/RetentionSection.svelte';
@@ -268,6 +269,7 @@
 
   {#if profilesState.active}
     <ArchiveNamingSection />
+    <CommandsSection />
   {/if}
 
   <form class="settings-form" onsubmit={(e) => { e.preventDefault(); save(); }}>
