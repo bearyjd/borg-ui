@@ -7,8 +7,8 @@ SSH_USER="borgtest"
 SSH_PASS="Password1!"
 SSH_PORT=2222
 SSH_HOST="localhost"
-MAX_BOOT_WAIT=600
-MAX_SSH_WAIT=600
+MAX_BOOT_WAIT=1800
+MAX_SSH_WAIT=1200
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -19,7 +19,7 @@ log()  { echo -e "${GREEN}[smoke]${NC} $*"; }
 warn() { echo -e "${YELLOW}[smoke]${NC} $*"; }
 fail() { echo -e "${RED}[smoke]${NC} $*" >&2; exit 1; }
 
-SSH_CMD="sshpass -p $SSH_PASS ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -p $SSH_PORT $SSH_USER@$SSH_HOST"
+SSH_CMD="sshpass -p $SSH_PASS ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=240 -o TCPKeepAlive=yes -p $SSH_PORT $SSH_USER@$SSH_HOST"
 SCP_CMD="sshpass -p $SSH_PASS scp -o StrictHostKeyChecking=no -P $SSH_PORT"
 
 cleanup() {
