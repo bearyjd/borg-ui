@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use borg_core::archive::ArchiveEntry;
-use borg_core::borg::{ArchiveInfo, BorgClient, CancelToken};
+use borg_core::borg::{ArchiveInfo, BorgClient, CancelToken, DiffEntry};
 use borg_core::config::RepoConfig;
 
 /// Registry key for the single in-flight backup operation.
@@ -236,6 +236,38 @@ pub async fn delete_archive(
     state
         .borg
         .delete_archive(&repo, &archive_name, pass.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn diff_archives(
+    state: State<'_, AppState>,
+    repo: RepoConfig,
+    archive_a: String,
+    archive_b: String,
+) -> Result<Vec<DiffEntry>, String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    borg_core::config::validate_archive_name(&archive_a).map_err(|e| e.to_string())?;
+    borg_core::config::validate_archive_name(&archive_b).map_err(|e| e.to_string())?;
+    if archive_a == archive_b {
+        return Err("choose two different archives to compare".into());
+    }
+    let pass = lookup_passphrase(&repo);
+    state
+        .borg
+        .diff_archives(&repo, &archive_a, &archive_b, pass.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn compact_repo(state: State<'_, AppState>, repo: RepoConfig) -> Result<String, String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    let pass = lookup_passphrase(&repo);
+    state
+        .borg
+        .compact(&repo, pass.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
