@@ -357,6 +357,23 @@
   let passphraseSaving = $state(false);
   let passphraseResult = $state('');
 
+  // Close any open modal with the Escape key. Mirrors the click-backdrop-to-close
+  // behaviour so modals are dismissable from the keyboard too.
+  $effect(() => {
+    const anyOpen =
+      renameModalOpen || deleteModalOpen || clearPassphraseModalOpen || passphraseModalOpen;
+    if (!anyOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      renameModalOpen = false;
+      deleteModalOpen = false;
+      clearPassphraseModalOpen = false;
+      passphraseModalOpen = false;
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   let initEncryption = $state<'repokey' | 'keyfile' | 'repokey-blake2' | 'keyfile-blake2' | 'authenticated' | 'authenticated-blake2' | 'none'>('repokey-blake2');
   let initPassphrase = $state('');
   let initPassphraseConfirm = $state('');
@@ -554,8 +571,14 @@
     retentionPruning = true;
     retentionResult = '';
     try {
-      await invoke('prune_repo', { repo: buildRepoConfig(), retention: currentRetention() });
-      retentionResult = 'Prune completed successfully.';
+      const warnings = await invoke<string[]>('prune_repo', {
+        repo: buildRepoConfig(),
+        retention: currentRetention(),
+      });
+      retentionResult =
+        warnings.length > 0
+          ? `Prune completed with ${warnings.length} warning${warnings.length === 1 ? '' : 's'}: ${warnings.join('; ')}`
+          : 'Prune completed successfully.';
     } catch (e) {
       retentionResult = `Prune failed: ${e}`;
     } finally {

@@ -182,7 +182,7 @@ pub async fn prune_repo(
     state: State<'_, AppState>,
     repo: RepoConfig,
     retention: borg_core::config::RetentionConfig,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     repo.validate().map_err(|e| e.to_string())?;
     retention.validate().map_err(|e| e.to_string())?;
     let pass = lookup_passphrase(&repo);
@@ -190,6 +190,7 @@ pub async fn prune_repo(
         .borg
         .prune(&repo, &retention, pass.as_deref())
         .await
+        .map(|outcome| outcome.warnings)
         .map_err(|e| e.to_string())
 }
 

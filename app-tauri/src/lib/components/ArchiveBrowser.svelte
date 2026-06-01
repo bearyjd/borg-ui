@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import type { RepoConfig } from '$lib/stores/repo.svelte';
+  import { formatBytes } from '$lib/format';
   import {
     buildTree,
     collectFilePaths,
@@ -94,12 +95,6 @@
     onRestore([...selected]);
   }
 
-  function formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-    return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
-  }
 </script>
 
 <div class="modal-backdrop" onclick={onClose} role="presentation">
@@ -204,7 +199,7 @@
       </span>
       <span class="name" title={node.path}>{node.name}</span>
       {#if !node.isDir}
-        <span class="size">{formatSize(node.size)}</span>
+        <span class="size">{formatBytes(node.size)}</span>
       {/if}
     </div>
     {#if node.isDir && isOpen}

@@ -4,6 +4,7 @@
   import { repoState, describeRepo } from '$lib/stores/repo.svelte';
   import { scheduleState, describeSchedule, nextRun } from '$lib/stores/schedule.svelte';
   import { historyState, type BackupEvent } from '$lib/stores/history.svelte';
+  import { formatBytes } from '$lib/format';
 
   let borgVersion = $state('checking...');
   let borgError = $state('');
@@ -45,13 +46,6 @@
     const hr = Math.floor(min / 60);
     const remMin = min % 60;
     return remMin === 0 ? `${hr}h` : `${hr}h ${remMin}m`;
-  }
-
-  function formatBytes(bytes: number): string {
-    if (bytes === 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
   }
 
   function formatNextRun(date: Date): string {

@@ -65,24 +65,67 @@
     return () => window.removeEventListener('keydown', handler);
   });
 
+  let loadedKey = $state<string | null>(null);
+  let pendingRepo = $state<RepoConfig | null>(null);
+
+  function repoKey(r: RepoConfig): string {
+    return isLocalRepo(r)
+      ? `local:${r.repo_path}`
+      : `ssh:${r.ssh_user}@${r.ssh_host}:${r.ssh_port}/${r.repo_path}`;
+  }
+
   $effect(() => {
     const r = repoState.config;
     const ready = r && (r.ssh_host || (isLocalRepo(r) && r.repo_path));
-    if (ready && untrack(() => !loading)) {
-      loadArchives(r);
+    // `untrack` so the load machinery's reads (loading/pendingRepo) don't make
+    // this effect depend on them; it should re-run only when the repo changes.
+    if (!ready) {
+      untrack(() => {
+        archives = [];
+        error = '';
+        loadedKey = null;
+      });
+      return;
     }
+    untrack(() => requestLoad(r));
   });
 
+  function requestLoad(r: RepoConfig) {
+    if (loading) {
+      // A load is in flight; remember the latest repo so a profile switch
+      // mid-load isn't dropped (it reloads when the current one finishes).
+      pendingRepo = r;
+      return;
+    }
+    void loadArchives(r);
+  }
+
   async function loadArchives(r: RepoConfig) {
-    if (loading) return;
+    const key = repoKey(r);
+    // Switching to a different repo: drop the previous repo's list (and its
+    // stale result banners) so the user never sees the wrong profile's archives.
+    if (loadedKey && loadedKey !== key) {
+      archives = [];
+      deleteStatus = '';
+      if (!restoringArchive) {
+        restoreStatus = '';
+        restoreWarnings = [];
+      }
+    }
     loading = true;
     error = '';
     try {
       archives = await invoke<Archive[]>('list_archives', { repo: r });
+      loadedKey = key;
     } catch (e) {
       error = `Failed to load archives: ${e}`;
     } finally {
       loading = false;
+      if (pendingRepo) {
+        const next = pendingRepo;
+        pendingRepo = null;
+        if (repoKey(next) !== key) void loadArchives(next);
+      }
     }
   }
 
@@ -164,7 +207,9 @@
         ...(restoreFileCount > 0 ? { file_count: restoreFileCount } : {}),
       }).catch((err) => console.warn('Failed to record history:', err));
     } catch (e) {
-      if (String(e).toLowerCase().includes('operation cancelled')) {
+      // Prefer the flag set when the user hit Cancel; fall back to matching the
+      // backend's "operation cancelled" message.
+      if (restoreCancelling || String(e).toLowerCase().includes('operation cancelled')) {
         restoreStatus =
           'Restore cancelled. Some files may already have been written to the destination folder.';
         // Cancelled restore is not a failure; skip history.

@@ -357,7 +357,7 @@ impl BorgClient {
         repo: &RepoConfig,
         retention: &crate::config::RetentionConfig,
         passphrase: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<OpOutcome> {
         let mut cmd = self.base_command_with(passphrase);
         cmd.arg("prune");
 
@@ -379,8 +379,20 @@ impl BorgClient {
 
         cmd.arg(repo.location());
 
-        self.run_checked(cmd, "prune", None).await?;
-        Ok(())
+        let output = self.run_checked(cmd, "prune", None).await?;
+        // borg prune exits 1 (warning) for non-fatal issues; collect the plain
+        // stderr lines so the caller can surface them.
+        let warnings = if output.status.code() == Some(1) {
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Ok(OpOutcome { warnings })
     }
 
     pub async fn init_repo(

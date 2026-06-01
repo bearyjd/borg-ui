@@ -6,6 +6,7 @@
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
   import { profilesState } from '$lib/stores/profiles.svelte';
+  import { formatBytes } from '$lib/format';
 
   interface ArchiveProgress {
     type: 'archive_progress';
@@ -73,13 +74,6 @@
   let originalSize = $state(0);
   let compressedSize = $state(0);
   let deduplicatedSize = $state(0);
-
-  function formatBytes(bytes: number): string {
-    if (bytes === 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
-  }
 
   function resetProgress() {
     currentFile = '';
@@ -171,10 +165,12 @@
         original_size: originalSize || undefined,
       }).catch((err) => console.warn('Failed to record history:', err));
     } catch (e) {
-      if (String(e).toLowerCase().includes('operation cancelled')) {
+      // Prefer the flag we set when the user hit Cancel; fall back to matching
+      // the backend's "operation cancelled" message. Either way, a cancel is not
+      // a failure.
+      if (cancelling || String(e).toLowerCase().includes('operation cancelled')) {
         cancelled = true;
         status = 'Backup cancelled.';
-        // A cancelled backup is not a failure to record loudly; skip history.
         return;
       }
       status = `Backup failed: ${e}`;

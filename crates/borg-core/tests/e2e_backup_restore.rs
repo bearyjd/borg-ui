@@ -334,7 +334,11 @@ async fn prune_and_delete_manage_archives() {
         keep_daily: Some(100),
         ..Default::default()
     };
-    client.prune(&repo, &retention, None).await.unwrap();
+    let prune_warnings = client.prune(&repo, &retention, None).await.unwrap();
+    assert!(
+        prune_warnings.warnings.is_empty(),
+        "a keep-all prune should report no warnings"
+    );
     assert_eq!(client.list_archives(&repo, None).await.unwrap().len(), 2);
 
     // Deleting a1 leaves only a2.

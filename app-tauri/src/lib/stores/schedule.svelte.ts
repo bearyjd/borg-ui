@@ -15,14 +15,20 @@ export function describeSchedule(config: ScheduleConfig): string {
   return `Daily at ${hh}:${mm}`;
 }
 
-/** Compute the next scheduled run as a Date, or null when not applicable. */
+/**
+ * Compute the next scheduled run as a Date, or null when it can't be predicted.
+ *
+ * Daily runs at a fixed HH:MM (Task Scheduler `/SC DAILY /ST HH:MM`), so the
+ * next run is exact. Hourly runs are registered with `/SC HOURLY /MO 1` and no
+ * `/ST`, so Windows anchors them to whenever the task was registered — the exact
+ * minute isn't knowable here. Return null for hourly rather than show a clock
+ * time that could be up to ~59 min off; the UI falls back to the "Every hour"
+ * label.
+ */
 export function nextRun(config: ScheduleConfig, from: Date = new Date()): Date | null {
   if (!config.enabled) return null;
   if (config.schedule.type === 'hourly') {
-    const next = new Date(from);
-    next.setMinutes(0, 0, 0);
-    next.setHours(next.getHours() + 1);
-    return next;
+    return null;
   }
   const { hour, minute } = config.schedule;
   const next = new Date(from);
