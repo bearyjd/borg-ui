@@ -2,6 +2,19 @@
 
 Roadmap derived from a competitive analysis vs Vorta (the established BorgBackup GUI for macOS/Linux). BorgUI's differentiation is Windows + VSS snapshots + native Task Scheduler — these are features Vorta does not offer. The gaps below are what Vorta provides that BorgUI does not yet.
 
+## Current status (2026-06-01)
+
+Phases 1–2 are complete and Phase 3 is mostly done. A production-readiness pass shipped in **#22**:
+
+- Warning-safe backups — a locked/in-use file (borg exit code 1) is skipped with a warning instead of failing the whole backup.
+- Fixed selective restore (positional literal paths) and the bug where every successful restore was reported as a failure (`borg extract` emits only `progress_percent`, never `archive_progress`).
+- Backup/restore cancellation + timeouts on interactive ops.
+- **Local / USB / network-folder repositories** (no SSH server needed).
+- Self-evident UI: inline help + examples on every Settings section; Settings split into per-section components.
+- Real-borg end-to-end test suite (`crates/borg-core/tests/e2e_backup_restore.rs`).
+
+**Open items:** archive-tree virtualization for 100k+ entry archives (#23); VSS remains intentionally disabled (live-file backup — see `.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md`). **Not yet validated on real Windows** — run one live backup→restore round-trip on the target machine before production use.
+
 ## Phase 1 — Make it usable (critical gaps)
 
 Without these, BorgUI can create backups but not complete the full lifecycle.
@@ -26,7 +39,7 @@ These turn BorgUI from a foreground tool into a daemon-like backup app users act
 
 Feature parity with Vorta where it pays off.
 
-- [x] **Archive browsing (tree view)** — `borg list --json-lines` via new `list_archive_contents` command, modal tree UI with collapsible folders, indeterminate-state folder checkboxes, Select all / Clear, "Restore selected" passes paths through to `borg extract` _(PR-pending)_
+- [x] **Archive browsing (tree view)** — `borg list --json-lines` via new `list_archive_contents` command, modal tree UI with collapsible folders, indeterminate-state folder checkboxes, Select all / Clear, "Restore selected" passes paths through to `borg extract` _(#22)_
 - [ ] **Archive diff** — `borg diff` between two selected archives, tree view of changes
 - [ ] **Pre/post backup commands** — run shell commands before/after backup with `$repo_url`, `$archive_name` substitution
 - [x] **Custom archive naming templates** — per-profile template with `{date}`/`{time}`/`{datetime}`/`{hostname}`/`{profile}`/`{random}` variables, live preview in settings, applied by backup page via `preview_archive_name` command
