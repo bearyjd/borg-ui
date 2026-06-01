@@ -32,6 +32,7 @@
   let restoreStatus = $state('');
   let restoreFile = $state('');
   let restoreFileCount = $state(0);
+  let restoreProgressMsg = $state('');
   let restoreCancelling = $state(false);
   let restoreWarnings = $state<string[]>([]);
 
@@ -103,6 +104,7 @@
       : 'Restoring...';
     restoreFile = '';
     restoreFileCount = 0;
+    restoreProgressMsg = '';
 
     const startMs = Date.now();
     let unlisten: UnlistenFn | undefined;
@@ -112,8 +114,16 @@
         if (data.type === 'archive_progress') {
           if (data.path) restoreFile = data.path;
           if (data.nfiles != null) restoreFileCount = data.nfiles;
-        } else if (data.type === 'progress_percent' && data.finished) {
-          restoreStatus = 'Finalizing...';
+        } else if (data.type === 'progress_percent') {
+          // borg `extract` reports live progress here: `message` looks like
+          // "20.0% Extracting: dir/file.txt". Surface it so the panel stays
+          // informative (extract emits no `archive_progress` events).
+          if (data.finished) {
+            restoreStatus = 'Finalizing...';
+            restoreProgressMsg = '';
+          } else if (data.message) {
+            restoreProgressMsg = data.message.trim();
+          }
         }
       });
 
@@ -124,42 +134,35 @@
         paths: paths && paths.length > 0 ? paths : null,
       });
       restoreWarnings = Array.isArray(result) ? result : [];
-      if (restoreFileCount === 0) {
-        // borg exits 0 with no files extracted when no archive entries match
-        // the supplied PATHs. Surface that explicitly so users aren't told
-        // "restored" when nothing landed on disk.
-        restoreStatus = `Restore exited cleanly but no files were extracted — check that your selection matches paths inside the archive.`;
-        notificationsState.notify(
-          'Restore extracted 0 files',
-          `No archive entries matched the selection for "${archiveName}".`,
-        );
-        historyState.record({
-          id: `${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          kind: 'restore',
-          archive_name: archiveName,
-          outcome: 'failure',
-          duration_seconds: Math.round((Date.now() - startMs) / 1000),
-          error_message: 'borg extract matched 0 files',
-        }).catch((err) => console.warn('Failed to record history:', err));
+
+      // borg `extract` reports progress ONLY via `progress_percent` events — it
+      // never emits `archive_progress`/`nfiles` (unlike `create`). So
+      // `restoreFileCount` stays 0 even on a perfectly good restore and is NOT a
+      // reliable success signal. Trust the backend result instead: a resolved
+      // promise means borg exited cleanly (rc 0, or rc 1 with warnings). A
+      // selective restore whose paths matched nothing surfaces borg's
+      // "include pattern never matched" text in `restoreWarnings`, so the user
+      // is still told when nothing landed on disk.
+      const fileCountLabel =
+        restoreFileCount > 0 ? ` (${restoreFileCount.toLocaleString()} files)` : '';
+      if (restoreWarnings.length > 0) {
+        restoreStatus = `Restore finished with ${restoreWarnings.length} warning${restoreWarnings.length === 1 ? '' : 's'} — files written to ${dest}. See details below.`;
       } else {
-        restoreStatus = restoreWarnings.length > 0
-          ? `Restored ${restoreFileCount.toLocaleString()} files to ${dest} (${restoreWarnings.length} warning${restoreWarnings.length === 1 ? '' : 's'})`
-          : `Restored ${restoreFileCount.toLocaleString()} files to ${dest}`;
-        notificationsState.notify(
-          'Restore complete',
-          `Archive "${archiveName}" restored (${restoreFileCount.toLocaleString()} files).`,
-        );
-        historyState.record({
-          id: `${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          kind: 'restore',
-          archive_name: archiveName,
-          outcome: 'success',
-          duration_seconds: Math.round((Date.now() - startMs) / 1000),
-          file_count: restoreFileCount,
-        }).catch((err) => console.warn('Failed to record history:', err));
+        restoreStatus = `Restore complete — files written to ${dest}${fileCountLabel}.`;
       }
+      notificationsState.notify(
+        'Restore complete',
+        `Archive "${archiveName}" restored to ${dest}.`,
+      );
+      historyState.record({
+        id: `${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        kind: 'restore',
+        archive_name: archiveName,
+        outcome: 'success',
+        duration_seconds: Math.round((Date.now() - startMs) / 1000),
+        ...(restoreFileCount > 0 ? { file_count: restoreFileCount } : {}),
+      }).catch((err) => console.warn('Failed to record history:', err));
     } catch (e) {
       if (String(e).toLowerCase().includes('operation cancelled')) {
         restoreStatus =
@@ -293,7 +296,9 @@
             {restoreCancelling ? 'Cancelling…' : 'Cancel'}
           </button>
         </div>
-        {#if restoreFile}
+        {#if restoreProgressMsg}
+          <code class="restore-file">{restoreProgressMsg}</code>
+        {:else if restoreFile}
           <code class="restore-file">{restoreFile}</code>
         {/if}
         {#if restoreFileCount > 0}
