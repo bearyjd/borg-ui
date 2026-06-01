@@ -10,6 +10,8 @@ export interface Profile {
   schedule: ScheduleConfig | null;
   retention: RetentionConfig | null;
   archive_template: string | null;
+  pre_backup: string | null;
+  post_backup: string | null;
 }
 
 export interface ProfilesData {

@@ -74,6 +74,7 @@ pub fn run() {
             commands::rename_profile,
             commands::delete_profile,
             commands::set_profile_template,
+            commands::set_profile_hooks,
             commands::preview_archive_name,
             commands::export_profile,
             commands::import_profile,

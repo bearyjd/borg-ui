@@ -41,7 +41,7 @@ Feature parity with Vorta where it pays off.
 
 - [x] **Archive browsing (tree view)** — `borg list --json-lines` via new `list_archive_contents` command, modal tree UI with collapsible folders, indeterminate-state folder checkboxes, Select all / Clear, "Restore selected" passes paths through to `borg extract` _(#22)_
 - [x] **Archive diff** — `borg diff --json-lines` between two selected archives via new `diff_archives` command; pick a baseline on the Archives page, then a second archive, and a modal lists added/removed/modified paths with byte deltas (metadata-only changes hidden by default)
-- [ ] **Pre/post backup commands** — run shell commands before/after backup with `$repo_url`, `$archive_name` substitution
+- [x] **Pre/post backup commands** — per-profile shell commands run before/after a backup with `$repo_url` / `$archive_name` substitution (borg-core `hooks` module + `set_profile_hooks` command + Settings "Pre / Post Commands" section). A failing pre-command aborts the backup; a failing post-command is surfaced as a warning. Wired into the manual backup path (`create_backup`)
 - [x] **Custom archive naming templates** — per-profile template with `{date}`/`{time}`/`{datetime}`/`{hostname}`/`{profile}`/`{random}` variables, live preview in settings, applied by backup page via `preview_archive_name` command
 - [ ] **Autostart at login** — Windows registry entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 - [x] **Repository compaction** — `borg compact` via new `compact_repo` command; "Compact" button on the Archives page reclaims space left by prune/delete and reports how much was freed (requires borg 1.2+)

@@ -69,7 +69,8 @@ One live round-trip on the target Windows machine **with the actual app**: confi
 - **`CREATE_NO_WINDOW` on spawned processes (Windows)** — DONE in `crates/borg-core/src/proc.rs`: `proc::command()` builds a `std::process::Command`, sets `CREATE_NO_WINDOW` under `#[cfg(windows)]`, then converts to `tokio::process::Command`. All borg (`borg.rs::base_command_with`) and ssh (`ssh.rs`) spawns route through it; no-op on non-Windows. Suppresses the cosmetic console-window flash. **Still needs a visual confirm in the real Windows GUI** — it compiles cross-platform and Linux e2e proves spawning is unaffected, but the window-suppression itself can't be verified headless. (It is unrelated to the headless-e2e spawn hang, which has a different root cause.)
 - **#23** — stream + virtualize archive contents for very large archives (100k+ entries). Perf only.
 - **VSS** — disabled because shadow-copy paths (`\\?\GLOBALROOT\...`) are unrestorable on Windows. Plan: `.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md`. Live-file backup is the current safe posture (locked files warn, not fail).
-- TODO.md Phase 3 leftovers: archive diff, pre/post commands, autostart, repo compaction.
+- TODO.md Phase 3 leftovers: **autostart at login** (Windows registry `Run` key) is the only one left — archive diff, repository compaction, and pre/post backup commands are now done.
+- **Pre/post backup commands** run only on the manual backup path (`create_backup`). Scheduled backups don't run them — because the scheduler registers `<exe> --scheduled-backup` but **nothing in the app handles that argument**, so scheduled headless backups don't actually run at all yet. Wiring up a headless `--scheduled-backup` runner (which would also load the profile's pre/post hooks) is a separate, pre-existing gap.
 
 ## Gotchas worth knowing
 
