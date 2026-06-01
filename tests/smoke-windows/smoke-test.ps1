@@ -31,6 +31,14 @@ function Fail($name, $detail) {
 Write-TestHeader "rust_toolchain"
 
 $env:PATH = "C:\mingw64\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
+# Build offline: all deps are pre-cached in the VM's cargo registry. The sparse
+# crates.io index makes a per-crate network request for every dependency on each
+# run, which stalls indefinitely in this VM. Offline mode skips the index
+# entirely and uses the local cache.
+$env:CARGO_NET_OFFLINE = "true"
+# The VM has only ~4 GB RAM; cap parallelism so linking the test/release builds
+# doesn't exhaust memory and thrash.
+$env:CARGO_BUILD_JOBS = "2"
 $rustc = & rustc --version 2>&1
 if ($rustc -match "rustc") {
     Pass "rust_toolchain" "$rustc"
@@ -125,6 +133,60 @@ if ($arch -eq "AMD64") {
     Pass "windows_env" "$os ($arch)"
 } else {
     Fail "windows_env" "Unexpected architecture: $arch"
+}
+
+# ------------------------------------------------------------------
+# Test 8: borg.exe available (download the Windows build)
+# ------------------------------------------------------------------
+Write-TestHeader "borg_install"
+
+$borgDir = "C:\borg"
+$borgExe = $null
+$existing = Get-ChildItem $borgDir -Recurse -Filter borg.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($existing) {
+    $borgExe = $existing.FullName
+    $ver = (& $borgExe --version 2>&1 | Out-String).Trim()
+    Pass "borg_install" "borg.exe present at $borgExe ($ver)"
+} else {
+    try {
+        $zip = "$env:TEMP\borg-windows.zip"
+        $url = "https://github.com/marcpope/borg-windows/releases/download/v1.4.4-win6/borg-windows.zip"
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+        New-Item -ItemType Directory -Force -Path $borgDir | Out-Null
+        Expand-Archive -Path $zip -DestinationPath $borgDir -Force
+        $found = Get-ChildItem $borgDir -Recurse -Filter borg.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) {
+            $borgExe = $found.FullName
+            $ver = (& $borgExe --version 2>&1 | Out-String).Trim()
+            Pass "borg_install" "borg.exe at $borgExe ($ver)"
+        } else {
+            Fail "borg_install" "borg.exe not found in extracted archive"
+        }
+    } catch {
+        Fail "borg_install" "Download/extract failed: $_"
+    }
+}
+
+# ------------------------------------------------------------------
+# Test 9: real backup -> restore end-to-end on Windows (the point of this run)
+# Drives the actual borg.exe through init/create/list/extract/byte-verify
+# against a local Windows repo path. The two unix-only cases (?-filenames,
+# chmod-000) are #[cfg(unix)] and compile out here, leaving 4 cross-platform
+# tests.
+# ------------------------------------------------------------------
+Write-TestHeader "e2e_backup_restore"
+
+if (-not $borgExe) {
+    Fail "e2e_backup_restore" "borg.exe unavailable; cannot run end-to-end tests"
+} else {
+    $env:BORG_TEST_BIN = $borgExe
+    $output = & cargo test -p borg-core --test e2e_backup_restore --manifest-path "$SourceDir\Cargo.toml" -- --nocapture 2>&1 | Out-String
+    if ($output -match "test result: ok\. (\d+) passed" -and [int]$Matches[1] -gt 0) {
+        Pass "e2e_backup_restore" "$($Matches[1]) real-borg backup->restore tests passed on Windows"
+    } else {
+        Fail "e2e_backup_restore" "end-to-end backup/restore tests failed or did not run"
+        Write-Host $output
+    }
 }
 
 # ------------------------------------------------------------------

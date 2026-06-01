@@ -131,8 +131,27 @@ impl BorgClient {
         }
         if let Some(p) = passphrase {
             cmd.env("BORG_PASSPHRASE", p);
+        } else if self.passcommand.is_none() {
+            // No passphrase and no passcommand: set an empty passphrase so borg
+            // never blocks on an interactive passphrase prompt. On Windows borg
+            // reads the prompt straight from the console (closing stdin isn't
+            // enough); with an env value present it never prompts. An encrypted
+            // repo then fails fast with "incorrect passphrase" instead of
+            // hanging the app forever.
+            cmd.env("BORG_PASSPHRASE", "");
         }
         cmd.env("BORG_RELOCATED_REPO_ACCESS_IS_OK", "yes");
+        // Accessing a previously-unknown unencrypted repo otherwise triggers an
+        // interactive "[y/N]" confirmation that hangs forever with no TTY
+        // (notably on Windows, where it blocks the whole app).
+        cmd.env("BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK", "yes");
+        // `borg init` otherwise asks "Do you want your passphrase to be displayed
+        // for verification? [y/N]" even when the passphrase is supplied via env —
+        // another prompt that hangs on the Windows console. Answer it up front.
+        cmd.env("BORG_DISPLAY_PASSPHRASE", "no");
+        // Belt-and-suspenders: close stdin so any prompt that does read from it
+        // gets EOF and aborts instead of hanging the app indefinitely.
+        cmd.stdin(Stdio::null());
         cmd
     }
 
