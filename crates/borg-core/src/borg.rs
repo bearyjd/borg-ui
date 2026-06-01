@@ -125,7 +125,9 @@ impl BorgClient {
     }
 
     fn base_command_with(&self, passphrase: Option<&str>) -> Command {
-        let mut cmd = Command::new(&self.binary_path);
+        // Spawn via the shared helper so borg never flashes a console window on
+        // Windows (CREATE_NO_WINDOW); a no-op elsewhere.
+        let mut cmd = crate::proc::command(&self.binary_path);
         if let Some(ref passcommand) = self.passcommand {
             cmd.env("BORG_PASSCOMMAND", passcommand);
         }

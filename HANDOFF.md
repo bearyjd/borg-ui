@@ -66,7 +66,7 @@ One live round-trip on the target Windows machine **with the actual app**: confi
 
 ## Open items
 
-- **`CREATE_NO_WINDOW` on the borg spawn (Windows)** — fixes the cosmetic console-window flash noted in TODO.md, and is worth adding once it can be validated in the real GUI (it did not unblock the headless e2e, which has a different root cause). tokio's `Command` doesn't expose creation flags directly; build a `std::process::Command`, set the flag under `#[cfg(windows)]`, then `tokio::process::Command::from(...)`.
+- **`CREATE_NO_WINDOW` on spawned processes (Windows)** — DONE in `crates/borg-core/src/proc.rs`: `proc::command()` builds a `std::process::Command`, sets `CREATE_NO_WINDOW` under `#[cfg(windows)]`, then converts to `tokio::process::Command`. All borg (`borg.rs::base_command_with`) and ssh (`ssh.rs`) spawns route through it; no-op on non-Windows. Suppresses the cosmetic console-window flash. **Still needs a visual confirm in the real Windows GUI** — it compiles cross-platform and Linux e2e proves spawning is unaffected, but the window-suppression itself can't be verified headless. (It is unrelated to the headless-e2e spawn hang, which has a different root cause.)
 - **#23** — stream + virtualize archive contents for very large archives (100k+ entries). Perf only.
 - **VSS** — disabled because shadow-copy paths (`\\?\GLOBALROOT\...`) are unrestorable on Windows. Plan: `.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md`. Live-file backup is the current safe posture (locked files warn, not fail).
 - TODO.md Phase 3 leftovers: archive diff, pre/post commands, autostart, repo compaction.
