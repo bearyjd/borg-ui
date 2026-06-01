@@ -6,6 +6,7 @@
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
   import { profilesState } from '$lib/stores/profiles.svelte';
+  import { formatBytes } from '$lib/format';
 
   interface ArchiveProgress {
     type: 'archive_progress';
@@ -38,9 +39,23 @@
   let excludes = $state<string[]>([]);
   let excludeInput = $state('');
   let isRunning = $state(false);
+  let cancelling = $state(false);
   let status = $state('');
+  let warnings = $state<string[]>([]);
+  let cancelled = $state(false);
   let repo = $derived(repoState.config);
   let repoAvailable = $derived(repoState.hasRepo);
+
+  async function cancelBackup() {
+    if (!isRunning || cancelling) return;
+    cancelling = true;
+    status = 'Cancelling backup...';
+    try {
+      await invoke<boolean>('cancel_backup');
+    } catch (e) {
+      console.warn('Failed to request cancel:', e);
+    }
+  }
 
   function addExclude(pattern: string) {
     const trimmed = pattern.trim();
@@ -59,13 +74,6 @@
   let originalSize = $state(0);
   let compressedSize = $state(0);
   let deduplicatedSize = $state(0);
-
-  function formatBytes(bytes: number): string {
-    if (bytes === 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
-  }
 
   function resetProgress() {
     currentFile = '';
@@ -93,6 +101,9 @@
     }
 
     isRunning = true;
+    cancelling = false;
+    cancelled = false;
+    warnings = [];
     status = 'Starting backup...';
     resetProgress();
 
@@ -125,16 +136,23 @@
 
       const template = profilesState.active?.archive_template ?? '';
       archiveName = await invoke<string>('preview_archive_name', { template });
-      await invoke('create_backup', {
+      const result = await invoke<string[]>('create_backup', {
         repo,
         sourcePaths,
         archiveName,
         excludes,
       });
-      status = 'Backup completed successfully!';
+      warnings = Array.isArray(result) ? result : [];
+      // A resolved promise means the archive was created. A non-empty list
+      // just means some files were skipped (locked/in-use) — still a success.
+      status = warnings.length > 0
+        ? `Backup completed with ${warnings.length} warning${warnings.length === 1 ? '' : 's'}.`
+        : 'Backup completed successfully!';
       notificationsState.notify(
         'Backup complete',
-        `${fileCount.toLocaleString()} files archived.`,
+        warnings.length > 0
+          ? `${fileCount.toLocaleString()} files archived (${warnings.length} skipped).`
+          : `${fileCount.toLocaleString()} files archived.`,
       );
       historyState.record({
         id: `${Date.now()}`,
@@ -147,6 +165,14 @@
         original_size: originalSize || undefined,
       }).catch((err) => console.warn('Failed to record history:', err));
     } catch (e) {
+      // Prefer the flag we set when the user hit Cancel; fall back to matching
+      // the backend's "operation cancelled" message. Either way, a cancel is not
+      // a failure.
+      if (cancelling || String(e).toLowerCase().includes('operation cancelled')) {
+        cancelled = true;
+        status = 'Backup cancelled.';
+        return;
+      }
       status = `Backup failed: ${e}`;
       notificationsState.notify('Backup failed', 'See BorgUI for details.');
       historyState.record({
@@ -161,6 +187,7 @@
     } finally {
       unlisten?.();
       isRunning = false;
+      cancelling = false;
     }
   }
 </script>
@@ -242,8 +269,22 @@
       </button>
     </div>
 
-    {#if isRunning && (fileCount > 0 || currentFile)}
+    {#if isRunning}
       <div class="progress-panel">
+        <div class="progress-top">
+          <span class="progress-running">
+            <span class="spinner" aria-hidden="true"></span>
+            {cancelling ? 'Cancelling…' : 'Backing up…'}
+          </span>
+          <button
+            type="button"
+            class="btn btn-cancel"
+            onclick={cancelBackup}
+            disabled={cancelling}
+          >
+            {cancelling ? 'Cancelling…' : 'Cancel'}
+          </button>
+        </div>
         {#if currentFile}
           <div class="progress-file">
             <span class="progress-label">Current file</span>
@@ -279,8 +320,33 @@
       </div>
     {/if}
 
+    {#if warnings.length > 0 && !isRunning}
+      <div class="warnings-panel">
+        <div class="warnings-head">
+          <span class="warnings-icon" aria-hidden="true">!</span>
+          <div>
+            <strong>Completed with {warnings.length} warning{warnings.length === 1 ? '' : 's'}</strong>
+            <p>Your backup succeeded. These files were skipped — usually because they were open or in use (like email data or a document you had open). They'll be picked up next time.</p>
+          </div>
+        </div>
+        <details class="warnings-details">
+          <summary>Show skipped files</summary>
+          <ul class="warnings-list">
+            {#each warnings as w, i (i)}
+              <li><code>{w}</code></li>
+            {/each}
+          </ul>
+        </details>
+      </div>
+    {/if}
+
     {#if status}
-      <div class="status-message" class:error={status.includes('failed') || status.includes('No repository')} class:success={status.includes('successfully')}>
+      <div
+        class="status-message"
+        class:error={status.includes('failed') || status.includes('No repository')}
+        class:success={status.includes('successfully') || status.includes('with warning')}
+        class:cancelled={status.includes('cancelled')}
+      >
         {status}
       </div>
     {/if}
@@ -308,7 +374,7 @@
   }
 
   .warning-banner {
-    background: oklch(78% 0.16 80 / 0.15);
+    background: var(--color-warning-muted);
     color: var(--color-warning);
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-md);
@@ -396,7 +462,7 @@
 
   .btn-primary {
     background: var(--color-accent);
-    color: oklch(14% 0 0);
+    color: var(--color-on-accent);
   }
 
   .btn-primary:hover:not(:disabled) {
@@ -485,13 +551,138 @@
   }
 
   .status-message.error {
-    background: oklch(65% 0.2 25 / 0.15);
+    background: var(--color-danger-muted);
     color: var(--color-danger);
   }
 
   .status-message.success {
-    background: oklch(75% 0.15 145 / 0.15);
+    background: var(--color-success-muted);
     color: var(--color-success);
+  }
+
+  .status-message.cancelled {
+    background: var(--color-surface-hover);
+    color: var(--color-text-muted);
+  }
+
+  .btn-cancel {
+    background: transparent;
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger);
+  }
+
+  .btn-cancel:hover:not(:disabled) {
+    background: var(--color-danger-muted);
+  }
+
+  .progress-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .progress-running {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--color-accent);
+  }
+
+  .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--color-accent-muted);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .warnings-panel {
+    background: var(--color-warning-muted);
+    border: 1px solid var(--color-warning);
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .warnings-head {
+    display: flex;
+    gap: var(--space-3);
+    align-items: flex-start;
+  }
+
+  .warnings-icon {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--color-warning);
+    color: var(--color-on-accent);
+    font-weight: 700;
+    font-size: var(--text-xs);
+  }
+
+  .warnings-head strong {
+    display: block;
+    color: var(--color-warning);
+    font-size: var(--text-sm);
+  }
+
+  .warnings-head p {
+    margin-top: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    line-height: 1.5;
+  }
+
+  .warnings-details summary {
+    cursor: pointer;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    list-style: none;
+  }
+
+  .warnings-details summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .warnings-details summary::before {
+    content: '▸ ';
+    color: var(--color-text-dim);
+  }
+
+  .warnings-details[open] summary::before {
+    content: '▾ ';
+  }
+
+  .warnings-list {
+    list-style: none;
+    margin-top: var(--space-2);
+    padding: var(--space-2);
+    background: var(--color-bg);
+    border-radius: var(--radius-sm);
+    max-height: 160px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .warnings-list code {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    word-break: break-all;
   }
 
   .chip-list {

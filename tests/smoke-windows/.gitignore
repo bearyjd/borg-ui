@@ -3,3 +3,4 @@ shared/*.msi
 shared/smoke-results.json
 shared/MicrosoftEdgeWebview2Setup.exe
 results.log
+.bin/

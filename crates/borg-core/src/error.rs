@@ -24,6 +24,16 @@ pub enum BorgError {
     #[error("invalid configuration: {message}")]
     InvalidConfig { message: String },
 
+    // NOTE: the frontend detects user-cancellation by matching the substring
+    // "operation cancelled" in the error string (see backup/+page.svelte and
+    // archives/+page.svelte). Do not reword this message without updating those
+    // call sites, or cancelled operations will be recorded as failures.
+    #[error("operation cancelled")]
+    Cancelled,
+
+    #[error("operation timed out after {seconds}s")]
+    Timeout { seconds: u64 },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

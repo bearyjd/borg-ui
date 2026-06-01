@@ -14,9 +14,7 @@
     "@sveltejs/adapter-static": "^3",
     "@sveltejs/kit": "^2",
     "@sveltejs/vite-plugin-svelte": "^5",
-    "@tauri-apps/api": "^2",
     "@tauri-apps/cli": "^2",
-    "@tauri-apps/plugin-dialog": "^2",
     "@types/node": "^25.8.0",
     "svelte": "^5",
     "svelte-check": "^4",
@@ -25,6 +23,8 @@
     "vite": "^6"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-notification": "^2.3.3"
   }
 }

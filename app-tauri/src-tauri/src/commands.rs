@@ -1,7 +1,19 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
-use borg_core::borg::{ArchiveInfo, BorgClient};
+use borg_core::archive::ArchiveEntry;
+use borg_core::borg::{ArchiveInfo, BorgClient, CancelToken};
 use borg_core::config::RepoConfig;
+
+/// Registry key for the single in-flight backup operation.
+const BACKUP_OP: &str = "backup";
+/// Registry key for the single in-flight restore operation.
+const RESTORE_OP: &str = "restore";
+
+/// Internal name for one-off backups invoked directly from the Backup page.
+/// Borg ignores this field, but it shows up in tracing logs.
+const MANUAL_PROFILE_NAME: &str = "manual";
 use tauri::{Emitter, Manager, State};
 
 use crate::archive_naming::{self, TemplateContext};
@@ -29,6 +41,56 @@ async fn write_profiles(app: &tauri::AppHandle, data: &ProfilesData) -> Result<(
 
 pub struct AppState {
     pub borg: BorgClient,
+    /// Cancellation tokens for in-flight long-running operations, keyed by
+    /// [`BACKUP_OP`] / [`RESTORE_OP`]. Used so the UI can stop a running
+    /// backup or restore.
+    cancels: Mutex<HashMap<String, CancelToken>>,
+}
+
+impl AppState {
+    pub fn new(borg: BorgClient) -> Self {
+        Self {
+            borg,
+            cancels: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Register a fresh cancel token for `key`. Fails with `busy_msg` if an
+    /// operation is already registered under that key, so a second concurrent
+    /// backup/restore can't orphan the first one's cancellation. The backend
+    /// enforces this invariant rather than trusting the UI to gate it.
+    fn try_register_cancel(&self, key: &str, busy_msg: &str) -> Result<CancelToken, String> {
+        let mut map = self.cancels.lock().expect("cancel registry poisoned");
+        if map.contains_key(key) {
+            return Err(busy_msg.to_string());
+        }
+        let token = CancelToken::new();
+        map.insert(key.to_string(), token.clone());
+        Ok(token)
+    }
+
+    fn unregister_cancel(&self, key: &str) {
+        self.cancels
+            .lock()
+            .expect("cancel registry poisoned")
+            .remove(key);
+    }
+
+    /// Signal cancellation for `key`. Returns true if an operation was running.
+    fn signal_cancel(&self, key: &str) -> bool {
+        match self
+            .cancels
+            .lock()
+            .expect("cancel registry poisoned")
+            .get(key)
+        {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 #[tauri::command]
@@ -78,6 +140,22 @@ pub async fn list_archives(
 }
 
 #[tauri::command]
+pub async fn list_archive_contents(
+    state: State<'_, AppState>,
+    repo: RepoConfig,
+    archive_name: String,
+) -> Result<Vec<ArchiveEntry>, String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
+    let pass = lookup_passphrase(&repo);
+    state
+        .borg
+        .list_contents(&repo, &archive_name, pass.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn load_retention_config(
     app: tauri::AppHandle,
 ) -> Result<Option<borg_core::config::RetentionConfig>, String> {
@@ -104,7 +182,7 @@ pub async fn prune_repo(
     state: State<'_, AppState>,
     repo: RepoConfig,
     retention: borg_core::config::RetentionConfig,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     repo.validate().map_err(|e| e.to_string())?;
     retention.validate().map_err(|e| e.to_string())?;
     let pass = lookup_passphrase(&repo);
@@ -112,6 +190,7 @@ pub async fn prune_repo(
         .borg
         .prune(&repo, &retention, pass.as_deref())
         .await
+        .map(|outcome| outcome.warnings)
         .map_err(|e| e.to_string())
 }
 
@@ -169,7 +248,7 @@ pub async fn create_backup(
     source_paths: Vec<String>,
     archive_name: String,
     excludes: Option<Vec<String>>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     repo.validate().map_err(|e| e.to_string())?;
     let compression = borg_core::config::Compression::default();
     compression.validate().map_err(|e| e.to_string())?;
@@ -179,29 +258,55 @@ pub async fn create_backup(
     borg_core::config::validate_exclude_patterns(&excludes).map_err(|e| e.to_string())?;
 
     let raw_paths: Vec<PathBuf> = source_paths.into_iter().map(PathBuf::from).collect();
-    let (backup_paths, snapshots) = borg_platform_win::vss::snapshot_sources(&raw_paths).await;
+    // NOTE: VSS snapshots are intentionally not used here. The shadow-copy path
+    // (`\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\...`) is stored verbatim
+    // by borg and the `?` makes the archive un-restorable on Windows (tracked in
+    // .claude/PRPs/plans/fix-vss-paths-in-archive.plan.md). We back up live files
+    // instead. Files that are exclusively locked at backup time are skipped with
+    // a warning rather than failing the whole backup (see the returned warnings).
+    let backup_paths = raw_paths;
 
     let pass = lookup_passphrase(&repo);
 
     let profile = borg_core::config::BackupProfile {
-        name: "manual".into(),
+        name: MANUAL_PROFILE_NAME.into(),
         source_paths: backup_paths,
         excludes,
         compression,
         repo,
     };
 
+    let cancel = state.try_register_cancel(BACKUP_OP, "a backup is already running")?;
     let result = state
         .borg
-        .create(&profile, &archive_name, pass.as_deref(), move |event| {
-            let _ = app.emit("backup-progress", &event);
-        })
-        .await
-        .map_err(|e| e.to_string());
-
-    borg_platform_win::vss::release_all(snapshots).await;
+        .create(
+            &profile,
+            &archive_name,
+            None,
+            pass.as_deref(),
+            &cancel,
+            move |event| {
+                let _ = app.emit("backup-progress", &event);
+            },
+        )
+        .await;
+    state.unregister_cancel(BACKUP_OP);
 
     result
+        .map(|outcome| outcome.warnings)
+        .map_err(|e| e.to_string())
+}
+
+/// Cancel a running backup. Returns true if a backup was in progress.
+#[tauri::command]
+pub async fn cancel_backup(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.signal_cancel(BACKUP_OP))
+}
+
+/// Cancel a running restore. Returns true if a restore was in progress.
+#[tauri::command]
+pub async fn cancel_restore(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.signal_cancel(RESTORE_OP))
 }
 
 #[tauri::command]
@@ -211,7 +316,8 @@ pub async fn restore_archive(
     repo: RepoConfig,
     archive_name: String,
     destination: String,
-) -> Result<(), String> {
+    paths: Option<Vec<String>>,
+) -> Result<Vec<String>, String> {
     repo.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
 
@@ -220,19 +326,33 @@ pub async fn restore_archive(
         return Err(format!("destination does not exist: {}", destination));
     }
 
+    let paths = paths.unwrap_or_default();
+    for p in &paths {
+        if p.trim().is_empty() {
+            return Err("restore path cannot be empty".into());
+        }
+    }
+
     let pass = lookup_passphrase(&repo);
-    state
+    let cancel = state.try_register_cancel(RESTORE_OP, "a restore is already running")?;
+    let result = state
         .borg
         .extract(
             &repo,
             &archive_name,
             &dest_path,
+            &paths,
             pass.as_deref(),
+            &cancel,
             move |event| {
                 let _ = app.emit("restore-progress", &event);
             },
         )
-        .await
+        .await;
+    state.unregister_cancel(RESTORE_OP);
+
+    result
+        .map(|outcome| outcome.warnings)
         .map_err(|e| e.to_string())
 }
 

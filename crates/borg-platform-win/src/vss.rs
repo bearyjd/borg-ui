@@ -199,6 +199,12 @@ pub async fn release_snapshot(handle: SnapshotHandle) -> Result<()> {
 ///
 /// If VSS is unavailable or any snapshot fails, falls back to original paths
 /// with a warning. The caller should always call `release_all` when done.
+///
+/// NOTE: The remapped paths use `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\...`
+/// which borg stores verbatim in the archive. This makes restore on Windows
+/// impossible (`?` is an illegal filename character). See
+/// `.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md`. Caller currently bypasses
+/// this function until that plan is implemented.
 pub async fn snapshot_sources(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<SnapshotHandle>) {
     let volumes = match unique_volumes(paths) {
         Ok(v) => v,
