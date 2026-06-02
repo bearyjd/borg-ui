@@ -463,6 +463,32 @@ pub async fn save_schedule_config(
     Ok(())
 }
 
+/// Whether BorgUI is registered to start at login (reads the Windows `Run` key).
+#[tauri::command]
+pub async fn get_autostart() -> Result<bool, String> {
+    Ok(
+        borg_platform_win::autostart::is_enabled(borg_platform_win::autostart::AUTOSTART_VALUE)
+            .await,
+    )
+}
+
+/// Register or unregister BorgUI to start (minimized to the tray) at login.
+#[tauri::command]
+pub async fn set_autostart(enabled: bool) -> Result<(), String> {
+    let value = borg_platform_win::autostart::AUTOSTART_VALUE;
+    if enabled {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_str = exe.to_string_lossy().to_string();
+        borg_platform_win::autostart::enable(value, &exe_str)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        borg_platform_win::autostart::disable(value)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
 #[tauri::command]
 pub async fn set_repo_passphrase(repo: RepoConfig, passphrase: String) -> Result<(), String> {
     repo.validate().map_err(|e| e.to_string())?;

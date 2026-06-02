@@ -9,6 +9,7 @@
   import ArchiveNamingSection from '$lib/components/settings/ArchiveNamingSection.svelte';
   import CommandsSection from '$lib/components/settings/CommandsSection.svelte';
   import NotificationsSection from '$lib/components/settings/NotificationsSection.svelte';
+  import StartupSection from '$lib/components/settings/StartupSection.svelte';
   import ScheduleSection from '$lib/components/settings/ScheduleSection.svelte';
   import RetentionSection from '$lib/components/settings/RetentionSection.svelte';
 
@@ -482,6 +483,8 @@
   <NotificationsSection />
 
   <ScheduleSection />
+
+  <StartupSection />
 
   {#if clearPassphraseModalOpen}
     <div class="modal-backdrop" onclick={() => (clearPassphraseModalOpen = false)} role="presentation">
