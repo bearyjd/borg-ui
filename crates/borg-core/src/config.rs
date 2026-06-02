@@ -83,11 +83,57 @@ impl RepoConfig {
     /// `ssh_url`) whenever invoking borg against the repository.
     pub fn location(&self) -> String {
         if self.is_local() {
-            self.repo_path.clone()
+            // On Windows, borg 1.4.4+win6 misparses a drive-letter repo path
+            // (`C:\repo`) as an ssh remote (`host="C"`) and hangs. Rewrite it to
+            // an admin-share UNC path, which borg accepts as local. See
+            // .claude/PRPs/plans/fix-windows-local-repo-path.plan.md.
+            #[cfg(windows)]
+            {
+                to_windows_unc_local(&self.repo_path)
+            }
+            #[cfg(not(windows))]
+            {
+                self.repo_path.clone()
+            }
         } else {
             self.ssh_url()
         }
     }
+}
+
+/// Rewrite a local Windows repository path so borg treats it as local.
+///
+/// borg 1.4.4+win6 parses a drive-letter repo argument (`C:\repo` / `C:/repo`)
+/// as an ssh remote (`host="C"`) and hangs trying to connect. An administrative-
+/// share UNC path (`\\localhost\C$\repo`) has no drive-letter colon, so borg
+/// accepts it as a local path. Paths that are already UNC, or have no drive
+/// letter, are returned unchanged. Only invoked on Windows (see [`RepoConfig::
+/// location`]); kept compiled in test builds so the logic is unit-tested on
+/// every platform.
+///
+/// Caveat: the `X$` admin share requires an administrator account. A standard
+/// user gets a borg access error (a fast, clear failure) rather than the
+/// previous indefinite ssh hang.
+#[cfg(any(windows, test))]
+fn to_windows_unc_local(path: &str) -> String {
+    // Already a UNC path (\\server\share or //server/share) -> leave as-is.
+    if path.starts_with(r"\\") || path.starts_with("//") {
+        return path.to_string();
+    }
+    // Drive-letter absolute path: X:\rest or X:/rest.
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        let drive = bytes[0] as char;
+        // `path[2..]` keeps the leading separator; normalise to backslashes.
+        let rest = path[2..].replace('/', "\\");
+        return format!(r"\\localhost\{drive}${rest}");
+    }
+    // Relative or drive-letter-less path: nothing to rewrite.
+    path.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -584,6 +630,44 @@ mod tests {
             ssh_key_path: None,
         };
         assert_eq!(ssh.location(), "ssh://borg@host.com:22//data/repo");
+    }
+
+    #[test]
+    fn unc_converts_drive_letter_backslash() {
+        assert_eq!(
+            to_windows_unc_local(r"C:\Backups\repo"),
+            r"\\localhost\C$\Backups\repo"
+        );
+    }
+
+    #[test]
+    fn unc_converts_drive_letter_forwardslash() {
+        // Forward slashes are normalised to backslashes in the UNC form.
+        assert_eq!(
+            to_windows_unc_local("D:/data/repo"),
+            r"\\localhost\D$\data\repo"
+        );
+    }
+
+    #[test]
+    fn unc_leaves_existing_unc_unchanged() {
+        assert_eq!(
+            to_windows_unc_local(r"\\nas\backups\repo"),
+            r"\\nas\backups\repo"
+        );
+        assert_eq!(
+            to_windows_unc_local("//nas/backups/repo"),
+            "//nas/backups/repo"
+        );
+    }
+
+    #[test]
+    fn unc_leaves_non_drive_paths_unchanged() {
+        // Relative paths and unix-style local paths have no drive-letter colon.
+        assert_eq!(to_windows_unc_local("relative/repo"), "relative/repo");
+        assert_eq!(to_windows_unc_local("/mnt/usb/repo"), "/mnt/usb/repo");
+        // A bare drive root still converts (rest is just the separator).
+        assert_eq!(to_windows_unc_local(r"E:\"), r"\\localhost\E$\");
     }
 
     #[test]
