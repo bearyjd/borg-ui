@@ -3,12 +3,17 @@ mod commands;
 mod history;
 mod keychain;
 mod profiles;
+mod scheduled;
 mod tray;
 
 use borg_core::borg::BorgClient;
 use commands::AppState;
-use tauri::WindowEvent;
+use tauri::{Manager, WindowEvent};
 use tracing_subscriber::EnvFilter;
+
+/// CLI flag the Windows Task Scheduler entry passes to trigger a headless
+/// backup (see `commands::save_schedule_config`).
+const SCHEDULED_BACKUP_FLAG: &str = "--scheduled-backup";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,11 +30,20 @@ pub fn run() {
         .unwrap_or_default()
         .join("borg.exe");
 
+    // When launched by the Task Scheduler we run one backup headlessly and exit,
+    // rather than showing the GUI.
+    let scheduled = std::env::args().any(|a| a == SCHEDULED_BACKUP_FLAG);
+    let setup_borg_path = borg_path.clone();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .setup(|app| {
-            tray::setup(app.handle())?;
+        .setup(move |app| {
+            if scheduled {
+                start_scheduled_backup(app.handle().clone(), setup_borg_path);
+            } else {
+                tray::setup(app.handle())?;
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -81,4 +95,52 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Headless path: hide the window, run one backup from the active profile's
+/// schedule, notify the user, then exit with a status code the Task Scheduler
+/// can surface (0 success, 1 failure).
+fn start_scheduled_backup(app: tauri::AppHandle, borg_path: std::path::PathBuf) {
+    // A scheduled run is headless — keep the window out of sight.
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+
+    tauri::async_runtime::spawn(async move {
+        let config_dir = match app.path().app_config_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                tracing::error!("scheduled backup: cannot resolve config dir: {e}");
+                app.exit(1);
+                return;
+            }
+        };
+
+        let borg = BorgClient::new(borg_path);
+        let report = scheduled::run_scheduled_backup(&config_dir, &borg).await;
+        notify_scheduled_result(&app, &report);
+
+        let code = if report.succeeded() { 0 } else { 1 };
+        app.exit(code);
+    });
+}
+
+/// Surface the scheduled-run outcome as a desktop notification.
+fn notify_scheduled_result(app: &tauri::AppHandle, report: &scheduled::RunReport) {
+    use tauri_plugin_notification::NotificationExt;
+
+    let archive = report.archive_name.as_deref().unwrap_or("backup");
+    let (title, body) = if let Some(error) = &report.error {
+        ("Scheduled backup failed".to_string(), error.clone())
+    } else if report.warnings.is_empty() {
+        ("Scheduled backup complete".to_string(), archive.to_string())
+    } else {
+        let n = report.warnings.len();
+        (
+            "Scheduled backup completed with warnings".to_string(),
+            format!("{archive} — {n} warning{}", if n == 1 { "" } else { "s" }),
+        )
+    };
+
+    let _ = app.notification().builder().title(title).body(body).show();
 }
