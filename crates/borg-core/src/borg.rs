@@ -125,7 +125,9 @@ impl BorgClient {
     }
 
     fn base_command_with(&self, passphrase: Option<&str>) -> Command {
-        let mut cmd = Command::new(&self.binary_path);
+        // Spawn via the shared helper so borg never flashes a console window on
+        // Windows (CREATE_NO_WINDOW); a no-op elsewhere.
+        let mut cmd = crate::proc::command(&self.binary_path);
         if let Some(ref passcommand) = self.passcommand {
             cmd.env("BORG_PASSCOMMAND", passcommand);
         }
@@ -504,6 +506,144 @@ impl BorgClient {
 
         Ok(entries)
     }
+
+    /// Compare two archives in the same repository, returning one [`DiffEntry`]
+    /// per changed path. `archive_a` is the baseline and `archive_b` the
+    /// comparison target; both are archive *names* in `repo`. Generous timeout
+    /// because diffing two large archives reads both manifests.
+    pub async fn diff_archives(
+        &self,
+        repo: &RepoConfig,
+        archive_a: &str,
+        archive_b: &str,
+        passphrase: Option<&str>,
+    ) -> Result<Vec<DiffEntry>> {
+        // borg's diff takes `repo::archive_a` positionally, then the bare name
+        // of the second archive.
+        let archive_ref = format!("{}::{}", repo.location(), archive_a);
+
+        let mut cmd = self.base_command_with(passphrase);
+        cmd.args(["diff", "--json-lines", &archive_ref, archive_b]);
+        let output = self
+            .run_checked(cmd, "diff", Some(LIST_CONTENTS_TIMEOUT_SECS))
+            .await?;
+
+        let entries = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(parse_diff_line)
+            .collect();
+
+        Ok(entries)
+    }
+
+    /// Run `borg compact` to actually free repository space left behind by
+    /// `prune`/`delete` (borg only marks segments for deletion until compaction).
+    /// Not time-limited — compaction rewrites segments and can take a while on a
+    /// large repo. Returns a short human-readable summary (borg's "freed N bytes"
+    /// line when present).
+    pub async fn compact(&self, repo: &RepoConfig, passphrase: Option<&str>) -> Result<String> {
+        let mut cmd = self.base_command_with(passphrase);
+        // `--verbose` makes borg emit the "compaction freed about N" summary so
+        // the UI can report how much space was reclaimed.
+        cmd.args(["compact", "--verbose", &repo.location()]);
+        let output = self.run_checked(cmd, "compact", None).await?;
+
+        // borg prints the freed-space line to stderr (info log); fall back to
+        // stdout just in case, then to a generic message.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let summary = stderr
+            .lines()
+            .chain(stdout.lines())
+            .map(str::trim)
+            .find(|l| l.to_ascii_lowercase().contains("freed"))
+            .unwrap_or("Compaction complete.")
+            .to_string();
+        Ok(summary)
+    }
+}
+
+/// One changed path from `borg diff`. A path may carry several underlying
+/// change records (content plus ctime/mtime/mode); they are collapsed into a
+/// single [`DiffStatus`] with byte deltas where borg reports them.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DiffEntry {
+    pub path: String,
+    pub status: DiffStatus,
+    /// Bytes added: the new file size for `Added`, or the added byte count for
+    /// `Modified`. Zero for `Removed`/`Changed`.
+    pub added: u64,
+    /// Bytes removed: the old file size for `Removed`, or the removed byte count
+    /// for `Modified`. Zero for `Added`/`Changed`.
+    pub removed: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffStatus {
+    /// Present in `archive_b` but not `archive_a`.
+    Added,
+    /// Present in `archive_a` but not `archive_b`.
+    Removed,
+    /// Content changed.
+    Modified,
+    /// Only metadata changed (timestamps, mode, owner) or the entry type changed.
+    Changed,
+}
+
+/// Parse one line of `borg diff --json-lines` output. Returns `None` for blank
+/// or unparseable lines (defensive against borg version differences). The change
+/// schema is `{"path": "...", "changes": [{"type": "added"|"removed"|"modified"|
+/// "ctime"|"mtime"|..., ...}]}`; unknown change types collapse to
+/// [`DiffStatus::Changed`].
+fn parse_diff_line(line: &str) -> Option<DiffEntry> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let path = value.get("path")?.as_str()?.to_string();
+    let changes = value.get("changes")?.as_array()?;
+
+    let mut status = DiffStatus::Changed;
+    let mut added = 0u64;
+    let mut removed = 0u64;
+
+    for change in changes {
+        let u = |key: &str| {
+            change
+                .get(key)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+        };
+        match change.get("type").and_then(|t| t.as_str()) {
+            // A whole new file: precedence over everything else.
+            Some("added") => {
+                status = DiffStatus::Added;
+                added = u("size");
+            }
+            // A deleted file: outranks modified/changed but not added.
+            Some("removed") => {
+                if status != DiffStatus::Added {
+                    status = DiffStatus::Removed;
+                }
+                removed = u("size");
+            }
+            // Content changed: outranks metadata-only "changed".
+            Some("modified") => {
+                if !matches!(status, DiffStatus::Added | DiffStatus::Removed) {
+                    status = DiffStatus::Modified;
+                }
+                added += u("added");
+                removed += u("removed");
+            }
+            // ctime/mtime/mode/owner/type changes leave status at Changed.
+            _ => {}
+        }
+    }
+
+    Some(DiffEntry {
+        path,
+        status,
+        added,
+        removed,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -716,6 +856,71 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), t2.cancelled())
             .await
             .expect("cancelled() should resolve immediately once cancelled");
+    }
+
+    #[test]
+    fn parse_diff_line_added_file() {
+        let line = r#"{"changes": [{"size": 9, "type": "added"}], "path": "src/c.txt"}"#;
+        let entry = parse_diff_line(line).unwrap();
+        assert_eq!(entry.path, "src/c.txt");
+        assert_eq!(entry.status, DiffStatus::Added);
+        assert_eq!(entry.added, 9);
+        assert_eq!(entry.removed, 0);
+    }
+
+    #[test]
+    fn parse_diff_line_removed_file() {
+        let line = r#"{"changes": [{"size": 11, "type": "removed"}], "path": "src/b.txt"}"#;
+        let entry = parse_diff_line(line).unwrap();
+        assert_eq!(entry.status, DiffStatus::Removed);
+        assert_eq!(entry.added, 0);
+        assert_eq!(entry.removed, 11);
+    }
+
+    #[test]
+    fn parse_diff_line_modified_with_metadata() {
+        // Real borg 1.2.x output: a content change plus ctime/mtime noise.
+        let line = r#"{"changes": [{"added": 25, "removed": 9, "type": "modified"}, {"new_ctime": "x", "old_ctime": "y", "type": "ctime"}, {"new_mtime": "x", "old_mtime": "y", "type": "mtime"}], "path": "src/a.txt"}"#;
+        let entry = parse_diff_line(line).unwrap();
+        assert_eq!(entry.status, DiffStatus::Modified);
+        assert_eq!(entry.added, 25);
+        assert_eq!(entry.removed, 9);
+    }
+
+    #[test]
+    fn parse_diff_line_metadata_only_is_changed() {
+        let line = r#"{"changes": [{"new_mtime": "x", "old_mtime": "y", "type": "mtime"}], "path": "src"}"#;
+        let entry = parse_diff_line(line).unwrap();
+        assert_eq!(entry.status, DiffStatus::Changed);
+        assert_eq!(entry.added, 0);
+        assert_eq!(entry.removed, 0);
+    }
+
+    #[test]
+    fn parse_diff_line_added_outranks_other_changes() {
+        // If both an "added" and a metadata change appear, status is Added.
+        let line = r#"{"changes": [{"type": "mtime"}, {"size": 5, "type": "added"}], "path": "f"}"#;
+        assert_eq!(parse_diff_line(line).unwrap().status, DiffStatus::Added);
+    }
+
+    #[test]
+    fn parse_diff_line_skips_blank_and_garbage() {
+        assert!(parse_diff_line("").is_none());
+        assert!(parse_diff_line("not json").is_none());
+        // Missing the required "path"/"changes" keys -> skipped, not panicked.
+        assert!(parse_diff_line(r#"{"foo": "bar"}"#).is_none());
+    }
+
+    #[test]
+    fn diff_entry_serializes_status_lowercase() {
+        let entry = DiffEntry {
+            path: "x".into(),
+            status: DiffStatus::Modified,
+            added: 1,
+            removed: 2,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"status\":\"modified\""), "got: {json}");
     }
 
     #[tokio::test]

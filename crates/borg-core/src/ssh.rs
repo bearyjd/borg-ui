@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
 use tracing::debug;
+
+use crate::proc;
 
 use crate::error::{BorgError, Result};
 
@@ -10,7 +11,7 @@ pub async fn test_connection(
     user: &str,
     key_path: Option<&Path>,
 ) -> Result<bool> {
-    let mut cmd = Command::new("ssh");
+    let mut cmd = proc::command("ssh");
     cmd.args(["-o", "BatchMode=yes"])
         .args(["-o", "ConnectTimeout=10"])
         .args(["-p", &port.to_string()]);
@@ -26,7 +27,7 @@ pub async fn test_connection(
 }
 
 pub async fn generate_key(path: &Path) -> Result<PathBuf> {
-    let output = Command::new("ssh-keygen")
+    let output = proc::command("ssh-keygen")
         .args(["-t", "ed25519"])
         .args(["-f", &path.to_string_lossy()])
         .args(["-N", ""])
