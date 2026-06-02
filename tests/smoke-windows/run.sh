@@ -160,6 +160,27 @@ run_tests() {
     fi
 }
 
+# --- Phase 5b: Windows runtime validation (native tools, headless-safe) ---
+# Drives borg.exe / reg.exe / schtasks.exe directly from PowerShell — unlike the
+# smoke test it does NOT need the Rust source or toolchain, only a booted VM with
+# SSH. Sidesteps the PyInstaller borg.exe spawn hang (see HANDOFF.md / validate.ps1).
+run_validate() {
+    log "Uploading validation script..."
+    $SCP_CMD "$SCRIPT_DIR/validate.ps1" "$SSH_USER@$SSH_HOST:validate.ps1"
+
+    log "Running Windows validation pass..."
+    local output
+    output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate.ps1' 2>&1) || true
+    echo "$output" | tee "$SCRIPT_DIR/validate.log"
+
+    if echo "$output" | grep -q "Failed: 0"; then
+        log "Windows validation passed!"
+        return 0
+    else
+        fail "Windows validation failed. See validate.log"
+    fi
+}
+
 # --- Setup SSH via QEMU monitor (for first boot) ---
 setup_ssh() {
     log "Installing OpenSSH via QEMU monitor keystrokes..."
@@ -232,12 +253,19 @@ main() {
         setup-ssh) setup_ssh ;;
         deploy)    deploy_source ;;
         test)      run_tests ;;
+        validate)  run_validate ;;
         all)
             start_vm
             wait_for_ssh
             setup_env
             deploy_source
             run_tests
+            ;;
+        validate-all)
+            # Runtime validation only — no source deploy / toolchain needed.
+            start_vm
+            wait_for_ssh
+            run_validate
             ;;
         quick)
             # Skip VM boot — assume already running with SSH
@@ -253,7 +281,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|quick|vm|ssh|setup-ssh|build-env|deploy|test|status|down}"
+            echo "Usage: $0 {all|validate-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|status|down}"
             exit 1
             ;;
     esac
