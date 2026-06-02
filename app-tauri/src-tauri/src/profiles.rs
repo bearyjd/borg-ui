@@ -15,6 +15,14 @@ pub struct Profile {
     pub retention: Option<RetentionConfig>,
     #[serde(default)]
     pub archive_template: Option<String>,
+    /// Shell command run immediately before a backup. A non-zero exit aborts the
+    /// backup. Supports `$repo_url` / `$archive_name` substitution.
+    #[serde(default)]
+    pub pre_backup: Option<String>,
+    /// Shell command run after a successful backup. A failure here is surfaced as
+    /// a warning (the backup already completed). Same substitutions as above.
+    #[serde(default)]
+    pub post_backup: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -101,6 +109,8 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         schedule,
         retention,
         archive_template: None,
+        pre_backup: None,
+        post_backup: None,
     };
 
     Ok(ProfilesData {
@@ -166,6 +176,8 @@ mod tests {
             schedule: None,
             retention: None,
             archive_template: None,
+            pre_backup: None,
+            post_backup: None,
         }
     }
 

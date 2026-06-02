@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use borg_core::archive::ArchiveEntry;
-use borg_core::borg::{ArchiveInfo, BorgClient, CancelToken};
+use borg_core::borg::{ArchiveInfo, BorgClient, CancelToken, DiffEntry};
 use borg_core::config::RepoConfig;
 
 /// Registry key for the single in-flight backup operation.
@@ -241,6 +241,39 @@ pub async fn delete_archive(
 }
 
 #[tauri::command]
+pub async fn diff_archives(
+    state: State<'_, AppState>,
+    repo: RepoConfig,
+    archive_a: String,
+    archive_b: String,
+) -> Result<Vec<DiffEntry>, String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    borg_core::config::validate_archive_name(&archive_a).map_err(|e| e.to_string())?;
+    borg_core::config::validate_archive_name(&archive_b).map_err(|e| e.to_string())?;
+    if archive_a == archive_b {
+        return Err("choose two different archives to compare".into());
+    }
+    let pass = lookup_passphrase(&repo);
+    state
+        .borg
+        .diff_archives(&repo, &archive_a, &archive_b, pass.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn compact_repo(state: State<'_, AppState>, repo: RepoConfig) -> Result<String, String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    let pass = lookup_passphrase(&repo);
+    state
+        .borg
+        .compact(&repo, pass.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_backup(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -248,6 +281,8 @@ pub async fn create_backup(
     source_paths: Vec<String>,
     archive_name: String,
     excludes: Option<Vec<String>>,
+    pre_backup: Option<String>,
+    post_backup: Option<String>,
 ) -> Result<Vec<String>, String> {
     repo.validate().map_err(|e| e.to_string())?;
     let compression = borg_core::config::Compression::default();
@@ -256,6 +291,25 @@ pub async fn create_backup(
     borg_core::config::validate_source_paths(&source_paths).map_err(|e| e.to_string())?;
     let excludes = excludes.unwrap_or_default();
     borg_core::config::validate_exclude_patterns(&excludes).map_err(|e| e.to_string())?;
+
+    // Pre/post-backup hooks run the user's own shell commands; `$repo_url` and
+    // `$archive_name` expand to already-validated values.
+    let repo_url = repo.location();
+    let hook_ctx = borg_core::hooks::HookContext {
+        repo_url: &repo_url,
+        archive_name: &archive_name,
+    };
+    let trimmed = |c: Option<String>| c.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let pre_backup = trimmed(pre_backup);
+    let post_backup = trimmed(post_backup);
+
+    // A failed pre-backup hook aborts before borg runs: if the prep step (e.g. a
+    // DB dump) failed, backing up stale/partial data would be worse than nothing.
+    if let Some(cmd) = pre_backup.as_deref() {
+        borg_core::hooks::run("pre-backup", cmd, &hook_ctx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     let raw_paths: Vec<PathBuf> = source_paths.into_iter().map(PathBuf::from).collect();
     // NOTE: VSS snapshots are intentionally not used here. The shadow-copy path
@@ -292,9 +346,19 @@ pub async fn create_backup(
         .await;
     state.unregister_cancel(BACKUP_OP);
 
-    result
+    let mut warnings = result
         .map(|outcome| outcome.warnings)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // The backup itself succeeded; a failing post-backup hook is reported as a
+    // warning rather than turning the whole backup into a failure.
+    if let Some(cmd) = post_backup.as_deref()
+        && let Err(e) = borg_core::hooks::run("post-backup", cmd, &hook_ctx).await
+    {
+        warnings.push(format!("post-backup command failed: {e}"));
+    }
+
+    Ok(warnings)
 }
 
 /// Cancel a running backup. Returns true if a backup was in progress.
@@ -463,6 +527,8 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
             schedule: None,
             retention: None,
             archive_template: None,
+            pre_backup: None,
+            post_backup: None,
         };
         data.active_id = Some(profile.id.clone());
         data.profiles.push(profile);
@@ -503,6 +569,8 @@ pub async fn create_profile(
         schedule: None,
         retention: None,
         archive_template: None,
+        pre_backup: None,
+        post_backup: None,
     };
     data.profiles.push(profile.clone());
     if data.active_id.is_none() {
@@ -587,6 +655,30 @@ pub async fn set_profile_template(
         .find(|p| p.id == id)
         .ok_or_else(|| format!("profile not found: {}", id))?;
     profile.archive_template = template;
+    write_profiles(&app, &data).await
+}
+
+#[tauri::command]
+pub async fn set_profile_hooks(
+    app: tauri::AppHandle,
+    id: String,
+    pre_backup: Option<String>,
+    post_backup: Option<String>,
+) -> Result<(), String> {
+    let clean = |v: Option<String>| {
+        v.and_then(|s| {
+            let t = s.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        })
+    };
+    let mut data = read_profiles(&app).await?;
+    let profile = data
+        .profiles
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("profile not found: {}", id))?;
+    profile.pre_backup = clean(pre_backup);
+    profile.post_backup = clean(post_backup);
     write_profiles(&app, &data).await
 }
 

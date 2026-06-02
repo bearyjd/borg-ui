@@ -141,6 +141,8 @@
         sourcePaths,
         archiveName,
         excludes,
+        preBackup: profilesState.active?.pre_backup ?? null,
+        postBackup: profilesState.active?.post_backup ?? null,
       });
       warnings = Array.isArray(result) ? result : [];
       // A resolved promise means the archive was created. A non-empty list
