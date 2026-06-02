@@ -1,6 +1,6 @@
 # Fix: local repository paths hang on Windows (borg drive-letter misparse)
 
-**Status:** investigated, root cause confirmed on real Windows (KVM VM, 2026-06-02). Not yet fixed — needs a direction decision (see Options). Regression test: `tests/smoke-windows/validate.ps1` → `borg_local_absolute_repo`.
+**Status:** ✅ FIXED via Option 2 (UNC), validated on the KVM VM 2026-06-02 — `make validate` is 5/5 green. `RepoConfig::location()` now rewrites a local Windows drive-letter path `X:\rest` → `\\localhost\X$\rest` (admin-share UNC), which borg accepts as local. Regression test: `tests/smoke-windows/validate.ps1` → `borg_local_repo_via_unc` (full UNC round-trip). Remaining follow-ups: (1) report upstream to marcpope/borg-windows (filed); (2) a friendlier non-admin preflight (a standard user currently gets a fast borg access error, no longer a hang).
 
 ## Problem
 
