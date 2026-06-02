@@ -180,7 +180,7 @@ if ($existing) {
 #
 # SKIPPED here on purpose: the bundled borg.exe is a PyInstaller bundle that
 # hangs at spawn when launched by the Rust test binary under a console-less SSH
-# session (it works fine from a real console / the GUI's window station — see
+# session (it works fine from a real console / the GUI's window station - see
 # HANDOFF.md). Running it here would hang the whole smoke run, so the real
 # backup->restore validation lives in `validate.ps1`, which drives borg.exe
 # directly from PowerShell. Run it with `./run.sh validate` (or `make validate`).
@@ -194,7 +194,7 @@ Skip "e2e_backup_restore" "borg.exe hangs when spawned by the Rust test under SS
 Write-Host "`n========================================" -ForegroundColor White
 Write-Host "  SMOKE TEST RESULTS" -ForegroundColor White
 Write-Host "========================================" -ForegroundColor White
-# NOTE: keep "Failed: $n" with a single space — run.sh greps for "Failed: 0".
+# NOTE: keep "Failed: $n" with a single space - run.sh greps for "Failed: 0".
 Write-Host "  Passed: $script:Passed" -ForegroundColor Green
 Write-Host "  Failed: $script:Failed" -ForegroundColor $(if ($script:Failed -gt 0) { "Red" } else { "Green" })
 Write-Host "  Skipped: $script:Skipped" -ForegroundColor Yellow
