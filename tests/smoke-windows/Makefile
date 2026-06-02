@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test down status logs
+.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all down status logs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -30,6 +30,12 @@ deploy: ## Upload source code to VM
 
 test: ## Run smoke tests against VM
 	./run.sh test
+
+validate: ## Run Windows runtime validation (borg/reg/schtasks) on a running VM
+	./run.sh validate
+
+validate-all: ## Boot VM → wait SSH → run runtime validation (no toolchain/source needed)
+	./run.sh validate-all
 
 down: ## Tear down Windows VM
 	./run.sh down
