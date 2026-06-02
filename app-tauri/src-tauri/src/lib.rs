@@ -15,6 +15,10 @@ use tracing_subscriber::EnvFilter;
 /// backup (see `commands::save_schedule_config`).
 const SCHEDULED_BACKUP_FLAG: &str = "--scheduled-backup";
 
+/// CLI flag the autostart `Run`-key entry passes so BorgUI starts hidden in the
+/// tray at login instead of popping the window open (see `commands::set_autostart`).
+const START_MINIMIZED_FLAG: &str = "--minimized";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -33,6 +37,7 @@ pub fn run() {
     // When launched by the Task Scheduler we run one backup headlessly and exit,
     // rather than showing the GUI.
     let scheduled = std::env::args().any(|a| a == SCHEDULED_BACKUP_FLAG);
+    let start_minimized = std::env::args().any(|a| a == START_MINIMIZED_FLAG);
     let setup_borg_path = borg_path.clone();
 
     tauri::Builder::default()
@@ -43,6 +48,11 @@ pub fn run() {
                 start_scheduled_backup(app.handle().clone(), setup_borg_path);
             } else {
                 tray::setup(app.handle())?;
+                // Autostart-at-login launches with `--minimized`: keep the window
+                // hidden so BorgUI sits in the tray instead of stealing focus.
+                if start_minimized && let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
             }
             Ok(())
         })
@@ -79,6 +89,8 @@ pub fn run() {
             commands::record_backup_event,
             commands::load_backup_history,
             commands::clear_backup_history,
+            commands::get_autostart,
+            commands::set_autostart,
             commands::set_repo_passphrase,
             commands::clear_repo_passphrase,
             commands::has_repo_passphrase,

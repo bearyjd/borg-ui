@@ -43,7 +43,7 @@ Feature parity with Vorta where it pays off.
 - [x] **Archive diff** — `borg diff --json-lines` between two selected archives via new `diff_archives` command; pick a baseline on the Archives page, then a second archive, and a modal lists added/removed/modified paths with byte deltas (metadata-only changes hidden by default)
 - [x] **Pre/post backup commands** — per-profile shell commands run before/after a backup with `$repo_url` / `$archive_name` substitution (borg-core `hooks` module + `set_profile_hooks` command + Settings "Pre / Post Commands" section). A failing pre-command aborts the backup; a failing post-command is surfaced as a warning. Wired into the manual backup path (`create_backup`)
 - [x] **Custom archive naming templates** — per-profile template with `{date}`/`{time}`/`{datetime}`/`{hostname}`/`{profile}`/`{random}` variables, live preview in settings, applied by backup page via `preview_archive_name` command
-- [ ] **Autostart at login** — Windows registry entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+- [x] **Autostart at login** — `borg-platform-win::autostart` writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (via `reg`); `get_autostart`/`set_autostart` commands + Settings "Startup" toggle. Registers `"<exe>" --minimized` so BorgUI starts hidden in the tray (handled in `lib.rs`)
 - [x] **Repository compaction** — `borg compact` via new `compact_repo` command; "Compact" button on the Archives page reclaims space left by prune/delete and reports how much was freed (requires borg 1.2+)
 - [x] **Profile import/export** — JSON export via save dialog, import via open dialog, ID collisions auto-resolved on import. Passphrase intentionally excluded (lives in keychain)
 
