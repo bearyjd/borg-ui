@@ -3,6 +3,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Make the local container-engine shim (.bin/docker) resolvable from this
+# non-interactive script. Inside a distrobox the `docker`->host-podman alias only
+# exists in interactive shells, so without this `docker compose` wouldn't resolve
+# here. Harmless elsewhere: when no shim is present this is a no-op and we fall
+# through to the real docker/podman on PATH.
+if [[ -x "$SCRIPT_DIR/.bin/docker" ]]; then
+    PATH="$SCRIPT_DIR/.bin:$PATH"
+fi
+
 SSH_USER="borgtest"
 SSH_PASS="Password1!"
 SSH_PORT=2222
