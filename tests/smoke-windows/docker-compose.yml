@@ -10,6 +10,9 @@ services:
       USERNAME: "borgtest"
       PASSWORD: "Password1!"
       USER_PORTS: "22"
+      # Second disk -> appears as a raw disk Windows initializes as D: (used by the
+      # multi-drive edge validation; see run.sh provision_edge / validate-edge.ps1).
+      DISK2_SIZE: "8G"
     devices:
       - /dev/kvm
       - /dev/net/tun

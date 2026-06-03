@@ -25,6 +25,20 @@ fn lookup_passphrase(repo: &RepoConfig) -> Option<String> {
     keychain::get_passphrase(&repo.ssh_url()).ok().flatten()
 }
 
+/// Validate a repo and (on Windows) preflight its reachability before running
+/// borg against it — surfacing both as user-facing errors. Use in every command
+/// that runs borg against a repo (NOT profile/config CRUD, which must stay
+/// savable even when the repo isn't reachable yet). The preflight does a loopback
+/// SMB stat, so it runs off the async worker via `spawn_blocking`.
+async fn precheck_repo(repo: &RepoConfig) -> Result<(), String> {
+    repo.validate().map_err(|e| e.to_string())?;
+    let repo = repo.clone();
+    tokio::task::spawn_blocking(move || repo.local_repo_preflight())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 async fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path().app_config_dir().map_err(|e| e.to_string())
 }
@@ -116,7 +130,7 @@ pub async fn get_repo_info(
     state: State<'_, AppState>,
     repo: RepoConfig,
 ) -> Result<serde_json::Value, String> {
-    repo.validate().map_err(|e| e.to_string())?;
+    precheck_repo(&repo).await?;
     let pass = lookup_passphrase(&repo);
     state
         .borg
@@ -130,7 +144,7 @@ pub async fn list_archives(
     state: State<'_, AppState>,
     repo: RepoConfig,
 ) -> Result<Vec<ArchiveInfo>, String> {
-    repo.validate().map_err(|e| e.to_string())?;
+    precheck_repo(&repo).await?;
     let pass = lookup_passphrase(&repo);
     state
         .borg
@@ -145,7 +159,7 @@ pub async fn list_archive_contents(
     repo: RepoConfig,
     archive_name: String,
 ) -> Result<Vec<ArchiveEntry>, String> {
-    repo.validate().map_err(|e| e.to_string())?;
+    precheck_repo(&repo).await?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
     let pass = lookup_passphrase(&repo);
     state
@@ -183,7 +197,7 @@ pub async fn prune_repo(
     repo: RepoConfig,
     retention: borg_core::config::RetentionConfig,
 ) -> Result<Vec<String>, String> {
-    repo.validate().map_err(|e| e.to_string())?;
+    precheck_repo(&repo).await?;
     retention.validate().map_err(|e| e.to_string())?;
     let pass = lookup_passphrase(&repo);
     state
@@ -201,7 +215,7 @@ pub async fn init_repo(
     encryption: String,
     passphrase: Option<String>,
 ) -> Result<(), String> {
-    repo.validate().map_err(|e| e.to_string())?;
+    precheck_repo(&repo).await?;
     borg_core::config::validate_encryption_mode(&encryption).map_err(|e| e.to_string())?;
 
     let needs_pass = encryption != "none"
@@ -230,7 +244,7 @@ pub async fn delete_archive(
     repo: RepoConfig,
     archive_name: String,
 ) -> Result<(), String> {
-    repo.validate().map_err(|e| e.to_string())?;
+    precheck_repo(&repo).await?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
     let pass = lookup_passphrase(&repo);
     state
@@ -247,7 +261,7 @@ pub async fn diff_archives(
     archive_a: String,
     archive_b: String,
 ) -> Result<Vec<DiffEntry>, String> {
-    repo.validate().map_err(|e| e.to_string())?;
+    precheck_repo(&repo).await?;
     borg_core::config::validate_archive_name(&archive_a).map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_b).map_err(|e| e.to_string())?;
     if archive_a == archive_b {
@@ -263,7 +277,7 @@ pub async fn diff_archives(
 
 #[tauri::command]
 pub async fn compact_repo(state: State<'_, AppState>, repo: RepoConfig) -> Result<String, String> {
-    repo.validate().map_err(|e| e.to_string())?;
+    precheck_repo(&repo).await?;
     let pass = lookup_passphrase(&repo);
     state
         .borg
@@ -284,7 +298,7 @@ pub async fn create_backup(
     pre_backup: Option<String>,
     post_backup: Option<String>,
 ) -> Result<Vec<String>, String> {
-    repo.validate().map_err(|e| e.to_string())?;
+    precheck_repo(&repo).await?;
     let compression = borg_core::config::Compression::default();
     compression.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
@@ -382,7 +396,7 @@ pub async fn restore_archive(
     destination: String,
     paths: Option<Vec<String>>,
 ) -> Result<Vec<String>, String> {
-    repo.validate().map_err(|e| e.to_string())?;
+    precheck_repo(&repo).await?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
 
     let dest_path = PathBuf::from(&destination);
