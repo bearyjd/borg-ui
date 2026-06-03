@@ -117,6 +117,7 @@ pub async fn get_repo_info(
     repo: RepoConfig,
 ) -> Result<serde_json::Value, String> {
     repo.validate().map_err(|e| e.to_string())?;
+    repo.local_repo_preflight().map_err(|e| e.to_string())?;
     let pass = lookup_passphrase(&repo);
     state
         .borg
@@ -131,6 +132,7 @@ pub async fn list_archives(
     repo: RepoConfig,
 ) -> Result<Vec<ArchiveInfo>, String> {
     repo.validate().map_err(|e| e.to_string())?;
+    repo.local_repo_preflight().map_err(|e| e.to_string())?;
     let pass = lookup_passphrase(&repo);
     state
         .borg
@@ -202,6 +204,7 @@ pub async fn init_repo(
     passphrase: Option<String>,
 ) -> Result<(), String> {
     repo.validate().map_err(|e| e.to_string())?;
+    repo.local_repo_preflight().map_err(|e| e.to_string())?;
     borg_core::config::validate_encryption_mode(&encryption).map_err(|e| e.to_string())?;
 
     let needs_pass = encryption != "none"
@@ -285,6 +288,7 @@ pub async fn create_backup(
     post_backup: Option<String>,
 ) -> Result<Vec<String>, String> {
     repo.validate().map_err(|e| e.to_string())?;
+    repo.local_repo_preflight().map_err(|e| e.to_string())?;
     let compression = borg_core::config::Compression::default();
     compression.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
@@ -383,6 +387,7 @@ pub async fn restore_archive(
     paths: Option<Vec<String>>,
 ) -> Result<Vec<String>, String> {
     repo.validate().map_err(|e| e.to_string())?;
+    repo.local_repo_preflight().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
 
     let dest_path = PathBuf::from(&destination);
