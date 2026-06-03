@@ -32,6 +32,11 @@ fail() { echo -e "${RED}[smoke]${NC} $*" >&2; exit 1; }
 SSH_CMD="sshpass -p $SSH_PASS ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=240 -o TCPKeepAlive=yes -p $SSH_PORT $SSH_USER@$SSH_HOST"
 SCP_CMD="sshpass -p $SSH_PASS scp -o StrictHostKeyChecking=no -P $SSH_PORT"
 
+# A STANDARD (non-admin) identity for the non-admin edge validation. Same password;
+# created by provision_edge / oem/install.bat. SSH lets any local user in.
+STD_USER="borgstd"
+SSH_STD_CMD="sshpass -p $SSH_PASS ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=240 -o TCPKeepAlive=yes -p $SSH_PORT $STD_USER@$SSH_HOST"
+
 cleanup() {
     if [[ "${KEEP_VM:-}" != "1" ]]; then
         log "Tearing down Windows container..."
@@ -191,6 +196,66 @@ run_validate() {
     fi
 }
 
+# --- Edge provisioning: standard user + second drive (idempotent, over SSH) ---
+# Works on a VM recreated with DISK2 (oem/install.bat only runs on a fresh first
+# boot, so the warm/recreated VM is provisioned here as the admin user).
+provision_edge() {
+    log "Provisioning edge prerequisites (standard user + D: drive)..."
+    $SSH_CMD '
+    # Standard (non-admin) user borgstd.
+    if (-not (Get-LocalUser -Name borgstd -ErrorAction SilentlyContinue)) {
+        $p = ConvertTo-SecureString "Password1!" -AsPlainText -Force
+        New-LocalUser -Name borgstd -Password $p -PasswordNeverExpires | Out-Null
+        Write-Host "created borgstd (standard user)"
+    } else { Write-Host "borgstd already exists" }
+
+    # Second disk -> D: NTFS (idempotent: skip if D: already present).
+    if (Test-Path D:\) {
+        Write-Host "D: already present"
+    } else {
+        $raw = Get-Disk | Where-Object { $_.PartitionStyle -eq "RAW" } | Select-Object -First 1
+        if (-not $raw) {
+            Write-Host "WARNING: no raw disk found; recreate the VM with DISK2_SIZE set"
+        } elseif ((Get-Volume -ErrorAction SilentlyContinue).DriveLetter -contains "D") {
+            # D: is taken (commonly an optical drive). Dont fight it - the multi-drive
+            # test will SKIP rather than mis-assign.
+            Write-Host "WARNING: D: already in use (optical drive?); cannot assign the multi-drive volume to D:"
+        } else {
+            Initialize-Disk -Number $raw.Number -PartitionStyle GPT -PassThru |
+                New-Partition -DriveLetter D -UseMaximumSize |
+                Format-Volume -FileSystem NTFS -NewFileSystemLabel BORGD -Confirm:$false | Out-Null
+            Write-Host "initialized D: from raw disk $($raw.Number)"
+        }
+    }
+    '
+    log "Edge provisioning complete"
+}
+
+# --- Edge validation: multi-drive (admin) + non-admin fast-fail (standard user) ---
+run_validate_edge() {
+    log "Uploading edge validation script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-edge.ps1" "$SSH_USER@$SSH_HOST:validate-edge.ps1"
+    # borgstd needs its own copy in its home for the non-admin run.
+    $SCP_CMD "$SCRIPT_DIR/validate-edge.ps1" "$STD_USER@$SSH_HOST:validate-edge.ps1"
+
+    log "Running multi-drive validation (admin user)..."
+    local admin_out
+    admin_out=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-edge.ps1 -Mode admin' 2>&1) || true
+    echo "$admin_out" | tee "$SCRIPT_DIR/validate-edge.log"
+
+    log "Running non-admin validation (standard user borgstd)..."
+    local std_out
+    std_out=$($SSH_STD_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-edge.ps1 -Mode nonadmin' 2>&1) || true
+    echo "$std_out" | tee -a "$SCRIPT_DIR/validate-edge.log"
+
+    if echo "$admin_out" | grep -q "Failed: 0" && echo "$std_out" | grep -q "Failed: 0"; then
+        log "Edge validation passed (multi-drive + non-admin)!"
+        return 0
+    else
+        fail "Edge validation failed. See validate-edge.log"
+    fi
+}
+
 # --- Setup SSH via QEMU monitor (for first boot) ---
 setup_ssh() {
     log "Installing OpenSSH via QEMU monitor keystrokes..."
@@ -264,6 +329,8 @@ main() {
         deploy)    deploy_source ;;
         test)      run_tests ;;
         validate)  run_validate ;;
+        provision-edge) provision_edge ;;
+        validate-edge)  run_validate_edge ;;
         all)
             start_vm
             wait_for_ssh
@@ -276,6 +343,14 @@ main() {
             start_vm
             wait_for_ssh
             run_validate
+            ;;
+        edge-all)
+            # Edge validation (non-admin + multi-drive). Recreates the VM so the
+            # DISK2 from docker-compose attaches, provisions, then validates.
+            start_vm
+            wait_for_ssh
+            provision_edge
+            run_validate_edge
             ;;
         quick)
             # Skip VM boot — assume already running with SSH
@@ -291,7 +366,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|validate-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|status|down}"
+            echo "Usage: $0 {all|validate-all|edge-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|status|down}"
             exit 1
             ;;
     esac

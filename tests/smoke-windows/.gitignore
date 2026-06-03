@@ -4,4 +4,5 @@ shared/smoke-results.json
 shared/MicrosoftEdgeWebview2Setup.exe
 results.log
 validate.log
+validate-edge.log
 .bin/

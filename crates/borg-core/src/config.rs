@@ -99,6 +99,28 @@ impl RepoConfig {
             self.ssh_url()
         }
     }
+
+    /// Verify a local repo is reachable before borg runs, returning a clear,
+    /// actionable error instead of borg's cryptic failure. No-op for SSH repos
+    /// and on non-Windows. Conservative: errors only when the admin share the
+    /// local path maps to (see [`location`](Self::location)) is *definitively*
+    /// inaccessible (permission denied) — any other/ambiguous result proceeds and
+    /// lets borg run (which now fails fast, not hangs). See
+    /// .claude/PRPs/plans/friendlier-non-admin-preflight.plan.md.
+    pub fn local_repo_preflight(&self) -> Result<()> {
+        #[cfg(windows)]
+        {
+            if self.is_local()
+                && let Some(share_root) = unc_share_root(&to_windows_unc_local(&self.repo_path))
+                && share_unreachable(&share_root)
+            {
+                return Err(BorgError::InvalidConfig {
+                    message: non_admin_message(),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Rewrite a local Windows repository path so borg treats it as local.
@@ -134,6 +156,54 @@ fn to_windows_unc_local(path: &str) -> String {
     }
     // Relative or drive-letter-less path: nothing to rewrite.
     path.to_string()
+}
+
+/// The admin-share root of a `\\localhost\X$\...` path (e.g.
+/// `\\localhost\C$\Backups\repo` -> `\\localhost\C$\`). `None` for anything that
+/// is not a localhost admin-share UNC, so the preflight ignores genuine network
+/// shares (`\\nas\...`) and non-UNC paths. Pure; unit-tested on all platforms.
+#[cfg(any(windows, test))]
+fn unc_share_root(unc: &str) -> Option<String> {
+    let prefix = r"\\localhost\";
+    let rest = unc.strip_prefix(prefix)?;
+    let bytes = rest.as_bytes();
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b'$' && bytes[2] == b'\\' {
+        return Some(format!(r"{prefix}{}$\", bytes[0] as char));
+    }
+    None
+}
+
+/// Actionable guidance shown when a local repo's admin share is inaccessible.
+/// Pure; unit-tested on all platforms.
+#[cfg(any(windows, test))]
+fn non_admin_message() -> String {
+    "This local repository is on a drive BorgUI can't reach without administrator \
+     rights (it accesses local drives via the \\\\localhost\\C$ share). Run BorgUI \
+     as an administrator, or use an SSH repository instead."
+        .to_string()
+}
+
+/// True only when the admin-share root is *definitively* inaccessible (permission
+/// denied). Any other result (reachable, not-found, other IO error) returns false
+/// so the preflight never blocks a possibly-working setup. Windows-only IO,
+/// isolated so the decision logic above stays unit-testable.
+#[cfg(windows)]
+fn share_unreachable(share_root: &str) -> bool {
+    match std::fs::metadata(share_root) {
+        Ok(_) => false,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => true,
+        // Inconclusive (NotFound, or an error std didn't categorize): don't block.
+        // Log the raw OS error so we can widen the trigger if a real non-admin
+        // account turns out to surface access-denial as something other than
+        // PermissionDenied (ERROR_ACCESS_DENIED=5 maps to PermissionDenied).
+        Err(e) => {
+            tracing::debug!(
+                "local-repo preflight: share probe inconclusive for {share_root}: {e} (raw_os_error={:?})",
+                e.raw_os_error()
+            );
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -668,6 +738,47 @@ mod tests {
         assert_eq!(to_windows_unc_local("/mnt/usb/repo"), "/mnt/usb/repo");
         // A bare drive root still converts (rest is just the separator).
         assert_eq!(to_windows_unc_local(r"E:\"), r"\\localhost\E$\");
+    }
+
+    #[test]
+    fn unc_share_root_extracts_localhost_admin_share() {
+        assert_eq!(
+            unc_share_root(r"\\localhost\C$\Backups\repo"),
+            Some(r"\\localhost\C$\".into())
+        );
+        assert_eq!(
+            unc_share_root(r"\\localhost\D$\x"),
+            Some(r"\\localhost\D$\".into())
+        );
+    }
+
+    #[test]
+    fn unc_share_root_none_for_non_admin_share() {
+        assert_eq!(unc_share_root(r"\\nas\backups\repo"), None); // real network share
+        assert_eq!(unc_share_root(r"C:\Backups\repo"), None); // not UNC
+        assert_eq!(unc_share_root(r"\\localhost\share\repo"), None); // not X$
+    }
+
+    #[test]
+    fn non_admin_message_mentions_admin_and_ssh() {
+        let m = non_admin_message();
+        assert!(m.contains(r"\\localhost\C$"), "should name the share: {m}");
+        assert!(m.to_lowercase().contains("administrator"));
+        assert!(m.to_lowercase().contains("ssh"));
+    }
+
+    #[test]
+    fn preflight_ok_for_ssh_and_local_on_linux() {
+        // SSH repo: always Ok. Local repo on non-Windows: Ok (no-op).
+        let ssh = RepoConfig {
+            ssh_host: "h".into(),
+            ssh_port: 22,
+            ssh_user: "u".into(),
+            repo_path: "/r".into(),
+            ssh_key_path: None,
+        };
+        assert!(ssh.local_repo_preflight().is_ok());
+        assert!(local_repo("/mnt/usb/repo").local_repo_preflight().is_ok());
     }
 
     #[test]

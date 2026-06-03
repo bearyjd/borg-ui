@@ -28,12 +28,19 @@ make smoke
 # scheduling check.
 make validate-all
 
+# Edge validation: non-admin account + multi-drive (repo on D:, restore to C:).
+# Recreates the VM so the DISK2 from docker-compose attaches, provisions a
+# standard user + D:, then validates.
+make edge-all
+
 # Or step-by-step:
-make vm        # Boot Windows container
-make ssh       # Wait for SSH (inspect with `make shell`)
-make test      # Run the compile smoke (smoke-test.ps1)
-make validate  # Run the runtime validation (validate.ps1) on the running VM
-make down      # Tear down
+make vm             # Boot Windows container
+make ssh            # Wait for SSH (inspect with `make shell`)
+make test           # Run the compile smoke (smoke-test.ps1)
+make validate       # Run the runtime validation (validate.ps1) on the running VM
+make provision-edge # Ensure standard user borgstd + D: drive (idempotent)
+make validate-edge  # Run edge validation on a provisioned VM
+make down           # Tear down
 ```
 
 ## How It Works
@@ -54,6 +61,15 @@ make down      # Tear down
      rejection check
    - **reg.exe** `HKCU\…\Run` add/query/delete round-trip (autostart at login)
    - **schtasks.exe** create/query/delete round-trip (scheduled backups)
+6. **`validate-edge.ps1`** — the *edge validation* for the local-repo UNC fix, in
+   two modes. Needs a VM with a second disk (`DISK2_SIZE` in `docker-compose.yml`)
+   and a standard user (`borgstd`); `make edge-all` recreates + provisions both.
+   - `-Mode admin` (run as the admin user): asserts `D:` exists (NTFS) and a repo
+     on `D:` restores to `C:` — the cross-drive round-trip a relative repo can't do.
+   - `-Mode nonadmin` (run as `borgstd`, a standard user): asserts `\\localhost\C$`
+     is denied and a local-repo `init` fails **fast** (no hang) — the anti-hang
+     guarantee for non-admins. (Pairs with the `RepoConfig::local_repo_preflight`
+     friendly-error path; the preflight's decision logic is unit-tested in `borg-core`.)
 
 ### Why two scripts / the borg.exe spawn caveat
 

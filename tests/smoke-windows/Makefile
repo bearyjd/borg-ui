@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all down status logs
+.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all down status logs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -36,6 +36,15 @@ validate: ## Run Windows runtime validation (borg/reg/schtasks) on a running VM
 
 validate-all: ## Boot VM → wait SSH → run runtime validation (no toolchain/source needed)
 	./run.sh validate-all
+
+provision-edge: ## Ensure standard user borgstd + D: drive on a running VM (idempotent)
+	./run.sh provision-edge
+
+validate-edge: ## Run edge validation (multi-drive + non-admin) on a provisioned VM
+	./run.sh validate-edge
+
+edge-all: ## Boot VM → wait SSH → provision (borgstd + D:) → edge validation
+	./run.sh edge-all
 
 down: ## Tear down Windows VM
 	./run.sh down
