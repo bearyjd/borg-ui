@@ -189,10 +189,21 @@ fn non_admin_message() -> String {
 /// isolated so the decision logic above stays unit-testable.
 #[cfg(windows)]
 fn share_unreachable(share_root: &str) -> bool {
-    matches!(
-        std::fs::metadata(share_root),
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied
-    )
+    match std::fs::metadata(share_root) {
+        Ok(_) => false,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => true,
+        // Inconclusive (NotFound, or an error std didn't categorize): don't block.
+        // Log the raw OS error so we can widen the trigger if a real non-admin
+        // account turns out to surface access-denial as something other than
+        // PermissionDenied (ERROR_ACCESS_DENIED=5 maps to PermissionDenied).
+        Err(e) => {
+            tracing::debug!(
+                "local-repo preflight: share probe inconclusive for {share_root}: {e} (raw_os_error={:?})",
+                e.raw_os_error()
+            );
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

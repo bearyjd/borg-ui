@@ -214,13 +214,17 @@ provision_edge() {
         Write-Host "D: already present"
     } else {
         $raw = Get-Disk | Where-Object { $_.PartitionStyle -eq "RAW" } | Select-Object -First 1
-        if ($raw) {
+        if (-not $raw) {
+            Write-Host "WARNING: no raw disk found; recreate the VM with DISK2_SIZE set"
+        } elseif ((Get-Volume -ErrorAction SilentlyContinue).DriveLetter -contains "D") {
+            # D: is taken (commonly an optical drive). Dont fight it - the multi-drive
+            # test will SKIP rather than mis-assign.
+            Write-Host "WARNING: D: already in use (optical drive?); cannot assign the multi-drive volume to D:"
+        } else {
             Initialize-Disk -Number $raw.Number -PartitionStyle GPT -PassThru |
                 New-Partition -DriveLetter D -UseMaximumSize |
                 Format-Volume -FileSystem NTFS -NewFileSystemLabel BORGD -Confirm:$false | Out-Null
             Write-Host "initialized D: from raw disk $($raw.Number)"
-        } else {
-            Write-Host "WARNING: no raw disk found; recreate the VM with DISK2_SIZE set"
         }
     }
     '
