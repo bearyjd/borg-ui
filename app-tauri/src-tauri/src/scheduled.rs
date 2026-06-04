@@ -168,7 +168,7 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
     if let Some(cmd) = nonempty(&profile.pre_backup)
         && let Err(e) = borg_core::hooks::run("pre-backup", cmd, &hook_ctx).await
     {
-        return finish(config_dir, &archive_name, started, Err(e.to_string())).await;
+        return finish(config_dir, &archive_name, started, Err(e.detail())).await;
     }
 
     let backup_profile = BackupProfile {
@@ -191,14 +191,14 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
         .await
     {
         Ok(outcome) => outcome.warnings,
-        Err(e) => return finish(config_dir, &archive_name, started, Err(e.to_string())).await,
+        Err(e) => return finish(config_dir, &archive_name, started, Err(e.detail())).await,
     };
 
     // The backup succeeded; a failing post-backup hook is only a warning.
     if let Some(cmd) = nonempty(&profile.post_backup)
         && let Err(e) = borg_core::hooks::run("post-backup", cmd, &hook_ctx).await
     {
-        warnings.push(format!("post-backup command failed: {e}"));
+        warnings.push(format!("post-backup command failed: {}", e.detail()));
     }
 
     // Apply the retention policy, if any. Prune failures are warnings — the
@@ -208,7 +208,7 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
     {
         match borg.prune(&profile.repo, &retention, pass.as_deref()).await {
             Ok(outcome) => warnings.extend(outcome.warnings),
-            Err(e) => warnings.push(format!("prune failed: {e}")),
+            Err(e) => warnings.push(format!("prune failed: {}", e.detail())),
         }
     }
 

@@ -29,3 +29,8 @@ app-tauri/src-tauri/binaries/
 # Tool state
 .omc/
 .claude-display*
+
+# smoke-windows run logs (generated artifacts)
+tests/smoke-windows/*.log
+# stray scheduler lock
+.claude/scheduled_tasks.lock
