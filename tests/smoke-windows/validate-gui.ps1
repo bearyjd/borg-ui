@@ -258,7 +258,10 @@ if (-not $script:BorgUiExe) {
         # schedule's OWN source_paths are what a scheduled run backs up. Back up
         # any real profiles.json first so this is safe to run off the smoke VM.
         New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-        if (Test-Path $profilesPath) { Copy-Item $profilesPath $profilesBak -Force }
+        # Don't clobber an existing backup: if a prior run crashed after staging
+        # but before restore, $profilesBak holds the REAL config -- overwriting it
+        # with the now-staged smoke profile would lose it permanently.
+        if ((Test-Path $profilesPath) -and -not (Test-Path $profilesBak)) { Copy-Item $profilesPath $profilesBak -Force }
         $profiles = @{
             active_id = "default"
             profiles  = @(@{
