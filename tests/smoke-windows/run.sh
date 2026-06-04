@@ -256,6 +256,37 @@ run_validate_edge() {
     fi
 }
 
+# --- GUI validation: keychain (Tier A) + scheduled-firing (Tier B) + Tier-C signals ---
+# Confirms the five real-desktop items the engine validation can't. Tier A/B that
+# can't run (no borg-ui.exe / no toolchain) SKIP cleanly. Tier C (window/tray,
+# --minimized, console flash) is inherently visual: this prints signals and the
+# operator finishes the verdict with the README VNC checklist.
+run_validate_gui() {
+    log "Uploading GUI validation script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-gui.ps1" "$SSH_USER@$SSH_HOST:validate-gui.ps1"
+
+    # If a pre-built app binary was dropped in shared/, push it to the VM home so
+    # validate-gui.ps1 finds it (dockur does not surface ./shared inside Windows).
+    if [[ -f "$SCRIPT_DIR/shared/borg-ui.exe" ]]; then
+        log "Uploading shared/borg-ui.exe to the VM..."
+        $SCP_CMD "$SCRIPT_DIR/shared/borg-ui.exe" "$SSH_USER@$SSH_HOST:borg-ui.exe"
+    else
+        warn "no shared/borg-ui.exe -- Tier B/C will SKIP (drop one in shared/ or build on the VM; see README)"
+    fi
+
+    log "Running GUI validation pass..."
+    local output
+    output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-gui.ps1' 2>&1) || true
+    echo "$output" | tee "$SCRIPT_DIR/validate-gui.log"
+
+    if echo "$output" | grep -q "Failed: 0"; then
+        log "GUI validation passed (no Tier A/B failures). Finish Tier C via the README VNC checklist."
+        return 0
+    else
+        fail "GUI validation failed. See validate-gui.log"
+    fi
+}
+
 # --- Setup SSH via QEMU monitor (for first boot) ---
 setup_ssh() {
     log "Installing OpenSSH via QEMU monitor keystrokes..."
@@ -331,6 +362,7 @@ main() {
         validate)  run_validate ;;
         provision-edge) provision_edge ;;
         validate-edge)  run_validate_edge ;;
+        validate-gui)   run_validate_gui ;;
         all)
             start_vm
             wait_for_ssh
@@ -352,6 +384,15 @@ main() {
             provision_edge
             run_validate_edge
             ;;
+        gui-all)
+            # GUI validation (keychain + scheduled-firing + Tier-C signals) on a
+            # running/booted VM. Needs borg-ui.exe (shared/ drop or on-VM build)
+            # for Tier B/C and the deployed source + toolchain for the keychain
+            # test; missing prerequisites SKIP rather than fail.
+            start_vm
+            wait_for_ssh
+            run_validate_gui
+            ;;
         quick)
             # Skip VM boot — assume already running with SSH
             setup_env
@@ -366,7 +407,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|validate-all|edge-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|status|down}"
+            echo "Usage: $0 {all|validate-all|edge-all|gui-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|status|down}"
             exit 1
             ;;
     esac
