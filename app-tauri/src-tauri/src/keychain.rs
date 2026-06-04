@@ -31,3 +31,85 @@ pub fn clear_passphrase(account: &str) -> Result<(), String> {
 pub fn has_passphrase(account: &str) -> Result<bool, String> {
     Ok(get_passphrase(account)?.is_some())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opt-in integration test that exercises the real Windows Credential
+    /// Manager through keyring's `windows-native` backend.
+    ///
+    /// Compiled on every platform (so Linux CI type-checks it), but only
+    /// *executed* on Windows when `BORGUI_KEYCHAIN_TEST=1` is set — so an
+    /// unattended `cargo test`, and Linux CI in particular, never touch a keyring
+    /// backend. Set the env var on the Windows smoke VM to run it (see
+    /// `tests/smoke-windows/README.md`).
+    ///
+    /// Proves item 5 of the GUI-validation pass: a passphrase set via the app's
+    /// keychain module is persisted to Credential Manager (a fresh `Entry` reads
+    /// it back — keyring keeps no in-process cache), is visible to the OS
+    /// `cmdkey` tool, and is removed on clear. Uses a throwaway account and
+    /// always clears, so a real stored passphrase is never touched.
+    #[test]
+    fn windows_credential_manager_roundtrip() {
+        if !cfg!(windows) || std::env::var("BORGUI_KEYCHAIN_TEST").as_deref() != Ok("1") {
+            eprintln!(
+                "SKIP: Windows-only; set BORGUI_KEYCHAIN_TEST=1 on the Windows smoke VM to run"
+            );
+            return;
+        }
+
+        // Distinctive, lowercase-alphanumeric throwaway account so the keyring
+        // target is easy to spot in `cmdkey /list` regardless of how the backend
+        // orders service/account in the target name.
+        let account = "borguismokevalidate";
+        let secret = "cred-mgr-roundtrip-123";
+
+        // Start clean in case a previously aborted run left the credential behind.
+        let _ = clear_passphrase(account);
+
+        set_passphrase(account, secret).expect("set_passphrase should succeed");
+
+        // A fresh `Entry` (built inside get_passphrase) reads straight from
+        // Credential Manager — this proves persistence, not an in-memory echo.
+        assert_eq!(
+            get_passphrase(account).expect("get_passphrase should succeed"),
+            Some(secret.to_string()),
+            "stored passphrase should read back from Credential Manager"
+        );
+
+        // Soft, non-fatal OS-level visibility check. The authoritative proof is
+        // the round-trip above (a fresh `Entry` reading from Credential Manager);
+        // `cmdkey`'s target string is formatted by keyring and we don't control
+        // it, so a miss here is a warning, not a failure (avoids a false-fail if
+        // the target encoding changes across keyring versions).
+        let listing = cmdkey_list().to_lowercase();
+        if listing.contains(account) {
+            eprintln!("cmdkey /list shows the '{account}' target (visible in Credential Manager)");
+        } else {
+            eprintln!(
+                "WARN: '{account}' not found verbatim in cmdkey /list (keyring may encode the target); round-trip still proves persistence"
+            );
+        }
+
+        clear_passphrase(account).expect("clear_passphrase should succeed");
+        assert_eq!(
+            get_passphrase(account).expect("get_passphrase after clear should succeed"),
+            None,
+            "passphrase should be gone after clear"
+        );
+
+        // Positive marker on the REAL (non-skipped) path only, so the smoke
+        // harness can distinguish a genuine pass from the self-skip above (which
+        // also exits a #[test] as "ok"). See tests/smoke-windows/validate-gui.ps1.
+        println!("KEYCHAIN_ROUNDTRIP_OK");
+    }
+
+    fn cmdkey_list() -> String {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "cmdkey", "/list"])
+            .output()
+            .expect("cmdkey /list should run");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+}
