@@ -91,11 +91,15 @@ separately in `borg-platform-win`.
 7. **`validate-gui.ps1`** — the *GUI validation* for the five real-desktop
    items (`make validate-gui` / `make gui-all`). Tiered so each item is checked
    as rigorously as it can be:
-   - **Tier A — keychain (item 5), fully scriptable.** Runs the env-gated Rust
-     round-trip test (`keychain::tests::windows_credential_manager_roundtrip`):
-     a passphrase set through the app's keychain module is persisted to Windows
-     Credential Manager (a fresh `Entry` reads it back), is visible to `cmdkey`,
-     and is removed on clear. SKIPs if the toolchain/source isn't on the VM.
+   - **Tier A — keychain (item 5).** The env-gated Rust round-trip test
+     (`keychain::tests::windows_credential_manager_roundtrip`): a passphrase set
+     through the app's keychain module is persisted to Windows Credential Manager
+     (a fresh `Entry` reads it back), is visible to `cmdkey`, and is removed on
+     clear. **Credential Manager is unreachable from the SSH session**
+     (`ERROR_NO_SUCH_LOGON_SESSION`), so the harness compiles the test over SSH
+     but **runs it in the interactive desktop (session 1) via an `/IT` task** —
+     it needs `borgtest` logged in (the dockur VM auto-logs-in). SKIPs cleanly if
+     the toolchain/source isn't on the VM or there's no interactive session.
    - **Tier B — scheduled firing (item 3), scriptable result.** Stages a profile
      with a local repo (via the UNC fix) + an enabled schedule, registers an
      interactive `borg-ui.exe --scheduled-backup` task, `/Run`s it, and asserts a
@@ -130,8 +134,13 @@ these need the actual Tauri binary and/or a real Credential Manager.
   - **Route 2 — drop a pre-built exe:** build `borg-ui.exe` on any Windows box
     and place it at `tests/smoke-windows/shared/borg-ui.exe`. `run.sh` uploads it
     to the VM home (dockur does **not** surface `./shared` inside Windows, so the
-    upload is how it gets there). `validate-gui.ps1` also copies `borg.exe` next
-    to it automatically (the app resolves borg from its own directory).
+    upload is how it gets there). `validate-gui.ps1` also copies the **whole borg
+    distribution** (`borg.exe` **and** its `_internal\` folder) next to
+    `borg-ui.exe` automatically — borg 1.4.4+win6 is a PyInstaller onedir bundle
+    that dies with "Failed to load Python DLL `_internal\python311.dll`" if only
+    the `.exe` is present. The same applies when packaging the real app (the app
+    resolves borg from its own directory; `tauri.conf.json` `resources` is empty,
+    so borg is shipped as an external step — include `_internal\` too).
 - **Rust toolchain + deployed source** (Tier A keychain test): `make build-env`
   + `make deploy`. Missing → the keychain check SKIPs (it never fails falsely).
 - **`borgtest` logged in** at the interactive desktop (auto-login is on) so the

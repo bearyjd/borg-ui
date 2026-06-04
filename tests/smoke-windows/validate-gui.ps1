@@ -4,9 +4,11 @@
 # actual Tauri binary (borg-ui.exe) and/or a real Credential Manager. The five
 # HANDOFF "still needs a real desktop" items, by tier:
 #
-#   Tier A (fully scriptable, no desktop):
+#   Tier A (scriptable, but needs the interactive session):
 #     5. keychain  -> the keychain module persists a passphrase to Windows
-#                     Credential Manager (runs the gated Rust round-trip test).
+#                     Credential Manager. Compiled over SSH, then RUN in session 1
+#                     via an /IT task -- Credential Manager is unreachable from the
+#                     SSH session (ERROR_NO_SUCH_LOGON_SESSION), verified on the VM.
 #   Tier B (interactive launch, file-checkable result):
 #     3. scheduled -> a registered Task Scheduler entry running
 #                     `borg-ui.exe --scheduled-backup` actually produces a backup
@@ -76,15 +78,22 @@ function Find-BorgUi {
 }
 $script:BorgUiExe = Find-BorgUi
 
-# borg-ui.exe resolves borg as <its own dir>\borg.exe (see lib.rs). Make sure a
-# copy sits beside it before any app run, or backups fail.
+# borg-ui.exe resolves borg as <its own dir>\borg.exe (see lib.rs). The bundled
+# borg.exe (1.4.4+win6) is a PyInstaller ONEDIR bundle: it needs its sibling
+# _internal\ (python311.dll + deps) right next to it, or it dies at startup with
+# "[PYI] Failed to load Python DLL ..._internal\python311.dll" (verified on the
+# VM). So copy the WHOLE borg distribution beside borg-ui.exe, not just the .exe.
 function Ensure-BorgBeside($appExe) {
     if (-not $script:BorgExe) { return $false }
-    $beside = Join-Path (Split-Path $appExe -Parent) "borg.exe"
-    if (-not (Test-Path $beside)) {
-        try { Copy-Item $script:BorgExe $beside -Force } catch { return $false }
+    $appDir = Split-Path $appExe -Parent
+    $beside = Join-Path $appDir "borg.exe"
+    $internal = Join-Path $appDir "_internal"
+    $borgDir = Split-Path $script:BorgExe -Parent
+    if ($borgDir -ieq $appDir) { return (Test-Path $beside) -and (Test-Path $internal) }
+    if (-not (Test-Path $beside) -or -not (Test-Path $internal)) {
+        try { Copy-Item (Join-Path $borgDir "*") -Destination $appDir -Recurse -Force } catch { return $false }
     }
-    return Test-Path $beside
+    return (Test-Path $beside) -and (Test-Path $internal)
 }
 
 # Run a borg subcommand with a hard timeout so a hang can never block the run.
@@ -122,42 +131,87 @@ if ($script:BorgUiExe) {
 Write-TestHeader "keychain_credential_manager"
 $cargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
 $srcDir = "C:\borgui-test"
+$kcTask = "BorgUI-KeychainS1"
+$kcOut = Join-Path $env:USERPROFILE "kc-session1.txt"
+$kcBat = Join-Path $env:USERPROFILE "kc-run.bat"
 if (-not (Test-Path $cargo)) {
     Skip "keychain_credential_manager" "cargo not found at $cargo -- run 'make build-env' + 'make deploy', then re-run (toolchain-free engine checks live in validate.ps1)"
 } elseif (-not (Test-Path (Join-Path $srcDir "Cargo.toml"))) {
     Skip "keychain_credential_manager" "source tree not deployed to $srcDir -- run 'make deploy' first"
 } else {
+    # CRITICAL: Windows Credential Manager is UNREACHABLE from this SSH session --
+    # a network logon raises ERROR_NO_SUCH_LOGON_SESSION (verified on the VM). So
+    # COMPILE the gated test here, then RUN it in the interactive desktop
+    # (session 1) via an /IT scheduled task -- the only context where keyring can
+    # reach Credential Manager. Needs borgtest logged in at the desktop (the
+    # dockur VM auto-logs-in, so this normally holds).
     try {
-        $o = Join-Path $env:TEMP "kc-o.txt"; $e = Join-Path $env:TEMP "kc-e.txt"
-        $env:BORGUI_KEYCHAIN_TEST = "1"
+        $bo = Join-Path $env:TEMP "kc-build-o.txt"; $be = Join-Path $env:TEMP "kc-build-e.txt"
         $env:CARGO_NET_OFFLINE = "true"   # avoid the sparse-index network stall (HANDOFF gotcha)
-        $testPath = "keychain::tests::windows_credential_manager_roundtrip"
-        $p = Start-Process -FilePath $cargo `
-            -ArgumentList @("test", "-p", "borg-ui", "--lib", $testPath, "--", "--nocapture", "--exact") `
+        # Build the test binary only (running it here over SSH would fail on CredMan).
+        # stdout/stderr MUST be different files (Start-Process rejects identical).
+        $b = Start-Process -FilePath $cargo `
+            -ArgumentList @("test", "--no-run", "-p", "borg-ui", "--lib") `
             -WorkingDirectory $srcDir -WindowStyle Hidden -PassThru `
-            -RedirectStandardOutput $o -RedirectStandardError $e
-        if (-not $p.WaitForExit(600 * 1000)) {
-            try { $p.Kill() } catch {}
-            Fail "keychain_credential_manager" "cargo test timed out (build or run hung)"
+            -RedirectStandardOutput $bo -RedirectStandardError $be
+        if (-not $b.WaitForExit(900 * 1000)) { try { $b.Kill() } catch {}; throw "cargo test --no-run timed out (build hung)" }
+        $b.WaitForExit()
+        # Start-Process -PassThru .ExitCode is unreliable when redirecting (often
+        # $null even on success -- same gotcha validate.ps1 calls out), so judge
+        # the build by cargo's own output + the produced exe, not the exit code.
+        $bout = (Get-Content $bo -Raw -EA SilentlyContinue) + (Get-Content $be -Raw -EA SilentlyContinue)
+        if ($bout -match "could not compile") {
+            $btail = ($bout -split "`n" | Select-Object -Last 6) -join " | "
+            throw "test binary failed to compile: $btail"
+        }
+        $testExe = (Get-ChildItem (Join-Path $srcDir "target\debug\deps") -Filter "borg_ui_lib-*.exe" -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+        if (-not $testExe) { throw "compiled test binary (borg_ui_lib-*.exe) not found under target\debug\deps" }
+
+        # Batch the session-1 run; write to the user profile (session 1's unelevated
+        # token can't write C:\ root). STARTED + BATCH_EXIT sentinels bracket it.
+        Remove-Item $kcOut -EA SilentlyContinue
+        @(
+            "@echo off",
+            "echo STARTED > `"$kcOut`"",
+            "set BORGUI_KEYCHAIN_TEST=1",
+            "`"$testExe`" keychain::tests::windows_credential_manager_roundtrip --exact --nocapture >> `"$kcOut`" 2>&1",
+            "echo BATCH_EXIT=%ERRORLEVEL% >> `"$kcOut`""
+        ) | Set-Content -Path $kcBat -Encoding Ascii
+
+        & schtasks.exe /Create /F /TN $kcTask /TR "`"$kcBat`"" /SC ONCE /ST 23:59 /IT 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "schtasks /Create failed (rc=$LASTEXITCODE)" }
+        & schtasks.exe /Run /TN $kcTask 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "schtasks /Run failed (rc=$LASTEXITCODE)" }
+
+        # Bounded poll for the batch to finish (never hang).
+        $deadline = (Get-Date).AddSeconds(120)
+        while ((Get-Date) -lt $deadline) {
+            if ((Test-Path $kcOut) -and (Select-String -Path $kcOut -Pattern "BATCH_EXIT" -EA SilentlyContinue)) { break }
+            Start-Sleep -Seconds 3
+        }
+        $kc = if (Test-Path $kcOut) { Get-Content $kcOut -Raw } else { "" }
+
+        # Order matters: a self-skipped #[test] also exits ok, so require the
+        # real-path marker for a PASS. ERROR_NO_SUCH_LOGON_SESSION here means even
+        # session 1 had no interactive logon -> SKIP (precondition), not a defect.
+        if ($kc -match "KEYCHAIN_ROUNDTRIP_OK") {
+            Pass "keychain_credential_manager" "keyring round-trip verified in Credential Manager (session 1: set -> get -> cmdkey -> clear)"
+        } elseif ($kc -match "ERROR_NO_SUCH_LOGON_SESSION") {
+            Skip "keychain_credential_manager" "Credential Manager unreachable (ERROR_NO_SUCH_LOGON_SESSION) -- no interactive desktop; log borgtest in at localhost:8006 and re-run"
+        } elseif ($kc -match "SKIP: Windows-only") {
+            Skip "keychain_credential_manager" "test self-skipped (BORGUI_KEYCHAIN_TEST not honored in session 1)"
+        } elseif (-not $kc) {
+            Skip "keychain_credential_manager" "session-1 task produced no output (no interactive desktop? borgtest not logged in?) -- needs a desktop session"
         } else {
-            $p.WaitForExit()
-            $out = (Get-Content $o -Raw -EA SilentlyContinue) + (Get-Content $e -Raw -EA SilentlyContinue)
-            # Order matters: a self-skipped #[test] also exits "ok. 1 passed", so
-            # detect the skip FIRST, then require the real-path marker for a PASS.
-            # Otherwise a skipped test (env not honored) would false-pass.
-            if ($out -match "SKIP: Windows-only") {
-                Skip "keychain_credential_manager" "Rust test self-skipped (BORGUI_KEYCHAIN_TEST not honored) -- no keychain coverage"
-            } elseif ($p.ExitCode -eq 0 -and $out -match "KEYCHAIN_ROUNDTRIP_OK") {
-                Pass "keychain_credential_manager" "keyring round-trip verified through Credential Manager (set -> get -> clear)"
-            } else {
-                $tail = ($out -split "`n" | Select-Object -Last 6) -join " | "
-                Fail "keychain_credential_manager" "cargo test failed or success marker missing (rc=$($p.ExitCode)): $tail"
-            }
+            $ktail = ($kc -split "`n" | Select-Object -Last 6) -join " | "
+            Fail "keychain_credential_manager" "session-1 keychain test did not pass: $ktail"
         }
     } catch {
         Fail "keychain_credential_manager" "$_"
     } finally {
-        Remove-Item Env:\BORGUI_KEYCHAIN_TEST -EA SilentlyContinue
+        & schtasks.exe /Delete /F /TN $kcTask 2>&1 | Out-Null
+        Remove-Item $kcBat, $kcOut -EA SilentlyContinue
+        Remove-Item Env:\CARGO_NET_OFFLINE -EA SilentlyContinue
     }
 }
 

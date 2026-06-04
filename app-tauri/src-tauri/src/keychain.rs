@@ -45,6 +45,11 @@ mod tests {
     /// backend. Set the env var on the Windows smoke VM to run it (see
     /// `tests/smoke-windows/README.md`).
     ///
+    /// MUST run in an interactive desktop session (session 1). Credential Manager
+    /// is unreachable from an SSH/network logon — there it fails with
+    /// `ERROR_NO_SUCH_LOGON_SESSION` (verified on the smoke VM). `validate-gui.ps1`
+    /// compiles this over SSH but launches it via an `/IT` scheduled task.
+    ///
     /// Proves item 5 of the GUI-validation pass: a passphrase set via the app's
     /// keychain module is persisted to Credential Manager (a fresh `Entry` reads
     /// it back — keyring keeps no in-process cache), is visible to the OS
