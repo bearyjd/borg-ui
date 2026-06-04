@@ -77,7 +77,10 @@ impl BorgError {
 /// The last few non-empty lines of captured stderr, length-capped — the real
 /// error is usually at the end (a failing op stops emitting progress first).
 fn stderr_tail(stderr: &str) -> String {
-    const MAX_LINES: usize = 8;
+    // 12 (not 8): borg `--log-json` can emit a trailing summary/progress line
+    // after the ERROR line, and the PyInstaller failure is two lines; keep enough
+    // tail that the actual error can't be pushed out.
+    const MAX_LINES: usize = 12;
     const MAX_CHARS: usize = 600;
     let lines: Vec<&str> = stderr
         .lines()
@@ -122,6 +125,57 @@ mod tests {
         assert!(detail.contains("LoadLibrary: not found"));
         // Display stays terse — stderr only shows up in detail().
         assert!(!err.to_string().contains("Failed to load Python DLL"));
+    }
+
+    #[test]
+    fn detail_surfaces_message_from_json_log_line() {
+        // The streaming create path captures borg's `--log-json` stderr; detail()
+        // must still surface the human-readable message embedded in the JSON.
+        let err = BorgError::ProcessFailed {
+            message: "borg create failed".into(),
+            exit_code: Some(2),
+            stderr: r#"{"type": "log_message", "message": "Repository /repo does not exist.", "levelname": "ERROR", "msgid": "Repository.DoesNotExist"}"#.into(),
+        };
+        let detail = err.detail();
+        assert!(detail.contains("does not exist"));
+        assert!(detail.contains("Repository.DoesNotExist"));
+    }
+
+    #[test]
+    fn stderr_tail_keeps_last_lines() {
+        // > MAX_LINES: keeps the LAST lines, drops the earliest.
+        let many = (1..=30)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let err = BorgError::ProcessFailed {
+            message: "x".into(),
+            exit_code: None,
+            stderr: many,
+        };
+        let detail = err.detail();
+        assert!(detail.contains("line30"), "should keep the last line");
+        assert!(
+            !detail.contains("line1;") && !detail.contains("line5;"),
+            "should drop the earliest lines: {detail}"
+        );
+    }
+
+    #[test]
+    fn stderr_tail_caps_length_with_ellipsis() {
+        let err = BorgError::ProcessFailed {
+            message: "x".into(),
+            exit_code: None,
+            stderr: "y".repeat(2000),
+        };
+        let detail = err.detail();
+        assert!(detail.ends_with("..."), "over-long stderr is truncated");
+        // message + " (no exit) " prefix is tiny; the capped tail dominates.
+        assert!(
+            detail.chars().count() < 700,
+            "stays bounded: {}",
+            detail.len()
+        );
     }
 
     #[test]

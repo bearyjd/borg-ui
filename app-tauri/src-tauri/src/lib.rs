@@ -143,7 +143,12 @@ fn notify_scheduled_result(app: &tauri::AppHandle, report: &scheduled::RunReport
 
     let archive = report.archive_name.as_deref().unwrap_or("backup");
     let (title, body) = if let Some(error) = &report.error {
-        ("Scheduled backup failed".to_string(), error.clone())
+        // `error` is the verbose `BorgError::detail()` (full stderr tail) that the
+        // history record wants; a toast wants one readable sentence, so take the
+        // first line and cap it rather than dumping a borg `--log-json` blob.
+        let first = error.lines().next().unwrap_or(error);
+        let body: String = first.chars().take(160).collect();
+        ("Scheduled backup failed".to_string(), body)
     } else if report.warnings.is_empty() {
         ("Scheduled backup complete".to_string(), archive.to_string())
     } else {

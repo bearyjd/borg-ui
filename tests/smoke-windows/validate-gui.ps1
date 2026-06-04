@@ -196,7 +196,9 @@ if (-not (Test-Path $cargo)) {
         # session 1 had no interactive logon -> SKIP (precondition), not a defect.
         if ($kc -match "KEYCHAIN_ROUNDTRIP_OK") {
             Pass "keychain_credential_manager" "keyring round-trip verified in Credential Manager (session 1: set -> get -> cmdkey -> clear)"
-        } elseif ($kc -match "ERROR_NO_SUCH_LOGON_SESSION") {
+        } elseif ($kc -match "ERROR_NO_SUCH_LOGON_SESSION|0x80070520") {
+            # 0x80070520 = HRESULT_FROM_WIN32(1312); fallback if keyring ever
+            # prints the code instead of the Windows error name.
             Skip "keychain_credential_manager" "Credential Manager unreachable (ERROR_NO_SUCH_LOGON_SESSION) -- no interactive desktop; log borgtest in at localhost:8006 and re-run"
         } elseif ($kc -match "SKIP: Windows-only") {
             Skip "keychain_credential_manager" "test self-skipped (BORGUI_KEYCHAIN_TEST not honored in session 1)"
@@ -229,7 +231,11 @@ if (-not $script:BorgUiExe) {
     Skip "scheduled_task_fires" "could not place borg.exe beside borg-ui.exe"
 } else {
     $work = "C:\borgui-gui"
+    # This run OWNS %APPDATA%\com.borgui.app\{profiles,history}.json. Declared
+    # before the try so `finally` can always restore, even on an early throw.
     $configDir = Join-Path $env:APPDATA "com.borgui.app"
+    $profilesPath = Join-Path $configDir "profiles.json"
+    $profilesBak = "$profilesPath.smoke-bak"
     try {
         Remove-Item -Recurse -Force $work -EA SilentlyContinue
         $src = Join-Path $work "src"; $repoAbs = Join-Path $work "repo"
@@ -249,8 +255,10 @@ if (-not $script:BorgUiExe) {
         if (-not (Test-Path $repoAbs)) { throw "repo not created (stderr: $($r.Stderr))" }
 
         # Stage the active profile the runner reads (profiles.rs shape). The
-        # schedule's OWN source_paths are what a scheduled run backs up.
+        # schedule's OWN source_paths are what a scheduled run backs up. Back up
+        # any real profiles.json first so this is safe to run off the smoke VM.
         New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+        if (Test-Path $profilesPath) { Copy-Item $profilesPath $profilesBak -Force }
         $profiles = @{
             active_id = "default"
             profiles  = @(@{
@@ -273,7 +281,7 @@ if (-not $script:BorgUiExe) {
         # -InputObject (not the pipeline) so a single-element nested array isn't
         # unwrapped to a scalar by PowerShell 5.1's ConvertTo-Json.
         $profilesJson = ConvertTo-Json -InputObject $profiles -Depth 8
-        $profilesJson | Out-File (Join-Path $configDir "profiles.json") -Encoding ascii
+        $profilesJson | Out-File $profilesPath -Encoding ascii
 
         # Register an interactive task that runs as the logged-in user, mirroring
         # save_schedule_config's command shape (TR = "<exe>" --scheduled-backup).
@@ -284,15 +292,16 @@ if (-not $script:BorgUiExe) {
         if ($LASTEXITCODE -ne 0) { throw "schtasks /Run failed (rc=$LASTEXITCODE)" }
 
         # Poll (bounded) for the runner to record a success event. Never hang.
+        # ($successEvt, not $event: $event is a PowerShell automatic variable.)
         $deadline = (Get-Date).AddSeconds($ScheduledPollSec)
-        $event = $null
+        $successEvt = $null
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 5
             if (Test-Path $historyPath) {
                 try {
                     $events = Get-Content $historyPath -Raw | ConvertFrom-Json
-                    $event = @($events) | Where-Object { $_.kind -eq "backup" -and $_.outcome -eq "success" } | Select-Object -First 1
-                    if ($event) { break }
+                    $successEvt = @($events) | Where-Object { $_.kind -eq "backup" -and $_.outcome -eq "success" } | Select-Object -First 1
+                    if ($successEvt) { break }
                     $failEvt = @($events) | Where-Object { $_.outcome -eq "failure" } | Select-Object -First 1
                     if ($failEvt) { break }
                 } catch {}
@@ -302,15 +311,16 @@ if (-not $script:BorgUiExe) {
         # LastTaskResult via the cmdlet (an int; 0 = success) is locale-independent,
         # unlike grepping schtasks' localized "Last Result" label.
         $lastResult = try { "LastTaskResult=" + (Get-ScheduledTaskInfo -TaskName $taskName -EA Stop).LastTaskResult } catch { "LastTaskResult=unknown" }
-        if ($event) {
+        if ($successEvt) {
             # Confirm the archive really exists by matching its name in the repo's
-            # archive list (more robust than Start-Process's flaky ExitCode).
+            # archive list. Literal .Contains (not -match) -- the name needs no
+            # regex and this avoids the regex engine + $matches side effect.
             $listOut = Invoke-Borg @("list", "--short", $repoUnc) 30
-            $archiveOk = (-not $listOut.TimedOut) -and ("$($listOut.Stdout)" -match [regex]::Escape($event.archive_name))
+            $archiveOk = (-not $listOut.TimedOut) -and ("$($listOut.Stdout)").Contains($successEvt.archive_name)
             if ($archiveOk) {
-                Pass "scheduled_task_fires" "task fired -> backup '$($event.archive_name)' succeeded and is listable in the repo ($lastResult)"
+                Pass "scheduled_task_fires" "task fired -> backup '$($successEvt.archive_name)' succeeded and is listable in the repo ($lastResult)"
             } else {
-                Fail "scheduled_task_fires" "history shows success '$($event.archive_name)' but borg could not list it (rc=$($listOut.ExitCode))"
+                Fail "scheduled_task_fires" "history shows success '$($successEvt.archive_name)' but borg could not list it (rc=$($listOut.ExitCode))"
             }
         } else {
             $failEvt = $null
@@ -328,6 +338,9 @@ if (-not $script:BorgUiExe) {
     } finally {
         & schtasks.exe /Delete /F /TN $taskName 2>&1 | Out-Null
         Remove-Item -Recurse -Force $work -EA SilentlyContinue
+        # Restore any real profiles.json we shadowed, else remove our staged one.
+        if (Test-Path $profilesBak) { Move-Item $profilesBak $profilesPath -Force }
+        else { Remove-Item $profilesPath -EA SilentlyContinue }
         # The scheduled `--scheduled-backup` instance exits itself (app.exit) --
         # don't kill borg-ui by name here; it could match a real app instance.
     }

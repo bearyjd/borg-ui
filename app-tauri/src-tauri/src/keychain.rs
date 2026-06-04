@@ -73,6 +73,11 @@ mod tests {
         // Start clean in case a previously aborted run left the credential behind.
         let _ = clear_passphrase(account);
 
+        // NOTE: this panic message is a load-bearing signal for the smoke harness.
+        // Run from an SSH/network logon, keyring fails with the Windows error name
+        // `ERROR_NO_SUCH_LOGON_SESSION`; validate-gui.ps1 greps the test output for
+        // that name (and its HRESULT) to SKIP rather than FAIL. Don't suppress or
+        // reword keyring's error text here without updating that matcher.
         set_passphrase(account, secret).expect("set_passphrase should succeed");
 
         // A fresh `Entry` (built inside get_passphrase) reads straight from
@@ -111,10 +116,12 @@ mod tests {
     }
 
     fn cmdkey_list() -> String {
-        let out = std::process::Command::new("cmd")
+        // Never panic: a cmdkey failure here must not abort before the
+        // clear_passphrase below it, which would leak the throwaway credential.
+        std::process::Command::new("cmd")
             .args(["/C", "cmdkey", "/list"])
             .output()
-            .expect("cmdkey /list should run");
-        String::from_utf8_lossy(&out.stdout).into_owned()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
     }
 }
