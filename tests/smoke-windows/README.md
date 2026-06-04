@@ -127,10 +127,15 @@ these need the actual Tauri binary and/or a real Credential Manager.
 ### Prerequisites
 
 - **`borg-ui.exe`** (Tier B/C). Either:
-  - **Route 1 — build on the VM:** `make build-env` + `make deploy`, then build
-    the app (`cargo tauri build` in `C:\borgui-test\app-tauri`, or
-    `cargo build --release -p borg-ui`). Output under
-    `app-tauri/src-tauri/target/release/borg-ui.exe`.
+  - **Route 1 — build on the VM:** `make build-env` + `make deploy`, then, in
+    `C:\borgui-test\app-tauri`, `pnpm install` and **`pnpm tauri build --no-bundle`**
+    (the `--no-bundle` skips the installer; you only need the exe). Output under
+    `target/release/borg-ui.exe`. **Use `tauri build`, NOT `cargo build --release`** —
+    a plain `cargo build` produces a *dev-mode* binary whose window loads the Vite
+    dev server (`devUrl` `http://localhost:5173`) and shows "localhost refused to
+    connect" instead of the embedded UI (`frontendDist` `../build`). It is fine for
+    the headless Tier B scheduled-backup path (which never loads the WebView), but
+    Tier C window/tray rendering needs the real `tauri build`.
   - **Route 2 — drop a pre-built exe:** build `borg-ui.exe` on any Windows box
     and place it at `tests/smoke-windows/shared/borg-ui.exe`. `run.sh` uploads it
     to the VM home (dockur does **not** surface `./shared` inside Windows, so the
