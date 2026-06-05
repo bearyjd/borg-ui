@@ -153,18 +153,28 @@ pub async fn list_archives(
         .map_err(|e| e.to_string())
 }
 
+/// Stream an archive's contents to the frontend in batches over `on_batch`,
+/// returning the total number of entries sent. Backs the archive browser:
+/// batching keeps the IPC payload (and backend memory) bounded so a very large
+/// archive — 100k+ entries — loads progressively instead of as one giant blob.
 #[tauri::command]
-pub async fn list_archive_contents(
+pub async fn stream_archive_contents(
     state: State<'_, AppState>,
     repo: RepoConfig,
     archive_name: String,
-) -> Result<Vec<ArchiveEntry>, String> {
+    on_batch: tauri::ipc::Channel<Vec<ArchiveEntry>>,
+) -> Result<usize, String> {
     precheck_repo(&repo).await?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
     let pass = lookup_passphrase(&repo);
     state
         .borg
-        .list_contents(&repo, &archive_name, pass.as_deref())
+        .list_contents_streaming(&repo, &archive_name, pass.as_deref(), move |batch| {
+            // A send failure means the frontend dropped the channel (browser
+            // closed mid-load); borg keeps running to completion but the batch
+            // is simply discarded.
+            let _ = on_batch.send(batch);
+        })
         .await
         .map_err(|e| e.to_string())
 }

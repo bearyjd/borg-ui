@@ -70,7 +70,7 @@ pub fn run() {
             commands::test_ssh_connection,
             commands::get_repo_info,
             commands::list_archives,
-            commands::list_archive_contents,
+            commands::stream_archive_contents,
             commands::diff_archives,
             commands::compact_repo,
             commands::init_repo,

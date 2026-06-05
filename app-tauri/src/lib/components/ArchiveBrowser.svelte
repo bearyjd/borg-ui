@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
+  import { invoke, Channel } from '@tauri-apps/api/core';
   import type { RepoConfig } from '$lib/stores/repo.svelte';
   import { formatBytes } from '$lib/format';
   import {
     buildTree,
-    collectFilePaths,
-    folderState,
+    flattenVisible,
+    Selection,
     type ArchiveEntry,
     type TreeNode,
   } from '$lib/archive-tree';
@@ -19,15 +19,72 @@
 
   let { repo, archiveName, onClose, onRestore }: Props = $props();
 
-  let entries = $state<ArchiveEntry[]>([]);
+  // Fixed-height virtual scrolling: only the rows in (or near) the viewport are
+  // ever in the DOM, so an archive with 100k+ entries renders a constant ~40
+  // nodes regardless of how much is expanded.
+  const ROW_H = 26;
+  const OVERSCAN = 8;
+
+  let tree = $state.raw<TreeNode | null>(null);
+  let selection = $state.raw<Selection | null>(null);
   let loading = $state(true);
   let error = $state('');
-  let selected = $state(new Set<string>());
-  let expanded = $state(new Set<string>(['']));
+  let loadedCount = $state(0);
+  let isEmpty = $state(false);
+  let expanded = $state(new Set<string>());
+  // Selection mutates `selection` in place; bump this to re-derive views.
+  let selVersion = $state(0);
   let cancelBtn = $state<HTMLButtonElement | null>(null);
 
-  let tree = $derived(buildTree(entries));
-  let totalFiles = $derived(collectFilePaths(tree).length);
+  let scrollTop = $state(0);
+  let viewportH = $state(0);
+
+  // Monotonic token: a newer load() invalidates any still-in-flight earlier one
+  // so a slow stream for a previous archive can't clobber the current tree.
+  let loadGen = 0;
+
+  let totalFiles = $derived(tree ? tree.leafCount : 0);
+  let selectedCount = $derived.by(() => {
+    void selVersion;
+    return selection ? selection.size : 0;
+  });
+
+  // Flattened list of currently-visible (expanded) rows; the scroller windows
+  // over this. Cheap to rebuild — it's references, not DOM.
+  let flat = $derived(tree ? flattenVisible(tree, expanded) : []);
+  // Clamp the scroll offset used for the window math: collapsing a deep folder
+  // shrinks `flat`, which can leave `scrollTop` past the new end (the native
+  // clamp doesn't always re-fire onscroll). Without this the window slice would
+  // go empty and the list would render blank until the next scroll.
+  let maxScrollTop = $derived(Math.max(0, flat.length * ROW_H - viewportH));
+  let clampedTop = $derived(Math.min(scrollTop, maxScrollTop));
+  let startIndex = $derived(Math.max(0, Math.floor(clampedTop / ROW_H) - OVERSCAN));
+  let endIndex = $derived(Math.min(flat.length, Math.ceil((clampedTop + viewportH) / ROW_H) + OVERSCAN));
+
+  // Per-row display state for just the windowed slice. Re-runs on selection
+  // change (selVersion) but only over the ~40 visible rows.
+  let rows = $derived.by(() => {
+    void selVersion;
+    const sel = selection;
+    return flat.slice(startIndex, endIndex).map(({ node, depth }) => {
+      if (node.isDir) {
+        const under = sel ? sel.selectedUnder(node) : 0;
+        const total = node.leafCount;
+        return {
+          node,
+          depth,
+          checked: total > 0 && under === total,
+          indeterminate: under > 0 && under < total,
+        };
+      }
+      return {
+        node,
+        depth,
+        checked: sel ? sel.isSelected(node.path) : false,
+        indeterminate: false,
+      };
+    });
+  });
 
   $effect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -39,21 +96,52 @@
   });
 
   $effect(() => {
+    // Re-load when the target archive changes. Keyed on the archive name only —
+    // the repo can't change while the browser is open, and reading the `repo`
+    // object here would re-fire on any identity churn from the parent.
+    archiveName;
     void load();
   });
 
   async function load() {
+    const gen = ++loadGen;
     loading = true;
     error = '';
+    loadedCount = 0;
+    isEmpty = false;
+    tree = null;
+    selection = null;
+    expanded = new Set();
+    selVersion = 0;
+    scrollTop = 0;
+
+    // Accumulate batches into a plain array (not reactive state) so streaming a
+    // huge listing doesn't churn the UI; only `loadedCount` drives the progress
+    // text. The tree is built once, when the stream completes.
+    const incoming: ArchiveEntry[] = [];
+    const channel = new Channel<ArchiveEntry[]>();
+    channel.onmessage = (batch) => {
+      if (gen !== loadGen) return; // superseded by a newer load
+      for (const entry of batch) incoming.push(entry);
+      loadedCount = incoming.length;
+    };
+
     try {
-      entries = await invoke<ArchiveEntry[]>('list_archive_contents', {
+      await invoke<number>('stream_archive_contents', {
         repo,
         archiveName,
+        onBatch: channel,
       });
+      if (gen !== loadGen) return;
+      isEmpty = incoming.length === 0;
+      const built = buildTree(incoming);
+      tree = built;
+      selection = new Selection(built);
     } catch (e) {
+      if (gen !== loadGen) return;
       error = `Failed to load archive contents: ${e}`;
     } finally {
-      loading = false;
+      if (gen === loadGen) loading = false;
     }
   }
 
@@ -64,37 +152,28 @@
     expanded = next;
   }
 
-  function toggleNode(node: TreeNode) {
-    const next = new Set(selected);
-    if (node.isDir) {
-      const leaves = collectFilePaths(node);
-      const allSelected = leaves.length > 0 && leaves.every((p) => next.has(p));
-      if (allSelected) {
-        for (const p of leaves) next.delete(p);
-      } else {
-        for (const p of leaves) next.add(p);
-      }
-    } else if (next.has(node.path)) {
-      next.delete(node.path);
-    } else {
-      next.add(node.path);
-    }
-    selected = next;
+  function toggleSelect(node: TreeNode) {
+    if (!selection) return;
+    selection.toggle(node);
+    selVersion++;
   }
 
   function selectAll() {
-    selected = new Set(collectFilePaths(tree));
+    if (!selection) return;
+    selection.selectAll();
+    selVersion++;
   }
 
   function clearAll() {
-    selected = new Set();
+    if (!selection) return;
+    selection.clear();
+    selVersion++;
   }
 
   function handleRestore() {
-    if (selected.size === 0) return;
-    onRestore([...selected]);
+    if (!selection || selection.size === 0) return;
+    onRestore(selection.selectedPaths());
   }
-
 </script>
 
 <div class="modal-backdrop" onclick={onClose} role="presentation">
@@ -114,16 +193,21 @@
       </div>
       <div class="browser-stats">
         {#if !loading && !error}
-          <span>{selected.size.toLocaleString()} / {totalFiles.toLocaleString()} files</span>
+          <span>{selectedCount.toLocaleString()} / {totalFiles.toLocaleString()} files</span>
         {/if}
       </div>
     </header>
 
     {#if loading}
-      <div class="browser-state">Loading archive contents…</div>
+      <div class="browser-state">
+        Loading archive contents…
+        {#if loadedCount > 0}
+          <span class="loaded-count">{loadedCount.toLocaleString()} files</span>
+        {/if}
+      </div>
     {:else if error}
       <div class="error-banner">{error}</div>
-    {:else if entries.length === 0}
+    {:else if isEmpty}
       <div class="browser-state">Archive is empty.</div>
     {:else}
       <p class="browser-help">
@@ -133,14 +217,65 @@
       </p>
       <div class="browser-actions">
         <button class="link-btn" onclick={selectAll}>Select all</button>
-        <button class="link-btn" onclick={clearAll} disabled={selected.size === 0}>Clear</button>
+        <button class="link-btn" onclick={clearAll} disabled={selectedCount === 0}>Clear</button>
       </div>
-      <div class="tree-scroll">
-        <ul class="tree-root">
-          {#each tree.children as node (node.path)}
-            {@render renderNode(node, 0)}
-          {/each}
-        </ul>
+      <div
+        class="tree-scroll"
+        role="tree"
+        aria-label="Archive contents"
+        tabindex="0"
+        bind:clientHeight={viewportH}
+        onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
+      >
+        <div class="tree-spacer" style="height: {flat.length * ROW_H}px;">
+          <div class="tree-window" style="transform: translateY({startIndex * ROW_H}px);">
+            {#each rows as row (row.node.path)}
+              <div
+                class="row"
+                role="treeitem"
+                aria-level={row.depth + 1}
+                aria-selected={row.checked}
+                aria-expanded={row.node.isDir ? expanded.has(row.node.path) : undefined}
+                style="padding-left: {row.depth * 1.25}rem; height: {ROW_H}px;"
+              >
+                {#if row.node.isDir}
+                  <button
+                    class="disclosure"
+                    onclick={() => toggleExpanded(row.node.path)}
+                    aria-label={expanded.has(row.node.path) ? 'Collapse' : 'Expand'}
+                  >
+                    {expanded.has(row.node.path) ? '▾' : '▸'}
+                  </button>
+                {:else}
+                  <span class="disclosure spacer"></span>
+                {/if}
+                <input
+                  type="checkbox"
+                  checked={row.checked}
+                  indeterminate={row.indeterminate || undefined}
+                  onchange={() => toggleSelect(row.node)}
+                  aria-label={row.node.name}
+                />
+                <span class="icon" class:dir={row.node.isDir} aria-hidden="true">
+                  {#if row.node.isDir}
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
+                      <path d="M1.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" />
+                    </svg>
+                  {:else}
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
+                      <path d="M3.5 1.5h6L13 5v9.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z" />
+                      <path d="M9.5 1.5V5H13" />
+                    </svg>
+                  {/if}
+                </span>
+                <span class="name" title={row.node.path}>{row.node.name}</span>
+                {#if !row.node.isDir}
+                  <span class="size">{formatBytes(row.node.size)}</span>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        </div>
       </div>
     {/if}
 
@@ -149,68 +284,13 @@
       <button
         class="btn btn-restore"
         onclick={handleRestore}
-        disabled={loading || selected.size === 0}
+        disabled={loading || selectedCount === 0}
       >
-        Restore selected ({selected.size.toLocaleString()})
+        Restore selected ({selectedCount.toLocaleString()})
       </button>
     </footer>
   </div>
 </div>
-
-{#snippet renderNode(node: TreeNode, depth: number)}
-  {@const state = node.isDir ? folderState(node, selected) : null}
-  {@const checked = node.isDir
-    ? state!.total > 0 && state!.selected === state!.total
-    : selected.has(node.path)}
-  {@const indeterminate = node.isDir && state!.selected > 0 && state!.selected < state!.total}
-  {@const isOpen = expanded.has(node.path)}
-  <li>
-    <div class="row" style="padding-left: {depth * 1.25}rem">
-      {#if node.isDir}
-        <button
-          class="disclosure"
-          onclick={() => toggleExpanded(node.path)}
-          aria-label={isOpen ? 'Collapse' : 'Expand'}
-          aria-expanded={isOpen}
-        >
-          {isOpen ? '▾' : '▸'}
-        </button>
-      {:else}
-        <span class="disclosure spacer"></span>
-      {/if}
-      <input
-        type="checkbox"
-        {checked}
-        indeterminate={indeterminate || undefined}
-        onchange={() => toggleNode(node)}
-        aria-label={node.name}
-      />
-      <span class="icon" class:dir={node.isDir} aria-hidden="true">
-        {#if node.isDir}
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
-            <path d="M1.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" />
-          </svg>
-        {:else}
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round">
-            <path d="M3.5 1.5h6L13 5v9.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z" />
-            <path d="M9.5 1.5V5H13" />
-          </svg>
-        {/if}
-      </span>
-      <span class="name" title={node.path}>{node.name}</span>
-      {#if !node.isDir}
-        <span class="size">{formatBytes(node.size)}</span>
-      {/if}
-    </div>
-    {#if node.isDir && isOpen}
-      <ul>
-        {#each node.children as child (child.path)}
-          {@render renderNode(child, depth + 1)}
-        {/each}
-      </ul>
-    {/if}
-  </li>
-{/snippet}
 
 <style>
   .modal-backdrop {
@@ -272,6 +352,12 @@
     font-size: var(--text-sm);
   }
 
+  .loaded-count {
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+    margin-left: var(--space-2);
+  }
+
   .browser-actions {
     display: flex;
     gap: var(--space-3);
@@ -305,10 +391,18 @@
     min-height: 200px;
   }
 
-  ul {
-    list-style: none;
-    padding: 0;
-    margin: 0;
+  /* Full-height spacer reserves scroll range for all rows; the window is
+     absolutely positioned and translated to the first visible row. */
+  .tree-spacer {
+    position: relative;
+    width: 100%;
+  }
+
+  .tree-window {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
   }
 
   .row {
@@ -318,6 +412,7 @@
     padding: 2px var(--space-2);
     border-radius: var(--radius-sm);
     font-size: var(--text-sm);
+    box-sizing: border-box;
   }
 
   .row:hover {
@@ -385,5 +480,4 @@
     border-radius: var(--radius-md);
     font-size: var(--text-sm);
   }
-
 </style>
