@@ -13,7 +13,7 @@ Phases 1–2 are complete and Phase 3 is mostly done. A production-readiness pas
 - Self-evident UI: inline help + examples on every Settings section; Settings split into per-section components.
 - Real-borg end-to-end test suite (`crates/borg-core/tests/e2e_backup_restore.rs`).
 
-**Open items:** archive-tree virtualization for 100k+ entry archives (#23); VSS remains intentionally disabled (live-file backup — see `.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md`). **Not yet validated on real Windows** — run one live backup→restore round-trip on the target machine before production use.
+**Open items:** VSS remains intentionally disabled (live-file backup — see `.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md`). **Not yet validated on real Windows** — run one live backup→restore round-trip on the target machine before production use. (Archive-tree virtualization for 100k+ entry archives, #23, is now implemented — streaming backend + virtual-scroll frontend.)
 
 ## Phase 1 — Make it usable (critical gaps)
 
