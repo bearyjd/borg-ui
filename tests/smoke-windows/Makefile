@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all down status logs
+.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all down status logs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -51,6 +51,12 @@ validate-gui: ## Run GUI validation (keychain + scheduled-firing + Tier-C signal
 
 gui-all: ## Boot VM → wait SSH → GUI validation (needs borg-ui.exe + toolchain; see README)
 	./run.sh gui-all
+
+validate-tray: ## Run tray-menu validation (#34: right-click menu + Show/Quit via UIA) on a running VM
+	./run.sh validate-tray
+
+tray-all: ## Boot VM → wait SSH → tray-menu validation (needs borg-ui.exe + desktop; see README)
+	./run.sh tray-all
 
 down: ## Tear down Windows VM
 	./run.sh down
