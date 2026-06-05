@@ -46,6 +46,7 @@ Feature parity with Vorta where it pays off.
 - [x] **Autostart at login** — `borg-platform-win::autostart` writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (via `reg`); `get_autostart`/`set_autostart` commands + Settings "Startup" toggle. Registers `"<exe>" --minimized` so BorgUI starts hidden in the tray (handled in `lib.rs`)
 - [x] **Repository compaction** — `borg compact` via new `compact_repo` command; "Compact" button on the Archives page reclaims space left by prune/delete and reports how much was freed (requires borg 1.2+)
 - [x] **Profile import/export** — JSON export via save dialog, import via open dialog, ID collisions auto-resolved on import. Passphrase intentionally excluded (lives in keychain)
+- [x] **No console-window flash on borg spawn** — `borg-core::proc::command()` sets `CREATE_NO_WINDOW` on every borg/ssh spawn (Windows-only; no-op elsewhere). Validated on real Windows: 0 visible console windows during a 250 MB session-1 backup (PR #33, closes #25)
 
 ## Not pursuing
 
