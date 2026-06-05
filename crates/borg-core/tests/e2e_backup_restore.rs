@@ -440,3 +440,87 @@ async fn compact_runs_after_delete() {
     let archives = client.list_archives(&repo, None).await.unwrap();
     assert!(archives.is_empty(), "c1 was deleted before compaction");
 }
+
+/// `list_contents_streaming` must emit every entry (in batches) and reassemble
+/// to exactly the same set as the collected `list_contents`, returning a total
+/// that matches. Backs the virtualized archive browser, where the frontend
+/// rebuilds the tree from the streamed batches.
+#[tokio::test]
+async fn streaming_list_matches_collected_listing() {
+    use std::sync::{Arc, Mutex};
+
+    let client = borg_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let src = tmp.path().join("src");
+
+    // Just over LIST_BATCH_SIZE (5000) entries across nested directories, so the
+    // mid-stream batch-flush path is actually exercised (>= 2 batches), not just
+    // the final partial flush — this multi-batch case is the whole point of the
+    // feature. 6 dirs x 850 files = 5100 files + their dirs.
+    for d in 0..6 {
+        let dir = src.join(format!("dir{d:02}"));
+        fs::create_dir_all(&dir).unwrap();
+        for f in 0..850 {
+            fs::write(dir.join(format!("file{f:04}.txt")), format!("d{d}-f{f}")).unwrap();
+        }
+    }
+
+    let repo = local_repo(&repo_path);
+    client.init_repo(&repo, "none", None).await.unwrap();
+    let prof = profile(repo.clone(), vec![PathBuf::from(".")], vec![]);
+    let cancel = CancelToken::new();
+    client
+        .create(&prof, "big-1", Some(&src), None, &cancel, |_| {})
+        .await
+        .expect("backup should succeed");
+
+    // Collected baseline.
+    let collected = client.list_contents(&repo, "big-1", None).await.unwrap();
+    assert!(
+        collected.len() >= 5100,
+        "expected at least the 5100 files we wrote, got {}",
+        collected.len()
+    );
+
+    // Streamed: accumulate batches and count how many arrived.
+    let streamed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let batches = Arc::new(Mutex::new(0usize));
+    let sink = streamed.clone();
+    let batch_counter = batches.clone();
+    let total = client
+        .list_contents_streaming(&repo, "big-1", None, move |batch| {
+            assert!(!batch.is_empty(), "batches should never be empty");
+            *batch_counter.lock().unwrap() += 1;
+            sink.lock()
+                .unwrap()
+                .extend(batch.into_iter().map(|e| e.path));
+        })
+        .await
+        .expect("streaming list should succeed");
+
+    let streamed_paths = Arc::try_unwrap(streamed).unwrap().into_inner().unwrap();
+    assert_eq!(
+        total,
+        collected.len(),
+        "returned total must equal the number of entries"
+    );
+    assert_eq!(
+        total,
+        streamed_paths.len(),
+        "every entry must arrive in some batch"
+    );
+    assert!(
+        *batches.lock().unwrap() >= 2,
+        "with 5100+ entries and LIST_BATCH_SIZE=5000 the mid-stream flush must \
+         fire, so at least 2 batches should have been emitted, got {}",
+        *batches.lock().unwrap()
+    );
+    // Order-preserving reassembly: streamed order matches the collected order.
+    let collected_paths: Vec<&str> = collected.iter().map(|e| e.path.as_str()).collect();
+    let streamed_refs: Vec<&str> = streamed_paths.iter().map(String::as_str).collect();
+    assert_eq!(
+        streamed_refs, collected_paths,
+        "streamed paths must match the collected listing exactly, in order"
+    );
+}

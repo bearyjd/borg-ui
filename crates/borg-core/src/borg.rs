@@ -23,6 +23,12 @@ const QUICK_OP_TIMEOUT_SECS: u64 = 120;
 /// stalled SSH connection can't freeze the UI forever.
 const LIST_CONTENTS_TIMEOUT_SECS: u64 = 600;
 
+/// Number of archive entries streamed per batch by
+/// [`BorgClient::list_contents_streaming`]. Large enough to amortise the IPC
+/// round-trip, small enough that only one batch is ever held in memory — so a
+/// 100k-entry archive stays bounded instead of allocating the whole listing.
+const LIST_BATCH_SIZE: usize = 5_000;
+
 /// Result of a `create` or `extract` run. A borg exit code of `1` means the
 /// operation *succeeded* but emitted warnings (e.g. a file was locked or
 /// unreadable and was skipped) — the archive is still valid and restorable.
@@ -481,30 +487,132 @@ impl BorgClient {
         Ok(archives)
     }
 
-    // FIXME(perf): collects the full JSON-lines listing into memory before
-    // returning. For a 100k-entry archive that's ~30-50 MB of allocations.
-    // Replace with a streaming variant (line-by-line via tauri emit) once we
-    // hit a user with a very large archive.
+    /// Collect the full contents of an archive into a `Vec`. Thin wrapper over
+    /// [`list_contents_streaming`](Self::list_contents_streaming) for callers
+    /// (tests, small archives) that want the whole listing at once. Prefer the
+    /// streaming variant for archives that may hold 100k+ entries — this one
+    /// materialises every entry.
     pub async fn list_contents(
         &self,
         repo: &RepoConfig,
         archive_name: &str,
         passphrase: Option<&str>,
     ) -> Result<Vec<ArchiveEntry>> {
+        let collected: Arc<Mutex<Vec<ArchiveEntry>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = collected.clone();
+        self.list_contents_streaming(repo, archive_name, passphrase, move |batch| {
+            sink.lock()
+                .expect("list_contents sink mutex poisoned")
+                .extend(batch);
+        })
+        .await?;
+        // The streaming call has returned, so `on_batch` (the only other Arc
+        // holder) has been dropped; take the accumulated entries back out.
+        let entries =
+            std::mem::take(&mut *collected.lock().expect("list_contents sink mutex poisoned"));
+        Ok(entries)
+    }
+
+    /// Stream the contents of an archive to `on_batch` in chunks of up to
+    /// [`LIST_BATCH_SIZE`] entries, returning the total number emitted. Reads
+    /// borg's `list --json-lines` output line-by-line and never retains more
+    /// than one batch at a time, so a 100k-entry archive stays bounded in
+    /// memory instead of allocating the whole `Vec` up front. `on_batch` is
+    /// invoked synchronously as batches fill; the Tauri layer forwards each one
+    /// to the frontend over an `ipc::Channel`.
+    pub async fn list_contents_streaming(
+        &self,
+        repo: &RepoConfig,
+        archive_name: &str,
+        passphrase: Option<&str>,
+        on_batch: impl Fn(Vec<ArchiveEntry>) + Send,
+    ) -> Result<usize> {
         let archive = format!("{}::{}", repo.location(), archive_name);
 
         let mut cmd = self.base_command_with(passphrase);
         cmd.args(["list", "--json-lines", &archive]);
-        let output = self
-            .run_checked(cmd, "list (contents)", Some(LIST_CONTENTS_TIMEOUT_SECS))
-            .await?;
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        // If the read loop times out (or the caller drops this future), the
+        // child is dropped without an explicit wait — kill it then rather than
+        // leaking a hung borg/ssh process for up to LIST_CONTENTS_TIMEOUT_SECS.
+        cmd.kill_on_drop(true);
 
-        let entries = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| serde_json::from_str::<ArchiveEntry>(line).ok())
-            .collect();
+        let mut child = cmd.spawn()?;
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let stderr = child.stderr.take().expect("stderr was piped");
 
-        Ok(entries)
+        // Drain stderr concurrently so a chatty borg can't deadlock on a full
+        // pipe, and capture it for the failure path.
+        let stderr_capture: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_clone = stderr_capture.clone();
+        let stderr_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                stderr_clone
+                    .lock()
+                    .expect("list stderr mutex poisoned")
+                    .push(line);
+            }
+        });
+
+        // Read stdout line-by-line, parsing each JSON-lines row and flushing a
+        // batch to `on_batch` once it fills. Bounded memory: at most one batch
+        // (LIST_BATCH_SIZE entries) is held at a time. Malformed lines are
+        // skipped, matching the previous collect-and-filter behaviour.
+        let mut lines = BufReader::new(stdout).lines();
+        let mut batch: Vec<ArchiveEntry> = Vec::with_capacity(LIST_BATCH_SIZE);
+        let mut total = 0usize;
+        let read = async {
+            while let Some(line) = lines.next_line().await? {
+                if let Ok(entry) = serde_json::from_str::<ArchiveEntry>(&line) {
+                    batch.push(entry);
+                    total += 1;
+                    if batch.len() >= LIST_BATCH_SIZE {
+                        on_batch(std::mem::replace(
+                            &mut batch,
+                            Vec::with_capacity(LIST_BATCH_SIZE),
+                        ));
+                    }
+                }
+            }
+            Ok::<(), std::io::Error>(())
+        };
+        tokio::time::timeout(Duration::from_secs(LIST_CONTENTS_TIMEOUT_SECS), read)
+            .await
+            .map_err(|_| BorgError::Timeout {
+                seconds: LIST_CONTENTS_TIMEOUT_SECS,
+            })??;
+        if !batch.is_empty() {
+            on_batch(batch);
+        }
+
+        let status = child.wait().await?;
+        let _ = stderr_task.await;
+
+        match classify_exit(status.code()) {
+            ExitClass::Ok => Ok(total),
+            ExitClass::Warning => {
+                let stderr = stderr_capture
+                    .lock()
+                    .expect("list stderr mutex poisoned")
+                    .join("\n");
+                if !stderr.trim().is_empty() {
+                    warn!(
+                        "borg list (contents) completed with warnings: {}",
+                        stderr.trim()
+                    );
+                }
+                Ok(total)
+            }
+            ExitClass::Error => Err(BorgError::ProcessFailed {
+                message: "borg list (contents) failed".to_string(),
+                exit_code: status.code(),
+                stderr: stderr_capture
+                    .lock()
+                    .expect("list stderr mutex poisoned")
+                    .join("\n"),
+            }),
+        }
     }
 
     /// Compare two archives in the same repository, returning one [`DiffEntry`]
