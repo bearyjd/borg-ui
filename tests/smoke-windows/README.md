@@ -38,6 +38,11 @@ make edge-all
 # Needs borg-ui.exe (see "GUI validation" below); missing prereqs SKIP cleanly.
 make gui-all
 
+# Tray-menu validation (#34): right-click the tray icon, assert the menu is
+# exactly Show BorgUI / Backup now / Quit, and exercise Show + Quit via UIA.
+# Needs borg-ui.exe + an interactive desktop; brittle Win11 tray icons SKIP.
+make tray-all
+
 # Or step-by-step:
 make vm             # Boot Windows container
 make ssh            # Wait for SSH (inspect with `make shell`)
@@ -46,6 +51,7 @@ make validate       # Run the runtime validation (validate.ps1) on the running V
 make provision-edge # Ensure standard user borgstd + D: drive (idempotent)
 make validate-edge  # Run edge validation on a provisioned VM
 make validate-gui   # Run GUI validation (keychain + scheduled-firing + signals)
+make validate-tray  # Run tray-menu validation (#34: menu contents + Show/Quit)
 make down           # Tear down
 ```
 
@@ -109,6 +115,23 @@ separately in `borg-platform-win`.
      only.** A GUI launched over SSH renders in no desktop, so these print
      best-effort process/window-handle signals and never gate the exit code —
      finish the verdict with the VNC checklist below.
+
+8. **`validate-tray.ps1`** — the *tray right-click menu* validation (#34;
+   `make validate-tray` / `make tray-all`), the last Tier C interaction PR #33
+   left as code-only. It drives the live notification area via **UI Automation**:
+   right-clicks the BorgUI tray icon (opening the Win11 overflow flyout if the
+   icon is hidden there), reads the popup menu, and asserts it contains **exactly**
+   `Show BorgUI`, `Backup now`, `Quit`; then exercises **Show BorgUI** (a visible
+   window appears) and **Quit** (the process exits). The tray menu is a native
+   Win32 popup built in `tray.rs`, so contents + Show/Quit work even with a
+   dev-mode `cargo build` exe; only **Backup now** (which emits to the JS frontend)
+   needs the real `tauri build` UI, so it's a SIGNAL deferred to the checklist
+   (Tier B already proves the backup engine fires). The notification area + UIA
+   need a real desktop, so the script **relaunches itself in session 1 via an
+   `/IT` task** (like the keychain test). Locating a Win11 tray icon is brittle;
+   if the icon can't be found the checks **SKIP** (never a false FAIL) and the VNC
+   checklist below is the verdict. Results JSON at `%USERPROFILE%\tray-results.json`;
+   console output at `validate-tray.log`.
 
 ### Still needs manual confirmation (Tier C — the VNC checklist)
 
@@ -178,6 +201,30 @@ Log in as `borgtest` (password `Password1!`), then:
       black console window flashing when borg spawns — expect **none**
       (`CREATE_NO_WINDOW`). Record a short screen capture if possible; save
       screenshots under `tests/smoke-windows/shared/`.
+- [ ] **Item 1b — tray right-click menu (#34):** right-click the tray icon (on
+      Windows 11, click the "Show hidden icons" chevron first if it's in the
+      overflow). The menu shows **exactly** `Show BorgUI`, `Backup now`, `Quit`.
+      Click **Show BorgUI** → a hidden/minimized window is restored and focused.
+      Click **Backup now** → the window surfaces and a backup starts (a history
+      event / new archive appears). Click **Quit** → the process exits and the
+      tray icon disappears. `make validate-tray` automates the contents + Show +
+      Quit checks via UI Automation; this manual pass is the fallback when the
+      Win11 tray icon can't be located automatically (the script SKIPs then).
+
+### Tray menu validation (#34)
+
+```bash
+cd tests/smoke-windows
+KEEP_VM=1 make tray-all       # boot (if needed) + run validate-tray.ps1
+# or, on an already-running, logged-in VM:
+KEEP_VM=1 make validate-tray
+```
+
+`validate-tray.ps1` relaunches itself in session 1 (an `/IT` task) to reach the
+real desktop, then drives the tray menu via UIA. PASS/FAIL on
+`tray_menu_contents` / `tray_show_action` / `tray_quit_action` gate the exit code
+(grep `Failed: 0`); `tray_backup_now` is a SIGNAL. If the tray icon can't be
+located the checks SKIP — fall back to the **Item 1b** manual checklist above.
 
 ## Environment Variables
 
