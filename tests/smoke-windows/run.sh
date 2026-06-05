@@ -287,6 +287,35 @@ run_validate_gui() {
     fi
 }
 
+# --- Tray-menu validation (#34): right-click menu contents + Show/Quit actions ---
+# Drives the tray context menu via UI Automation. The script self-relaunches in
+# session 1 (an /IT task) because the notification area + UIA need a real desktop;
+# if the icon can't be located (Win11 overflow quirks) the checks SKIP, never
+# false-fail, and the README VNC checklist is the verdict. Needs borg-ui.exe.
+run_validate_tray() {
+    log "Uploading tray-menu validation script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-tray.ps1" "$SSH_USER@$SSH_HOST:validate-tray.ps1"
+
+    if [[ -f "$SCRIPT_DIR/shared/borg-ui.exe" ]]; then
+        log "Uploading shared/borg-ui.exe to the VM..."
+        $SCP_CMD "$SCRIPT_DIR/shared/borg-ui.exe" "$SSH_USER@$SSH_HOST:borg-ui.exe"
+    else
+        warn "no shared/borg-ui.exe -- tray checks will SKIP (drop one in shared/ or build on the VM; see README)"
+    fi
+
+    log "Running tray-menu validation pass (relaunches itself in session 1)..."
+    local output
+    output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-tray.ps1' 2>&1) || true
+    echo "$output" | tee "$SCRIPT_DIR/validate-tray.log"
+
+    if echo "$output" | grep -q "Failed: 0"; then
+        log "Tray validation: no failures. SKIPs mean the icon wasn't locatable -- finish via the README VNC checklist."
+        return 0
+    else
+        fail "Tray validation failed. See validate-tray.log"
+    fi
+}
+
 # --- Setup SSH via QEMU monitor (for first boot) ---
 setup_ssh() {
     log "Installing OpenSSH via QEMU monitor keystrokes..."
@@ -363,6 +392,7 @@ main() {
         provision-edge) provision_edge ;;
         validate-edge)  run_validate_edge ;;
         validate-gui)   run_validate_gui ;;
+        validate-tray)  run_validate_tray ;;
         all)
             start_vm
             wait_for_ssh
@@ -393,6 +423,15 @@ main() {
             wait_for_ssh
             run_validate_gui
             ;;
+        tray-all)
+            # Tray-menu validation (#34) on a running/booted VM. Needs borg-ui.exe
+            # (shared/ drop or on-VM build) and an interactive desktop (session 1);
+            # if the icon isn't locatable the checks SKIP -- finish via the VNC
+            # checklist. Best run after the VM has auto-logged in to the desktop.
+            start_vm
+            wait_for_ssh
+            run_validate_tray
+            ;;
         quick)
             # Skip VM boot — assume already running with SSH
             setup_env
@@ -407,7 +446,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|validate-all|edge-all|gui-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|status|down}"
+            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|status|down}"
             exit 1
             ;;
     esac
