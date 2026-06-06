@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all down status logs
+.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all down status logs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -57,6 +57,12 @@ validate-tray: ## Run tray-menu validation (#34: right-click menu + Show/Quit vi
 
 tray-all: ## Boot VM → wait SSH → tray-menu validation (needs borg-ui.exe + desktop; see README)
 	./run.sh tray-all
+
+validate-gui-flows: ## Run interactive GUI-flow validation (tray-nav, settings, restore round-trip, cancel) on a running VM
+	./run.sh validate-gui-flows
+
+gui-flows-all: ## Boot VM → wait SSH → GUI-flow validation (needs a PRODUCTION tauri-build exe + desktop; see README)
+	./run.sh gui-flows-all
 
 down: ## Tear down Windows VM
 	./run.sh down

@@ -43,6 +43,11 @@ make gui-all
 # Needs borg-ui.exe + an interactive desktop; brittle Win11 tray icons SKIP.
 make tray-all
 
+# Interactive GUI flows: tray->backup nav, settings profile switch, GUI restore
+# round-trip (byte-verified), and cancel-mid-backup. Drives the Svelte UI via UIA.
+# Needs a PRODUCTION tauri-build exe + an interactive desktop.
+make gui-flows-all
+
 # Or step-by-step:
 make vm             # Boot Windows container
 make ssh            # Wait for SSH (inspect with `make shell`)
@@ -52,6 +57,7 @@ make provision-edge # Ensure standard user borgstd + D: drive (idempotent)
 make validate-edge  # Run edge validation on a provisioned VM
 make validate-gui   # Run GUI validation (keychain + scheduled-firing + signals)
 make validate-tray  # Run tray-menu validation (#34: menu contents + Show/Quit)
+make validate-gui-flows # Run interactive GUI flows (restore round-trip, cancel, etc.)
 make down           # Tear down
 ```
 
@@ -133,6 +139,27 @@ separately in `borg-platform-win`.
    checklist below is the verdict. Results JSON at `%USERPROFILE%\tray-results.json`;
    console output at `validate-tray.log`.
 
+9. **`validate-gui-flows.ps1`** — the *interactive GUI flows* validation
+   (`make validate-gui-flows` / `make gui-flows-all`), driving the live Svelte UI
+   via UI Automation. Four flows, each PASS/FAIL/SKIP: **tray "Backup now" →
+   navigates to the Backup page**; **Settings profile switch repopulates fields**
+   (stages two profiles, switches the PROFILE combobox, asserts the repo path
+   changes); **GUI restore round-trip** (stages a fresh repo + known archive,
+   clicks the archive's Restore, picks a destination, byte-verifies the extracted
+   file); **cancel mid-backup** (stages a ~400 MB source, adds it, Start Backup,
+   clicks Cancel, asserts the UI returns to ready with no completed archive).
+   **Two hard-won enablers** (both documented in the script): WebView2 only exposes
+   its UIA tree when launched with
+   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--force-renderer-accessibility`; and the
+   native folder picker nests under the Tauri window, only opens when the app is
+   **foreground**, and is driven via **Ctrl+L → path → Enter** (its confirm button
+   is a Pane with AutomationId `1`). **REQUIRES a PRODUCTION `borg-ui.exe`** (real
+   `tauri build`, embedded frontend) — a dev-mode `cargo build` exe shows the
+   localhost-error page and the WebView UI isn't reachable. Self-relaunches in
+   session 1; stages its own repos/profiles and restores config after. Results JSON
+   at `%USERPROFILE%\gui-flows-results.json`; console output at
+   `validate-gui-flows.log`. **All four ran PASS on the KVM VM** (Failed: 0).
+
 ### Still needs manual confirmation (Tier C — the VNC checklist)
 
 Tier A (keychain) and Tier B (scheduled firing) are now asserted by
@@ -153,7 +180,12 @@ these need the actual Tauri binary and/or a real Credential Manager.
   - **Route 1 — build on the VM:** `make build-env` + `make deploy`, then, in
     `C:\borgui-test\app-tauri`, `pnpm install` and **`pnpm tauri build --no-bundle`**
     (the `--no-bundle` skips the installer; you only need the exe). Output under
-    `target/release/borg-ui.exe`. **Use `tauri build`, NOT `cargo build --release`** —
+    `target/release/borg-ui.exe`. **pnpm note:** the VM's corepack pnpm shim had a
+    key-verification bug; it's fixed (`corepack disable` removed the broken
+    `C:\Program Files\nodejs\` shims so `pnpm` resolves to a working standalone
+    binary — persists in the `win-storage` volume). A real `pnpm tauri build
+    --no-bundle` now produces a production exe (~13 MB, embedded frontend). **Use
+    `tauri build`, NOT `cargo build --release`** —
     a plain `cargo build` produces a *dev-mode* binary whose window loads the Vite
     dev server (`devUrl` `http://localhost:5173`) and shows "localhost refused to
     connect" instead of the embedded UI (`frontendDist` `../build`). It is fine for

@@ -316,6 +316,31 @@ run_validate_tray() {
     fi
 }
 
+# --- Interactive GUI-flow validation: tray->backup nav, settings profile switch, ---
+# --- GUI restore round-trip, cancel-mid-backup. Drives the live Svelte UI via UIA. ---
+# REQUIRES a PRODUCTION borg-ui.exe (real `tauri build`, embedded frontend) at
+# C:\borgui-test\target\release\borg-ui.exe -- a dev-mode `cargo build` exe shows
+# the localhost-error page and the WebView UI isn't reachable. The script
+# self-relaunches in session 1 and launches the app with
+# WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--force-renderer-accessibility so UIA can
+# see the Svelte content. Stages its own repos/profiles; restores config after.
+run_validate_gui_flows() {
+    log "Uploading GUI-flow validation script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-gui-flows.ps1" "$SSH_USER@$SSH_HOST:validate-gui-flows.ps1"
+
+    log "Running GUI-flow validation pass (relaunches itself in session 1)..."
+    local output
+    output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-gui-flows.ps1' 2>&1) || true
+    echo "$output" | tee "$SCRIPT_DIR/validate-gui-flows.log"
+
+    if echo "$output" | grep -q "Failed: 0"; then
+        log "GUI-flow validation: no failures. (SKIPs mean no production exe / no desktop.)"
+        return 0
+    else
+        fail "GUI-flow validation failed. See validate-gui-flows.log"
+    fi
+}
+
 # --- Setup SSH via QEMU monitor (for first boot) ---
 setup_ssh() {
     log "Installing OpenSSH via QEMU monitor keystrokes..."
@@ -393,6 +418,7 @@ main() {
         validate-edge)  run_validate_edge ;;
         validate-gui)   run_validate_gui ;;
         validate-tray)  run_validate_tray ;;
+        validate-gui-flows) run_validate_gui_flows ;;
         all)
             start_vm
             wait_for_ssh
@@ -432,6 +458,14 @@ main() {
             wait_for_ssh
             run_validate_tray
             ;;
+        gui-flows-all)
+            # Interactive GUI-flow validation on a running/booted VM. Needs a
+            # PRODUCTION borg-ui.exe (real tauri build) + an interactive desktop;
+            # stages its own repos/profiles. SKIPs cleanly if prereqs are missing.
+            start_vm
+            wait_for_ssh
+            run_validate_gui_flows
+            ;;
         quick)
             # Skip VM boot — assume already running with SSH
             setup_env
@@ -446,7 +480,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|status|down}"
+            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|status|down}"
             exit 1
             ;;
     esac
