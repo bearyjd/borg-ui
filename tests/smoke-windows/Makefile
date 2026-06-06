@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all down status logs
+.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all validate-archive-smoke archive-smoke-all down status logs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -63,6 +63,12 @@ validate-gui-flows: ## Run interactive GUI-flow validation (tray-nav, settings, 
 
 gui-flows-all: ## Boot VM → wait SSH → GUI-flow validation (needs a PRODUCTION tauri-build exe + desktop; see README)
 	./run.sh gui-flows-all
+
+validate-archive-smoke: ## Run the large-archive (#35) GUI smoke (100k-entry stream + virtualization) on a running VM
+	./run.sh validate-archive-smoke
+
+archive-smoke-all: ## Boot VM → wait SSH → large-archive (#35) GUI smoke (needs a PRODUCTION tauri-build exe + desktop; see README)
+	./run.sh archive-smoke-all
 
 down: ## Tear down Windows VM
 	./run.sh down
