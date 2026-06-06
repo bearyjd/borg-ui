@@ -387,18 +387,41 @@ run_validate_autostart_login() {
         fail "Autostart-login set phase failed. See output above."
     fi
 
+    # Best-effort removal of our Run value, so a mid-run abort never leaves the
+    # test exe auto-launching on the warm VM. No-op if SSH is unreachable.
+    _clean_runkey() { $SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-autostart-login.ps1 -Phase clean' &>/dev/null || true; }
+
     log "Rebooting Windows (guest shutdown /r) to exercise a real login cycle..."
+    # Record the guest boot time up front so we can PROVE the reboot actually
+    # happened -- a no-op shutdown must never let us verify against the pre-reboot
+    # system and report a false pass.
+    local boot_before
+    boot_before=$($SSH_CMD '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.Ticks' 2>/dev/null | tr -d '[:space:]')
+    # The shutdown command's own exit status is unreliable (the SSH session can drop
+    # as the box goes down), so don't gate on it -- the drop + boot-time checks below
+    # are the real proof.
     $SSH_CMD 'shutdown /r /t 0 /f' 2>&1 || true
-    # Confirm the old sshd actually went down (so we don't verify against the
-    # still-running pre-reboot system), then wait for it to come back.
-    local i
-    for i in $(seq 1 30); do
-        if ! $SSH_CMD "exit" &>/dev/null; then break; fi
+    # Require sshd to actually drop; if it never does, the reboot did not happen
+    # (e.g. shutdown needed elevation / was blocked).
+    local i dropped=0
+    for i in $(seq 1 36); do
+        if ! $SSH_CMD "exit" &>/dev/null; then dropped=1; break; fi
         sleep 5
     done
+    if [[ "$dropped" != "1" ]]; then
+        _clean_runkey
+        fail "Guest sshd never dropped after 'shutdown /r' -- reboot did not occur; refusing to verify against the pre-reboot system."
+    fi
     log "Guest is rebooting; waiting for SSH to return..."
     wait_for_ssh
-    log "SSH back; allowing the interactive auto-login + Run-key to fire..."
+    # Confirm the boot time advanced; otherwise we'd be verifying the same boot.
+    local boot_after
+    boot_after=$($SSH_CMD '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.Ticks' 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$boot_before" && -n "$boot_after" && "$boot_after" == "$boot_before" ]]; then
+        _clean_runkey
+        fail "Guest boot time did not change ($boot_after) -- the machine did not actually reboot."
+    fi
+    log "SSH back (boot advanced); allowing the interactive auto-login + Run-key to fire..."
     sleep 30
 
     log "Phase 2/2: verifying borg-ui.exe was launched by the Run key (minimized)..."
@@ -406,12 +429,20 @@ run_validate_autostart_login() {
     out=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-autostart-login.ps1 -Phase verify' 2>&1) || true
     echo "$out" | tee -a "$SCRIPT_DIR/validate-autostart-login.log"
 
-    if echo "$out" | grep -q "Failed: 0"; then
-        log "Autostart-login validation passed -- the Run key fired the app at login."
-        return 0
-    else
-        fail "Autostart-login validation failed. See validate-autostart-login.log"
+    # Require a positive completion marker AND a real pass -- not merely the absence
+    # of "Failed: 1". A SKIP (e.g. no interactive desktop) is surfaced but is NOT a
+    # confirmed pass. The verify phase removes the Run value itself on every verdict.
+    if echo "$out" | grep -q "VERIFY-COMPLETE"; then
+        if echo "$out" | grep -Eq "VERIFY-COMPLETE Passed: [1-9]" && echo "$out" | grep -q "Failed: 0"; then
+            log "Autostart-login validation passed -- the Run key fired the app at login."
+            return 0
+        elif echo "$out" | grep -q "Failed: 0"; then
+            warn "Autostart-login SKIPPED (verify ran but confirmed nothing -- e.g. no interactive desktop). NOT a confirmed pass."
+            return 0
+        fi
     fi
+    _clean_runkey
+    fail "Autostart-login validation failed or did not complete. See validate-autostart-login.log"
 }
 
 # --- Setup SSH via QEMU monitor (for first boot) ---
