@@ -54,6 +54,11 @@ make gui-flows-all
 # restore. Needs a PRODUCTION tauri-build exe + an interactive desktop.
 make archive-smoke-all
 
+# Autostart login-cycle: register the HKCU\Run value the app writes, REBOOT the
+# guest, and verify borg-ui.exe auto-started (interactive session, --minimized)
+# i.e. the Run key actually fires at login. Needs a PRODUCTION tauri-build exe.
+make autostart-login-all
+
 # Or step-by-step:
 make vm             # Boot Windows container
 make ssh            # Wait for SSH (inspect with `make shell`)
@@ -65,6 +70,7 @@ make validate-gui   # Run GUI validation (keychain + scheduled-firing + signals)
 make validate-tray  # Run tray-menu validation (#34: menu contents + Show/Quit)
 make validate-gui-flows # Run interactive GUI flows (restore round-trip, cancel, etc.)
 make validate-archive-smoke # Run the large-archive (#35) GUI smoke (100k stream + virtualization)
+make validate-autostart-login # Register the Run key, reboot, verify the app auto-starts at login
 make down           # Tear down
 ```
 
@@ -186,6 +192,24 @@ separately in `borg-platform-win`.
    `tauri build`). Results JSON at `%USERPROFILE%\archive-smoke-results.json`;
    console output at `validate-archive-smoke.log`. **All five ran PASS on the KVM
    VM** (Failed: 0).
+
+11. **`validate-autostart-login.ps1`** — the *autostart login-cycle* validation
+   (`make validate-autostart-login` / `make autostart-login-all`), the one
+   autostart piece that needs a real reboot: does the `HKCU\...\Run` value the app
+   registers actually launch it at login? The `reg` round-trip and
+   `--minimized`→tray are validated elsewhere (`validate.ps1` + PR #33); this is
+   the login-firing. Two phases driven by `run.sh` across a guest reboot (a single
+   script can't survive it): **set** registers the exact value
+   `borg-platform-win::autostart::enable` writes (`BorgUI` = `"<exe>" --minimized`)
+   after killing any running instance; `run.sh` then `shutdown /r`'s the guest
+   (real login cycle — reboot → dockur auto-login → Explorer processes Run keys),
+   waits for SSH to drop and return; **verify** polls for `borg-ui.exe` and asserts
+   it auto-started in an interactive session (>=1) with `--minimized`, parented by
+   the shell. Restores any prior Run value + kills the app on the way out.
+   **REQUIRES a PRODUCTION `borg-ui.exe`.** Results JSON at
+   `%USERPROFILE%\autostart-login-results.json`; console output at
+   `validate-autostart-login.log`. **Ran 1/1 PASS on the KVM VM** (pid auto-started
+   in session 1, `--minimized`, parent `explorer`).
 
 ### Still needs manual confirmation (Tier C — the VNC checklist)
 
