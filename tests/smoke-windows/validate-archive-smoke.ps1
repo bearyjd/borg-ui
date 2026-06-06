@@ -34,6 +34,11 @@
 #
 # Pass/Fail/Skip + JSON + exit code, mirroring validate-gui-flows.ps1. ASCII only
 # (PS 5.1 reads UTF-8-no-BOM as ANSI -- a non-ASCII byte breaks parsing).
+#
+# TODO (tracked follow-up): the UIA helper block + the session-1 relaunch wrapper
+# are duplicated across validate-{gui,tray,gui-flows,archive-smoke}.ps1. Extract a
+# dot-sourced smoke-uia.ps1 shared by all four. Kept self-contained here for now so
+# run.sh can scp + run each script standalone with no on-VM module resolution.
 
 param([switch]$InSession1, [int]$WinWaitSec = 30, [int]$FileCount = 100000, [int]$DirCount = 200, [int]$LoadWaitSec = 240)
 $ErrorActionPreference = "Continue"
@@ -159,13 +164,20 @@ if (-not $InSession1) {
         exit 0
     }
     & schtasks.exe /Run /TN $task 2>&1 | Out-Null
-    $deadline = (Get-Date).AddSeconds(600)
+    $deadline = (Get-Date).AddSeconds(900)
     while ((Get-Date) -lt $deadline -and -not (Test-Path $sentinel)) { Start-Sleep -Seconds 5 }
     if (Test-Path $log) { Get-Content $log }
     & schtasks.exe /Delete /F /TN $task 2>&1 | Out-Null
     Remove-Item $bat -EA SilentlyContinue
-    & $restoreProfile; & $cleanupStaging
-    if (-not (Test-Path $sentinel)) { Write-Host "`nSKIP: session-1 task did not finish (no desktop?)."; Write-Host "Failed: 0"; exit 0 }
+    # The sentinel is written only AFTER the inner run's finally (which Stop-App's
+    # the exe) returns -- so its presence means the app is down and the staged repo
+    # is safe to delete. On a timeout the app may STILL be running: restore the
+    # profile but leave $ROOT in place so we don't yank the repo out from under a
+    # live borg extract.
+    $timedOut = -not (Test-Path $sentinel)
+    & $restoreProfile
+    if (-not $timedOut) { & $cleanupStaging } else { Write-Host "WARN: session-1 overran 900s; leaving $ROOT in place (app may still be using it)." }
+    if ($timedOut) { Write-Host "`nSKIP: session-1 task did not finish (no desktop?)."; Write-Host "Failed: 0"; exit 0 }
     $failed = 0
     if (Test-Path $resJson) { try { $failed = @((Get-Content $resJson -Raw | ConvertFrom-Json) | Where-Object { $_.Status -eq "FAIL" }).Count } catch {} }
     if ($failed -gt 0) { exit 1 } else { exit 0 }
@@ -311,11 +323,17 @@ function Wait-CountTotal($root, $timeoutSec) {
 }
 # Load-done signal that does not depend on the header text being a single UIA
 # node: the "Select all" link only renders once the stream completes and the
-# tree is built (it lives in the loaded {:else} branch).
+# tree is built (it lives in the loaded {:else} branch). Returns a hashtable so
+# a load *error* (the {:else if error} banner) fails fast instead of burning the
+# full timeout waiting for a "Select all" that will never appear.
 function Wait-Loaded($root, $timeoutSec) {
     $deadline = (Get-Date).AddSeconds($timeoutSec)
-    while ((Get-Date) -lt $deadline) { if (Find-El $root $CT::Button "Select all") { return $true }; Start-Sleep -Milliseconds 800 }
-    return $false
+    while ((Get-Date) -lt $deadline) {
+        if (Find-El $root $CT::Button "Select all") { return @{ ok = $true } }
+        if (Has-Text $root "*Failed to load archive contents*") { return @{ ok = $false; err = "browser reported a load error" } }
+        Start-Sleep -Milliseconds 800
+    }
+    return @{ ok = $false; err = "timeout after ${timeoutSec}s (no 'Select all')" }
 }
 # The footer button's accessible name is a single, reliable string:
 # "Restore selected (N)" where N is the selected-file count.
@@ -423,22 +441,34 @@ try {
             }
             else {
                 $sawLoading = Wait-Text $win "*Loading archive contents*" 4
+                # Best-effort, NON-gating: sample the progressive "{N} files" loaded
+                # count while the stream is in flight. With 100k zero-byte entries the
+                # stream can finish in ~seconds, so this may legitimately miss -- it is
+                # evidence in the Pass detail, never a gate (batching is hard-asserted
+                # by the streaming_list_matches_collected_listing e2e).
+                $mid = 0; $probe = (Get-Date).AddSeconds(8)
+                while ((Get-Date) -lt $probe -and -not (Find-El $win $CT::Button "Select all")) {
+                    foreach ($e in $win.FindAll($TREE::Descendants, $ANYCOND)) {
+                        $nm = ""; try { $nm = $e.Current.Name } catch {}
+                        if ($nm -match '^([0-9][0-9,]*)\s+files$') { $v = [int]($matches[1] -replace ',', ''); if ($v -gt $mid -and $v -lt $FileCount) { $mid = $v } }
+                    }
+                }
                 $loaded = Wait-Loaded $win $LoadWaitSec
-                if (-not $loaded) {
-                    Fail "huge_archive_streams_and_builds" "the browser never finished loading (no 'Select all' within ${LoadWaitSec}s)"
+                if (-not $loaded.ok) {
+                    Fail "huge_archive_streams_and_builds" "load did not complete: $($loaded.err)"
                 }
                 else {
                     $browserOk = $true
-                    $ld = if ($sawLoading) { "streamed (saw progressive Loading text); " } else { "" }
+                    $prog = if ($mid -gt 0) { "progressive count seen at $mid; " } elseif ($sawLoading) { "saw progressive Loading text; " } else { "" }
                     $cp = Get-CountPair $win
                     if ($cp -and [math]::Abs($cp.total - $FileCount) -le 5) {
-                        Pass "huge_archive_streams_and_builds" "${ld}browser built the full tree: header shows $($cp.total) / $FileCount files"
+                        Pass "huge_archive_streams_and_builds" "${prog}browser built the full tree: header shows $($cp.total) / $FileCount files"
                     }
                     elseif ($cp) {
                         Fail "huge_archive_streams_and_builds" "tree total $($cp.total) does not match the $FileCount staged files"
                     }
                     else {
-                        Pass "huge_archive_streams_and_builds" "${ld}browser finished loading the full archive (exact total verified in select_all_counts_all)"
+                        Pass "huge_archive_streams_and_builds" "${prog}browser finished loading the full archive (exact total verified in select_all_counts_all)"
                     }
                 }
 
@@ -453,14 +483,19 @@ try {
                     if ($expandBtn) { [void](Invoke-El $expandBtn); Start-Sleep -Seconds 1; $expandedOk = $true }
                     $rowCount = (Find-All $win $CT::CheckBox).Count
                     $logical = $DirCount + 1
+                    # The DOM window must hold well under a third of the logical rows.
+                    # A fixed cap would let a render-everything regression (e.g. 100 of
+                    # 201) pass green; scaling with the tree makes that a FAIL while
+                    # staying comfortably above any real viewport (~22 on the 720p VM).
+                    $cap = [math]::Max(60, [int]($logical / 3))
                     if (-not $expandedOk) {
                         Skip "archive_browser_virtualizes" "could not expand 'data' to populate rows"
                     }
-                    elseif ($rowCount -gt 5 -and $rowCount -lt 120) {
-                        Pass "archive_browser_virtualizes" "with ~$logical rows expanded the DOM holds only $rowCount windowed rows (constant-size window over 100k entries)"
+                    elseif ($rowCount -gt 5 -and $rowCount -lt $cap) {
+                        Pass "archive_browser_virtualizes" "with ~$logical rows expanded the DOM holds only $rowCount windowed rows (< $cap; constant-size window over 100k entries)"
                     }
-                    elseif ($rowCount -ge 120) {
-                        Fail "archive_browser_virtualizes" "DOM holds $rowCount rows -- the list does not appear windowed (expected a bounded handful)"
+                    elseif ($rowCount -ge $cap) {
+                        Fail "archive_browser_virtualizes" "DOM holds $rowCount of $logical rows -- not windowed (expected < $cap)"
                     }
                     else {
                         Skip "archive_browser_virtualizes" "only $rowCount rows visible -- expand may not have populated the tree"
@@ -536,7 +571,7 @@ try {
                 if (-not (Open-Browser $win)) { Skip "browser_selective_restore" "could not re-open the Browse view" }
                 else {
                     $loaded2 = Wait-Loaded $win $LoadWaitSec
-                    if (-not $loaded2) { Fail "browser_selective_restore" "re-opened browser never finished loading" }
+                    if (-not $loaded2.ok) { Fail "browser_selective_restore" "re-opened browser did not finish loading: $($loaded2.err)" }
                     else {
                         $expandBtn = Find-El $win $CT::Button "Expand"
                         if ($expandBtn) { [void](Invoke-El $expandBtn); Start-Sleep -Seconds 1 }
