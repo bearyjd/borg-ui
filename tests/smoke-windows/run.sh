@@ -365,6 +365,55 @@ run_validate_archive_smoke() {
     fi
 }
 
+# --- Autostart login-cycle validation: does the HKCU\Run value actually fire? ---
+# Registers the Run value the app writes ("BorgUI" = "<exe>" --minimized), reboots
+# the guest (a real login cycle: shutdown /r -> auto-login -> Explorer processes
+# Run keys), then verifies borg-ui.exe auto-started in the interactive session
+# with --minimized. The reg round-trip + --minimized->tray are validated elsewhere;
+# this closes the "reboot actually launches it" gap. REQUIRES a production exe.
+run_validate_autostart_login() {
+    log "Uploading autostart-login validation script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-autostart-login.ps1" "$SSH_USER@$SSH_HOST:validate-autostart-login.ps1"
+
+    log "Phase 1/2: registering the HKCU Run value (as the app's autostart writes it)..."
+    local set_out
+    set_out=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-autostart-login.ps1 -Phase set' 2>&1)
+    echo "$set_out" | tee "$SCRIPT_DIR/validate-autostart-login.log"
+    if ! echo "$set_out" | grep -q "SET-OK"; then
+        if echo "$set_out" | grep -q "Failed: 0"; then
+            log "Autostart-login SKIPPED (no production exe / value did not persist) -- nothing to verify."
+            return 0
+        fi
+        fail "Autostart-login set phase failed. See output above."
+    fi
+
+    log "Rebooting Windows (guest shutdown /r) to exercise a real login cycle..."
+    $SSH_CMD 'shutdown /r /t 0 /f' 2>&1 || true
+    # Confirm the old sshd actually went down (so we don't verify against the
+    # still-running pre-reboot system), then wait for it to come back.
+    local i
+    for i in $(seq 1 30); do
+        if ! $SSH_CMD "exit" &>/dev/null; then break; fi
+        sleep 5
+    done
+    log "Guest is rebooting; waiting for SSH to return..."
+    wait_for_ssh
+    log "SSH back; allowing the interactive auto-login + Run-key to fire..."
+    sleep 30
+
+    log "Phase 2/2: verifying borg-ui.exe was launched by the Run key (minimized)..."
+    local out
+    out=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-autostart-login.ps1 -Phase verify' 2>&1) || true
+    echo "$out" | tee -a "$SCRIPT_DIR/validate-autostart-login.log"
+
+    if echo "$out" | grep -q "Failed: 0"; then
+        log "Autostart-login validation passed -- the Run key fired the app at login."
+        return 0
+    else
+        fail "Autostart-login validation failed. See validate-autostart-login.log"
+    fi
+}
+
 # --- Setup SSH via QEMU monitor (for first boot) ---
 setup_ssh() {
     log "Installing OpenSSH via QEMU monitor keystrokes..."
@@ -444,6 +493,7 @@ main() {
         validate-tray)  run_validate_tray ;;
         validate-gui-flows) run_validate_gui_flows ;;
         validate-archive-smoke) run_validate_archive_smoke ;;
+        validate-autostart-login) run_validate_autostart_login ;;
         all)
             start_vm
             wait_for_ssh
@@ -500,6 +550,14 @@ main() {
             wait_for_ssh
             run_validate_archive_smoke
             ;;
+        autostart-login-all)
+            # Autostart login-cycle validation on a running/booted VM: registers
+            # the Run value, reboots the guest, and verifies the app auto-started.
+            # Needs a PRODUCTION borg-ui.exe; reboots the VM (still warm after).
+            start_vm
+            wait_for_ssh
+            run_validate_autostart_login
+            ;;
         quick)
             # Skip VM boot — assume already running with SSH
             setup_env
@@ -514,7 +572,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|status|down}"
+            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|autostart-login-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|validate-autostart-login|status|down}"
             exit 1
             ;;
     esac

@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all validate-archive-smoke archive-smoke-all down status logs
+.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all validate-archive-smoke archive-smoke-all validate-autostart-login autostart-login-all down status logs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -69,6 +69,12 @@ validate-archive-smoke: ## Run the large-archive (#35) GUI smoke (100k-entry str
 
 archive-smoke-all: ## Boot VM → wait SSH → large-archive (#35) GUI smoke (needs a PRODUCTION tauri-build exe + desktop; see README)
 	./run.sh archive-smoke-all
+
+validate-autostart-login: ## Run the autostart login-cycle check (set Run key → reboot → verify) on a running VM
+	./run.sh validate-autostart-login
+
+autostart-login-all: ## Boot VM → wait SSH → autostart login-cycle check (reboots the guest; needs a PRODUCTION tauri-build exe)
+	./run.sh autostart-login-all
 
 down: ## Tear down Windows VM
 	./run.sh down
