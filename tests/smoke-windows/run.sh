@@ -341,6 +341,30 @@ run_validate_gui_flows() {
     fi
 }
 
+# --- Large-archive GUI smoke (#35): streaming + virtualized ArchiveBrowser ---
+# Stages a ~100k-entry borg archive on the VM, then drives the production app's
+# archive Browse view via UI Automation to prove the stream completes, the DOM
+# stays windowed, "Select all" scales to the full count, scrolling recycles rows,
+# and a selected subset restores byte-correct. The script self-relaunches in
+# session 1 and stages/cleans up its own repo + profile. REQUIRES a PRODUCTION
+# tauri-build exe at C:\borgui-test\target\release\borg-ui.exe.
+run_validate_archive_smoke() {
+    log "Uploading large-archive smoke script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-archive-smoke.ps1" "$SSH_USER@$SSH_HOST:validate-archive-smoke.ps1"
+
+    log "Running large-archive (#35) smoke pass (stages 100k entries, relaunches in session 1)..."
+    local output
+    output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-archive-smoke.ps1' 2>&1) || true
+    echo "$output" | tee "$SCRIPT_DIR/validate-archive-smoke.log"
+
+    if echo "$output" | grep -q "Failed: 0"; then
+        log "Archive smoke: no failures. (SKIPs mean no production exe / no desktop / borg missing.)"
+        return 0
+    else
+        fail "Archive smoke failed. See validate-archive-smoke.log"
+    fi
+}
+
 # --- Setup SSH via QEMU monitor (for first boot) ---
 setup_ssh() {
     log "Installing OpenSSH via QEMU monitor keystrokes..."
@@ -419,6 +443,7 @@ main() {
         validate-gui)   run_validate_gui ;;
         validate-tray)  run_validate_tray ;;
         validate-gui-flows) run_validate_gui_flows ;;
+        validate-archive-smoke) run_validate_archive_smoke ;;
         all)
             start_vm
             wait_for_ssh
@@ -466,6 +491,15 @@ main() {
             wait_for_ssh
             run_validate_gui_flows
             ;;
+        archive-smoke-all)
+            # Large-archive (#35) GUI smoke on a running/booted VM. Needs a
+            # PRODUCTION borg-ui.exe (real tauri build) + an interactive desktop;
+            # stages its own 100k-entry repo + profile and cleans up. SKIPs
+            # cleanly if prereqs are missing.
+            start_vm
+            wait_for_ssh
+            run_validate_archive_smoke
+            ;;
         quick)
             # Skip VM boot — assume already running with SSH
             setup_env
@@ -480,7 +514,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|status|down}"
+            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|status|down}"
             exit 1
             ;;
     esac

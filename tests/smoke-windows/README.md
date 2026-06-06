@@ -48,6 +48,12 @@ make tray-all
 # Needs a PRODUCTION tauri-build exe + an interactive desktop.
 make gui-flows-all
 
+# Large-archive (#35) GUI smoke: stage a 100,000-file archive and drive the
+# streaming/virtualized ArchiveBrowser via UIA -- full-tree stream, windowed DOM,
+# Select-all to 100k, scroll-recycle, and a byte-verified selective folder
+# restore. Needs a PRODUCTION tauri-build exe + an interactive desktop.
+make archive-smoke-all
+
 # Or step-by-step:
 make vm             # Boot Windows container
 make ssh            # Wait for SSH (inspect with `make shell`)
@@ -58,6 +64,7 @@ make validate-edge  # Run edge validation on a provisioned VM
 make validate-gui   # Run GUI validation (keychain + scheduled-firing + signals)
 make validate-tray  # Run tray-menu validation (#34: menu contents + Show/Quit)
 make validate-gui-flows # Run interactive GUI flows (restore round-trip, cancel, etc.)
+make validate-archive-smoke # Run the large-archive (#35) GUI smoke (100k stream + virtualization)
 make down           # Tear down
 ```
 
@@ -159,6 +166,26 @@ separately in `borg-platform-win`.
    session 1; stages its own repos/profiles and restores config after. Results JSON
    at `%USERPROFILE%\gui-flows-results.json`; console output at
    `validate-gui-flows.log`. **All four ran PASS on the KVM VM** (Failed: 0).
+
+10. **`validate-archive-smoke.ps1`** — the *large-archive (#35) GUI smoke*
+   (`make validate-archive-smoke` / `make archive-smoke-all`), proving the
+   streaming + virtualized `ArchiveBrowser` holds up on a genuinely huge archive.
+   The wrapper (SSH context) stages a **100,000-file / 200-folder** borg archive
+   with a Defender-excluded compiled-C# file factory (staging is ~seconds), points
+   an active profile at it, then relaunches the inner run in session 1 and restores
+   the profile + removes the staging on the way out. Five checks, each
+   PASS/FAIL/SKIP: **streams + builds the full tree** (header shows
+   `100000 / 100000 files`); **virtualizes** (with ~201 logical rows expanded the
+   DOM holds only ~22 windowed rows — counted via the per-row checkboxes);
+   **Select all scales** to the full 100k (read from the `Restore selected (N)`
+   button name); **scroll recycles the window** (wheel/ScrollPattern advances the
+   visible directory range toward the end); **selective restore** ticks one folder,
+   clicks Restore selected, picks a destination, and byte-verifies the extracted
+   subset. Same enablers as `validate-gui-flows` (force-renderer-accessibility +
+   the nested folder picker). **REQUIRES a PRODUCTION `borg-ui.exe`** (real
+   `tauri build`). Results JSON at `%USERPROFILE%\archive-smoke-results.json`;
+   console output at `validate-archive-smoke.log`. **All five ran PASS on the KVM
+   VM** (Failed: 0).
 
 ### Still needs manual confirmation (Tier C — the VNC checklist)
 
