@@ -365,6 +365,86 @@ run_validate_archive_smoke() {
     fi
 }
 
+# --- Autostart login-cycle validation: does the HKCU\Run value actually fire? ---
+# Registers the Run value the app writes ("BorgUI" = "<exe>" --minimized), reboots
+# the guest (a real login cycle: shutdown /r -> auto-login -> Explorer processes
+# Run keys), then verifies borg-ui.exe auto-started in the interactive session
+# with --minimized. The reg round-trip + --minimized->tray are validated elsewhere;
+# this closes the "reboot actually launches it" gap. REQUIRES a production exe.
+run_validate_autostart_login() {
+    log "Uploading autostart-login validation script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-autostart-login.ps1" "$SSH_USER@$SSH_HOST:validate-autostart-login.ps1"
+
+    log "Phase 1/2: registering the HKCU Run value (as the app's autostart writes it)..."
+    local set_out
+    set_out=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-autostart-login.ps1 -Phase set' 2>&1)
+    echo "$set_out" | tee "$SCRIPT_DIR/validate-autostart-login.log"
+    if ! echo "$set_out" | grep -q "SET-OK"; then
+        if echo "$set_out" | grep -q "Failed: 0"; then
+            log "Autostart-login SKIPPED (no production exe / value did not persist) -- nothing to verify."
+            return 0
+        fi
+        fail "Autostart-login set phase failed. See output above."
+    fi
+
+    # Best-effort removal of our Run value, so a mid-run abort never leaves the
+    # test exe auto-launching on the warm VM. No-op if SSH is unreachable.
+    _clean_runkey() { $SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-autostart-login.ps1 -Phase clean' &>/dev/null || true; }
+
+    log "Rebooting Windows (guest shutdown /r) to exercise a real login cycle..."
+    # Record the guest boot time up front so we can PROVE the reboot actually
+    # happened -- a no-op shutdown must never let us verify against the pre-reboot
+    # system and report a false pass.
+    local boot_before
+    boot_before=$($SSH_CMD '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.Ticks' 2>/dev/null | tr -d '[:space:]')
+    # The shutdown command's own exit status is unreliable (the SSH session can drop
+    # as the box goes down), so don't gate on it -- the drop + boot-time checks below
+    # are the real proof.
+    $SSH_CMD 'shutdown /r /t 0 /f' 2>&1 || true
+    # Require sshd to actually drop; if it never does, the reboot did not happen
+    # (e.g. shutdown needed elevation / was blocked).
+    local i dropped=0
+    for i in $(seq 1 36); do
+        if ! $SSH_CMD "exit" &>/dev/null; then dropped=1; break; fi
+        sleep 5
+    done
+    if [[ "$dropped" != "1" ]]; then
+        _clean_runkey
+        fail "Guest sshd never dropped after 'shutdown /r' -- reboot did not occur; refusing to verify against the pre-reboot system."
+    fi
+    log "Guest is rebooting; waiting for SSH to return..."
+    wait_for_ssh
+    # Confirm the boot time advanced; otherwise we'd be verifying the same boot.
+    local boot_after
+    boot_after=$($SSH_CMD '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.Ticks' 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$boot_before" && -n "$boot_after" && "$boot_after" == "$boot_before" ]]; then
+        _clean_runkey
+        fail "Guest boot time did not change ($boot_after) -- the machine did not actually reboot."
+    fi
+    log "SSH back (boot advanced); allowing the interactive auto-login + Run-key to fire..."
+    sleep 30
+
+    log "Phase 2/2: verifying borg-ui.exe was launched by the Run key (minimized)..."
+    local out
+    out=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-autostart-login.ps1 -Phase verify' 2>&1) || true
+    echo "$out" | tee -a "$SCRIPT_DIR/validate-autostart-login.log"
+
+    # Require a positive completion marker AND a real pass -- not merely the absence
+    # of "Failed: 1". A SKIP (e.g. no interactive desktop) is surfaced but is NOT a
+    # confirmed pass. The verify phase removes the Run value itself on every verdict.
+    if echo "$out" | grep -q "VERIFY-COMPLETE"; then
+        if echo "$out" | grep -Eq "VERIFY-COMPLETE Passed: [1-9]" && echo "$out" | grep -q "Failed: 0"; then
+            log "Autostart-login validation passed -- the Run key fired the app at login."
+            return 0
+        elif echo "$out" | grep -q "Failed: 0"; then
+            warn "Autostart-login SKIPPED (verify ran but confirmed nothing -- e.g. no interactive desktop). NOT a confirmed pass."
+            return 0
+        fi
+    fi
+    _clean_runkey
+    fail "Autostart-login validation failed or did not complete. See validate-autostart-login.log"
+}
+
 # --- Setup SSH via QEMU monitor (for first boot) ---
 setup_ssh() {
     log "Installing OpenSSH via QEMU monitor keystrokes..."
@@ -444,6 +524,7 @@ main() {
         validate-tray)  run_validate_tray ;;
         validate-gui-flows) run_validate_gui_flows ;;
         validate-archive-smoke) run_validate_archive_smoke ;;
+        validate-autostart-login) run_validate_autostart_login ;;
         all)
             start_vm
             wait_for_ssh
@@ -500,6 +581,14 @@ main() {
             wait_for_ssh
             run_validate_archive_smoke
             ;;
+        autostart-login-all)
+            # Autostart login-cycle validation on a running/booted VM: registers
+            # the Run value, reboots the guest, and verifies the app auto-started.
+            # Needs a PRODUCTION borg-ui.exe; reboots the VM (still warm after).
+            start_vm
+            wait_for_ssh
+            run_validate_autostart_login
+            ;;
         quick)
             # Skip VM boot — assume already running with SSH
             setup_env
@@ -514,7 +603,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|status|down}"
+            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|autostart-login-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|validate-autostart-login|status|down}"
             exit 1
             ;;
     esac
