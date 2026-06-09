@@ -171,25 +171,36 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
         return finish(config_dir, &archive_name, started, Err(e.detail())).await;
     }
 
+    let raw_paths: Vec<PathBuf> = schedule.source_paths.iter().map(PathBuf::from).collect();
+
+    // Scheduled (unattended) runs benefit from VSS most — files are likely in
+    // use. Snapshot the source volume and back up from a junction mount so borg
+    // stores clean, restorable paths; falls back to live files when VSS can't
+    // run (multi-volume / non-admin / non-Windows). See commands.rs and
+    // crates/borg-platform-win/src/vss.rs.
+    let vss = borg_platform_win::vss::prepare_snapshot(&raw_paths).await;
+
     let backup_profile = BackupProfile {
         name: profile.name.clone(),
-        source_paths: schedule.source_paths.iter().map(PathBuf::from).collect(),
+        source_paths: vss.source_paths.clone(),
         excludes: schedule.excludes.clone(),
         compression: Compression::default(),
         repo: profile.repo.clone(),
     };
     let cancel = CancelToken::new();
-    let mut warnings = match borg
+    let create_result = borg
         .create(
             &backup_profile,
             &archive_name,
-            None,
+            vss.cwd.as_deref(),
             pass.as_deref(),
             &cancel,
             |_| {},
         )
-        .await
-    {
+        .await;
+    // Release the snapshot + junction regardless of how the backup ended.
+    vss.release().await;
+    let mut warnings = match create_result {
         Ok(outcome) => outcome.warnings,
         Err(e) => return finish(config_dir, &archive_name, started, Err(e.detail())).await,
     };

@@ -36,12 +36,14 @@ pub fn unique_volumes(paths: &[PathBuf]) -> Result<Vec<String>> {
     Ok(volumes)
 }
 
-/// Remap an original path through a VSS shadow copy device path.
+/// Strip the volume root from an absolute Windows path, yielding the path
+/// relative to that volume. This is what borg stores when it runs with its
+/// working directory set to the snapshot junction (Approach B): a clean,
+/// restorable path with no drive-letter colon or shadow-device prefix.
 ///
-/// Example: `C:\Users\me\docs` with volume `C:\` and shadow device
-/// `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy3` becomes
-/// `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy3\Users\me\docs`.
-pub fn remap_path(original: &Path, volume_root: &str, shadow_device: &str) -> Result<PathBuf> {
+/// `C:\Users\me\docs` on volume `C:\` becomes `Users\me\docs`. Backing up the
+/// volume root itself yields `.` (borg archives the whole junction).
+pub fn volume_relative(original: &Path, volume_root: &str) -> Result<PathBuf> {
     let original_str = original.to_string_lossy();
     if original_str.len() < volume_root.len()
         || !original_str[..volume_root.len()].eq_ignore_ascii_case(volume_root)
@@ -50,13 +52,37 @@ pub fn remap_path(original: &Path, volume_root: &str, shadow_device: &str) -> Re
             message: format!("path {} is not on volume {}", original_str, volume_root),
         });
     }
-    let relative = &original_str[volume_root.len()..];
-    let remapped = if relative.is_empty() {
-        shadow_device.to_string()
-    } else {
-        format!("{}\\{}", shadow_device.trim_end_matches('\\'), relative)
-    };
-    Ok(PathBuf::from(remapped))
+    let relative = original_str[volume_root.len()..].trim_start_matches(['\\', '/']);
+    if relative.is_empty() {
+        return Ok(PathBuf::from("."));
+    }
+    Ok(PathBuf::from(relative))
+}
+
+/// The source path to hand borg under a *drive-letter-named* snapshot junction,
+/// so the stored archive path is byte-identical to borg's live-file layout.
+///
+/// borg stores an absolute live source `C:\Users\me\docs` as `C/Users/me/docs`
+/// (drive letter as the leading component). Under VSS we mount the shadow as a
+/// junction named `C` inside a wrapper dir, set that wrapper as borg's cwd, and
+/// pass this `C\Users\me\docs` as the source — so borg stores the SAME
+/// `C/Users/me/docs`. This keeps VSS invisible to excludes, archive browsing,
+/// and restore (the same profile produces the same layout whether or not VSS
+/// engaged on a given run). `C:\` (the volume root) maps to just `C`.
+pub fn drive_relative_source(original: &Path, volume_root: &str) -> Result<PathBuf> {
+    let rel = volume_relative(original, volume_root)?;
+    let letter = volume_root
+        .chars()
+        .next()
+        .unwrap_or('C')
+        .to_ascii_uppercase();
+    if rel == Path::new(".") {
+        return Ok(PathBuf::from(letter.to_string()));
+    }
+    let mut s = std::ffi::OsString::from(letter.to_string());
+    s.push("\\");
+    s.push(rel.as_os_str());
+    Ok(PathBuf::from(s))
 }
 
 fn validate_volume(volume: &str) -> Result<()> {
@@ -195,70 +221,249 @@ pub async fn release_snapshot(handle: SnapshotHandle) -> Result<()> {
     }
 }
 
-/// Snapshot all volumes referenced by `paths`, returning remapped paths and handles.
+/// A borg invocation plan: the source paths and optional working directory to
+/// hand `BorgClient::create`, plus the snapshot/junction state to release after.
 ///
-/// If VSS is unavailable or any snapshot fails, falls back to original paths
-/// with a warning. The caller should always call `release_all` when done.
-///
-/// NOTE: The remapped paths use `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\...`
-/// which borg stores verbatim in the archive. This makes restore on Windows
-/// impossible (`?` is an illegal filename character). See
-/// `.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md`. Caller currently bypasses
-/// this function until that plan is implemented.
-pub async fn snapshot_sources(paths: &[PathBuf]) -> (Vec<PathBuf>, Vec<SnapshotHandle>) {
-    let volumes = match unique_volumes(paths) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("Could not extract volumes, skipping VSS: {}", e);
-            return (paths.to_vec(), vec![]);
+/// When a VSS snapshot is active, `source_paths` are volume-relative and `cwd`
+/// is the snapshot junction mount — so borg stores clean, restorable paths.
+/// Otherwise this is a live-file plan: the original paths and no `cwd`. The
+/// caller MUST call [`SnapshotPlan::release`] once the backup finishes (success
+/// or failure) to remove the junction and delete the snapshot.
+pub struct SnapshotPlan {
+    /// Paths to pass to borg. Under VSS these are drive-letter-prefixed and
+    /// resolved against `cwd` (the junction's wrapper dir) so the stored layout
+    /// matches a live backup (`C\Users\me`); otherwise the original paths.
+    pub source_paths: Vec<PathBuf>,
+    /// Working directory for borg: the snapshot junction's wrapper dir under VSS,
+    /// else `None`.
+    pub cwd: Option<PathBuf>,
+    handles: Vec<SnapshotHandle>,
+    mounts: Vec<PathBuf>,
+}
+
+impl SnapshotPlan {
+    /// A live-file plan: back up the originals directly, no snapshot.
+    fn live(paths: &[PathBuf]) -> Self {
+        Self {
+            source_paths: paths.to_vec(),
+            cwd: None,
+            handles: Vec::new(),
+            mounts: Vec::new(),
         }
-    };
+    }
 
-    let mut handles: Vec<SnapshotHandle> = Vec::new();
+    /// True when a VSS snapshot backs this plan (vs. a live-file fallback).
+    pub fn is_snapshot(&self) -> bool {
+        self.cwd.is_some()
+    }
 
-    for vol in &volumes {
-        match create_snapshot(Path::new(vol)).await {
-            Ok(Some(handle)) => handles.push(handle),
-            Ok(None) => return (paths.to_vec(), vec![]),
-            Err(e) => {
-                tracing::warn!("VSS snapshot failed for {}: {}", vol, e);
-                release_all(handles).await;
-                return (paths.to_vec(), vec![]);
+    /// Remove the junction(s) then delete the snapshot(s). Best-effort: errors
+    /// are logged, never propagated — releasing must not fail a backup.
+    ///
+    /// This is an explicit call, not a `Drop` guard (release is async and Drop
+    /// cannot await). Both callers invoke it after `borg.create(...).await` on
+    /// every happy/error path, so the only leak window is a panic/unwind between
+    /// `prepare_snapshot` and here — rare, and self-limiting: `mount_snapshot`
+    /// clears a stale junction on the next run and a leaked shadow copy is
+    /// reclaimed on reboot. A `Drop`-based safety net is a possible follow-up.
+    pub async fn release(self) {
+        for mount in &self.mounts {
+            #[cfg(windows)]
+            {
+                unmount_snapshot(mount).await;
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = mount;
             }
         }
+        release_all(self.handles).await;
+    }
+}
+
+/// Build a backup plan for `paths`, taking a VSS snapshot when possible.
+///
+/// Approach B (junction): snapshot the single volume the sources live on, mount
+/// the shadow copy as an NTFS junction, and return volume-relative source paths
+/// plus the junction as borg's working directory. borg then stores paths that
+/// match the live-file layout (`C/Users/me/docs/...`) and restore correctly, and
+/// exclusively-locked files are captured from the frozen snapshot.
+///
+/// Falls back to a live-file plan (today's behavior) — logging why — when:
+/// - not on Windows;
+/// - the sources span more than one volume (borg takes a single working dir);
+/// - VSS is unavailable or snapshot creation fails (e.g. a non-admin user);
+/// - the junction can't be mounted or a path can't be made volume-relative.
+pub async fn prepare_snapshot(paths: &[PathBuf]) -> SnapshotPlan {
+    #[cfg(not(windows))]
+    {
+        SnapshotPlan::live(paths)
     }
 
-    if handles.is_empty() {
-        return (paths.to_vec(), vec![]);
-    }
-
-    let mut remapped = Vec::with_capacity(paths.len());
-    for path in paths {
-        let vol = match extract_volume(path) {
+    #[cfg(windows)]
+    {
+        let volumes = match unique_volumes(paths) {
             Ok(v) => v,
-            Err(_) => {
-                release_all(handles).await;
-                return (paths.to_vec(), vec![]);
-            }
-        };
-        let handle = match handles.iter().find(|h| h.volume == vol) {
-            Some(h) => h,
-            None => {
-                release_all(handles).await;
-                return (paths.to_vec(), vec![]);
-            }
-        };
-        match remap_path(path, &vol, &handle.shadow_path.to_string_lossy()) {
-            Ok(p) => remapped.push(p),
             Err(e) => {
-                tracing::warn!("Path remap failed: {}", e);
-                release_all(handles).await;
-                return (paths.to_vec(), vec![]);
+                tracing::warn!("VSS skipped (cannot determine source volume): {e}");
+                return SnapshotPlan::live(paths);
+            }
+        };
+        // borg runs with a single working directory, so one snapshot can only
+        // cover one volume. Multi-volume backups fall back to live files.
+        if volumes.len() != 1 {
+            tracing::info!(
+                "VSS skipped: sources span {} volumes (multi-volume snapshot unsupported); backing up live files",
+                volumes.len()
+            );
+            return SnapshotPlan::live(paths);
+        }
+        let volume = volumes[0].clone();
+
+        let handle = match create_snapshot(Path::new(&volume)).await {
+            Ok(Some(h)) => h,
+            Ok(None) => {
+                tracing::warn!("VSS unavailable for {volume}; backing up live files");
+                return SnapshotPlan::live(paths);
+            }
+            Err(e) => {
+                tracing::warn!("VSS snapshot of {volume} failed: {e}; backing up live files");
+                return SnapshotPlan::live(paths);
+            }
+        };
+
+        // Mount the shadow as a junction named after the drive letter; borg runs
+        // with the junction's PARENT as cwd and `C\<rel>` sources, so stored paths
+        // match the live-file layout exactly (see drive_relative_source).
+        let junction = match mount_snapshot(&handle).await {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!("VSS junction mount failed: {e}; backing up live files");
+                let _ = release_snapshot(handle).await;
+                return SnapshotPlan::live(paths);
+            }
+        };
+        let cwd = match junction.parent() {
+            Some(p) => p.to_path_buf(),
+            None => {
+                tracing::warn!("VSS junction has no parent dir; backing up live files");
+                unmount_snapshot(&junction).await;
+                let _ = release_snapshot(handle).await;
+                return SnapshotPlan::live(paths);
+            }
+        };
+
+        let mut sources = Vec::with_capacity(paths.len());
+        for path in paths {
+            match drive_relative_source(path, &volume) {
+                Ok(src) => sources.push(src),
+                Err(e) => {
+                    tracing::warn!("VSS path remap failed: {e}; backing up live files");
+                    unmount_snapshot(&junction).await;
+                    let _ = release_snapshot(handle).await;
+                    return SnapshotPlan::live(paths);
+                }
             }
         }
-    }
 
-    (remapped, handles)
+        tracing::info!(
+            "VSS snapshot active: {volume} -> {} (junction {})",
+            handle.shadow_path.display(),
+            junction.display()
+        );
+        SnapshotPlan {
+            source_paths: sources,
+            cwd: Some(cwd),
+            handles: vec![handle],
+            mounts: vec![junction],
+        }
+    }
+}
+
+/// Mount a VSS shadow copy as an NTFS junction *named after the drive letter*,
+/// inside a per-process wrapper dir under `%TEMP%`. Returns the junction path; its
+/// parent (the wrapper) is borg's working directory. Naming the junction `C` makes
+/// borg store `C/...` paths identical to the live-file layout, so VSS stays
+/// invisible to excludes / browsing / restore.
+///
+/// `mklink /J` is given the shadow device path WITH a trailing backslash — the
+/// form validated against `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN`
+/// (see `tests/smoke-windows/validate-vss-spike.ps1`). The junction is a plain
+/// reparse point; [`unmount_snapshot`] removes only the link + wrapper, never the
+/// shadow. The wrapper name carries the full snapshot GUID + this process's pid so
+/// two backup processes sharing `%TEMP%` can never collide (the cancel slot only
+/// guards backups within one app instance).
+#[cfg(windows)]
+pub async fn mount_snapshot(handle: &SnapshotHandle) -> Result<PathBuf> {
+    let letter = handle
+        .volume
+        .chars()
+        .next()
+        .unwrap_or('C')
+        .to_ascii_uppercase();
+    let id = handle.snapshot_id.trim_matches(|c| c == '{' || c == '}');
+    let base = std::env::temp_dir().join(format!("BorgVSS-{}-{}", std::process::id(), id));
+    let junction = base.join(letter.to_string());
+
+    // Clear any stale junction + wrapper left by a prior crashed run of THIS process.
+    unmount_snapshot(&junction).await;
+    std::fs::create_dir_all(&base)?;
+
+    let target = format!(
+        "{}\\",
+        handle.shadow_path.to_string_lossy().trim_end_matches('\\')
+    );
+    let output = tokio::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&target)
+        .output()
+        .await?;
+
+    // Check the reparse point itself (symlink_metadata, like unmount_snapshot)
+    // rather than `exists()`, which would follow the junction and stat the shadow
+    // -- real I/O that can spuriously fail. The mklink exit code is authoritative.
+    if !output.status.success() || std::fs::symlink_metadata(&junction).is_err() {
+        // mklink failed, so the wrapper holds no junction -> safe to remove empty.
+        let _ = std::fs::remove_dir(&base);
+        return Err(BorgError::ProcessFailed {
+            message: "mklink /J could not mount the VSS snapshot".into(),
+            exit_code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(junction)
+}
+
+/// Remove a snapshot junction created by [`mount_snapshot`] and its empty wrapper
+/// dir. `rmdir` deletes only the reparse point — the shadow copy behind it is
+/// untouched. Best-effort: failures are logged, never propagated.
+#[cfg(windows)]
+pub async fn unmount_snapshot(junction: &Path) {
+    // symlink_metadata does not traverse the reparse point, so a dangling junction
+    // (shadow already gone) still reports as present and gets cleaned; a genuinely
+    // absent junction is a no-op (no spurious warning).
+    if std::fs::symlink_metadata(junction).is_ok() {
+        match tokio::process::Command::new("cmd")
+            .args(["/c", "rmdir"])
+            .arg(junction)
+            .output()
+            .await
+        {
+            Ok(o) if !o.status.success() => tracing::warn!(
+                "failed to remove VSS junction {}: {}",
+                junction.display(),
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Err(e) => tracing::warn!("failed to remove VSS junction {}: {e}", junction.display()),
+            _ => {}
+        }
+    }
+    // Remove the now-empty per-process wrapper dir we created for the junction
+    // (remove_dir is non-recursive, so it never touches the shadow contents).
+    if let Some(base) = junction.parent() {
+        let _ = std::fs::remove_dir(base);
+    }
 }
 
 /// Release all snapshot handles, logging but not propagating errors.
@@ -334,53 +539,95 @@ mod tests {
     }
 
     #[test]
-    fn remaps_path_through_shadow() {
-        let result = remap_path(
-            Path::new("C:\\Users\\me\\docs"),
-            "C:\\",
-            "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy3",
-        )
-        .unwrap();
+    fn volume_relative_strips_volume_root() {
         assert_eq!(
-            result,
-            PathBuf::from("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy3\\Users\\me\\docs")
+            volume_relative(Path::new("C:\\Users\\me\\docs"), "C:\\").unwrap(),
+            PathBuf::from("Users\\me\\docs")
         );
     }
 
     #[test]
-    fn remaps_volume_root_itself() {
-        let result = remap_path(
-            Path::new("C:\\"),
-            "C:\\",
-            "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1",
-        )
-        .unwrap();
+    fn volume_relative_root_itself_is_dot() {
         assert_eq!(
-            result,
-            PathBuf::from("\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1")
+            volume_relative(Path::new("C:\\"), "C:\\").unwrap(),
+            PathBuf::from(".")
         );
     }
 
     #[test]
-    fn remap_rejects_wrong_volume() {
-        assert!(
-            remap_path(
-                Path::new("D:\\data"),
-                "C:\\",
-                "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1",
-            )
-            .is_err()
+    fn volume_relative_rejects_wrong_volume() {
+        assert!(volume_relative(Path::new("D:\\data"), "C:\\").is_err());
+    }
+
+    #[test]
+    fn volume_relative_is_case_insensitive() {
+        assert_eq!(
+            volume_relative(Path::new("c:\\users\\me"), "C:\\").unwrap(),
+            PathBuf::from("users\\me")
         );
     }
 
     #[test]
-    fn remap_case_insensitive_volume() {
-        let result = remap_path(
-            Path::new("c:\\users\\me"),
-            "C:\\",
-            "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1",
+    fn volume_relative_trims_extra_separators() {
+        assert_eq!(
+            volume_relative(Path::new("C:\\\\Users"), "C:\\").unwrap(),
+            PathBuf::from("Users")
         );
-        assert!(result.is_ok());
+    }
+
+    // drive_relative_source prepends the drive letter so borg stores the SAME
+    // layout as a live (non-VSS) backup -- `C:\Users\me` -> `C\Users\me` ->
+    // stored `C/Users/me`. Keeps VSS invisible to excludes / browsing / restore.
+    #[test]
+    fn drive_relative_source_prepends_letter() {
+        assert_eq!(
+            drive_relative_source(Path::new("C:\\Users\\me\\docs"), "C:\\").unwrap(),
+            PathBuf::from("C\\Users\\me\\docs")
+        );
+    }
+
+    #[test]
+    fn drive_relative_source_volume_root_is_bare_letter() {
+        assert_eq!(
+            drive_relative_source(Path::new("C:\\"), "C:\\").unwrap(),
+            PathBuf::from("C")
+        );
+    }
+
+    #[test]
+    fn drive_relative_source_uses_other_letters() {
+        assert_eq!(
+            drive_relative_source(Path::new("D:\\data\\db"), "D:\\").unwrap(),
+            PathBuf::from("D\\data\\db")
+        );
+    }
+
+    #[test]
+    fn drive_relative_source_uppercases_letter() {
+        assert_eq!(
+            drive_relative_source(Path::new("c:\\users\\me"), "c:\\").unwrap(),
+            PathBuf::from("C\\users\\me")
+        );
+    }
+
+    #[test]
+    fn drive_relative_source_rejects_wrong_volume() {
+        assert!(drive_relative_source(Path::new("D:\\data"), "C:\\").is_err());
+    }
+
+    // Off Windows, prepare_snapshot can never take a real VSS snapshot, so it
+    // must yield a live-file plan: the originals, no working directory. (On
+    // Windows the same fallback path covers non-admin / multi-volume, but a unit
+    // test there could create a real snapshot, so we gate this to non-Windows.)
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn prepare_snapshot_falls_back_to_live_plan_off_windows() {
+        let paths = vec![PathBuf::from("C:\\Users\\me\\docs")];
+        let plan = prepare_snapshot(&paths).await;
+        assert_eq!(plan.source_paths, paths);
+        assert!(plan.cwd.is_none());
+        assert!(!plan.is_snapshot());
+        plan.release().await;
     }
 
     #[test]

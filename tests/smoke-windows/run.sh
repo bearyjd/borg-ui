@@ -445,6 +445,101 @@ run_validate_autostart_login() {
     fail "Autostart-login validation failed or did not complete. See validate-autostart-login.log"
 }
 
+# --- VSS feasibility spike: does the junction approach work on real Windows? ---
+# De-risks the VSS plan (.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md) with
+# ZERO implementation code: creates a real VSS snapshot of C:, mounts it as an NTFS
+# junction (the make-or-break unknown — does mklink /J accept a \\?\GLOBALROOT\...
+# target?), then proves borg can read THROUGH the junction to store clean,
+# restorable paths (and back up an exclusively-locked file). Needs only a booted VM
+# with an ADMIN session + borg.exe (downloaded if absent) — no toolchain/source.
+# Green => implement Approach B (junction). Junction-mount FAIL => pivot to
+# Approach C (COM ExposeSnapshot). The script cleans up its own snapshot/junction.
+run_validate_vss_spike() {
+    log "Uploading VSS feasibility spike script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-vss-spike.ps1" "$SSH_USER@$SSH_HOST:validate-vss-spike.ps1"
+
+    log "Running VSS feasibility spike (snapshot -> junction -> clean-path -> restore)..."
+    local output
+    output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-vss-spike.ps1' 2>&1) || true
+    echo "$output" | tee "$SCRIPT_DIR/validate-vss-spike.log"
+
+    if echo "$output" | grep -q "Failed: 0"; then
+        log "VSS spike PASSED — Approach B (NTFS junction) is viable; implement it."
+        return 0
+    else
+        if echo "$output" | grep -q "pivot to Approach C"; then
+            warn "VSS spike: junction mount failed — pivot to Approach C (COM ExposeSnapshot). See validate-vss-spike.log"
+        fi
+        fail "VSS spike failed. See validate-vss-spike.log"
+    fi
+}
+
+# --- VSS validation: the REAL production --scheduled-backup path takes a VSS ---
+# --- snapshot and stores clean, restorable paths (incl. an exclusively-locked file). ---
+# Drives borg-ui.exe --scheduled-backup as a /IT /RL HIGHEST (elevated, session 1)
+# task with one source file exclusively locked: a live fallback would skip it, so
+# "the locked file is in the archive" proves the production VSS path engaged.
+# REQUIRES a CURRENT borg-ui.exe build (cargo build --release -p borg-ui after a
+# make deploy) + an interactive desktop; SKIPs cleanly otherwise. The mechanism
+# itself is proven by validate-vss-spike; this proves the shipped Rust does it.
+run_validate_vss() {
+    log "Uploading VSS validation script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-vss.ps1" "$SSH_USER@$SSH_HOST:validate-vss.ps1"
+
+    log "Running VSS validation (scheduled-backup + locked file -> snapshot-or-skip)..."
+    local output
+    output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-vss.ps1' 2>&1) || true
+    echo "$output" | tee "$SCRIPT_DIR/validate-vss.log"
+
+    if echo "$output" | grep -q "Failed: 0"; then
+        log "VSS validation: no failures. (SKIPs mean no current borg-ui.exe build / no desktop.)"
+        return 0
+    else
+        fail "VSS validation failed. See validate-vss.log"
+    fi
+}
+
+# --- Build the current borg-ui.exe on the VM (for validate-vss et al.) ---
+# Type-checks borg-platform-win FIRST (fast fail for the Windows-only VSS cfg
+# code that the Linux build can't compile), then the full release binary. The
+# --scheduled-backup path never opens the GUI, so no tauri bundle / pnpm is
+# needed -- a plain `cargo build --release -p borg-ui` exe suffices. Assumes the
+# source is deployed (run.sh deploy) and the Rust toolchain is present (build-env).
+build_app() {
+    # cargo writes compile progress to stderr, so a PowerShell-over-SSH build
+    # returns non-zero even on success -- capture with `|| true` and judge by
+    # cargo's own markers, never the exit code (same gotcha as run_tests).
+    log "Type-checking borg-platform-win (catches Windows-only VSS cfg errors)..."
+    local pw
+    pw=$($SSH_CMD '
+    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+    $env:CARGO_NET_OFFLINE = "true"
+    Set-Location C:\borgui-test
+    cargo build -p borg-platform-win 2>&1 | Select-Object -Last 15
+    ' 2>&1) || true
+    echo "$pw"
+    if echo "$pw" | grep -qiE 'error\[|could not compile'; then
+        fail "borg-platform-win failed to compile on Windows (VSS cfg error). See output above."
+    fi
+
+    log "Building borg-ui.exe on the VM (cargo build --release -p borg-ui; several minutes)..."
+    local bo
+    bo=$($SSH_CMD '
+    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+    $env:CARGO_NET_OFFLINE = "true"
+    Set-Location C:\borgui-test
+    cargo build --release -p borg-ui 2>&1 | Select-Object -Last 30
+    if (Test-Path C:\borgui-test\target\release\borg-ui.exe) { Write-Host "BUILD-OK borg-ui.exe present" } else { Write-Host "BUILD-FAIL no borg-ui.exe" }
+    ' 2>&1) || true
+    echo "$bo"
+    if echo "$bo" | grep -q "BUILD-OK"; then
+        log "borg-ui.exe built."
+        return 0
+    else
+        fail "borg-ui.exe build failed. See output above."
+    fi
+}
+
 # --- Setup SSH via QEMU monitor (for first boot) ---
 setup_ssh() {
     log "Installing OpenSSH via QEMU monitor keystrokes..."
@@ -516,6 +611,7 @@ main() {
         ssh)       wait_for_ssh ;;
         setup-ssh) setup_ssh ;;
         deploy)    deploy_source ;;
+        build-app) build_app ;;
         test)      run_tests ;;
         validate)  run_validate ;;
         provision-edge) provision_edge ;;
@@ -525,6 +621,8 @@ main() {
         validate-gui-flows) run_validate_gui_flows ;;
         validate-archive-smoke) run_validate_archive_smoke ;;
         validate-autostart-login) run_validate_autostart_login ;;
+        validate-vss-spike) run_validate_vss_spike ;;
+        validate-vss) run_validate_vss ;;
         all)
             start_vm
             wait_for_ssh
@@ -589,6 +687,15 @@ main() {
             wait_for_ssh
             run_validate_autostart_login
             ;;
+        vss-spike-all)
+            # VSS feasibility spike on a running/booted VM. Needs only an ADMIN
+            # session + borg.exe (downloaded if absent) — no toolchain/source.
+            # Settles whether the junction approach (Plan B) works before any
+            # implementation code is written.
+            start_vm
+            wait_for_ssh
+            run_validate_vss_spike
+            ;;
         quick)
             # Skip VM boot — assume already running with SSH
             setup_env
@@ -603,7 +710,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|autostart-login-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|validate-autostart-login|status|down}"
+            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|autostart-login-all|vss-spike-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|validate-autostart-login|validate-vss-spike|validate-vss|status|down}"
             exit 1
             ;;
     esac
