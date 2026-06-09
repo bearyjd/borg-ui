@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all validate-archive-smoke archive-smoke-all validate-autostart-login autostart-login-all down status logs
+.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all validate-archive-smoke archive-smoke-all validate-autostart-login autostart-login-all validate-vss-spike vss-spike-all validate-vss down status logs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -75,6 +75,15 @@ validate-autostart-login: ## Run the autostart login-cycle check (set Run key �
 
 autostart-login-all: ## Boot VM → wait SSH → autostart login-cycle check (reboots the guest; needs a PRODUCTION tauri-build exe)
 	./run.sh autostart-login-all
+
+validate-vss-spike: ## Run the VSS feasibility spike (snapshot → junction → clean-path → restore) on a running VM (admin session; no toolchain)
+	./run.sh validate-vss-spike
+
+vss-spike-all: ## Boot VM → wait SSH → VSS feasibility spike (de-risks the junction approach before any implementation)
+	./run.sh vss-spike-all
+
+validate-vss: ## Run VSS validation (--scheduled-backup + locked file → snapshot) on a running VM (needs a current borg-ui.exe build + desktop)
+	./run.sh validate-vss
 
 down: ## Tear down Windows VM
 	./run.sh down
