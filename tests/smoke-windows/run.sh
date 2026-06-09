@@ -499,6 +499,28 @@ run_validate_vss() {
     fi
 }
 
+# --- Manual-path VSS validation: the GUI "Start Backup" (create_backup) takes a ---
+# --- VSS snapshot. Drives the live UI via UI Automation, ELEVATED, with a locked ---
+# --- source file (the locked file in the archive => VSS engaged via the manual path). ---
+# Complements validate-vss (scheduled path). REQUIRES a PRODUCTION tauri-build exe +
+# an interactive desktop; self-relaunches in session 1 /RL HIGHEST. SKIPs cleanly otherwise.
+run_validate_vss_manual() {
+    log "Uploading manual-path VSS validation script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-vss-manual.ps1" "$SSH_USER@$SSH_HOST:validate-vss-manual.ps1"
+
+    log "Running manual-path VSS validation (GUI Start Backup + locked file; relaunches elevated in session 1)..."
+    local output
+    output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-vss-manual.ps1' 2>&1) || true
+    echo "$output" | tee "$SCRIPT_DIR/validate-vss-manual.log"
+
+    if echo "$output" | grep -q "Failed: 0"; then
+        log "Manual-path VSS validation: no failures. (SKIPs mean no production exe / no desktop / not elevated.)"
+        return 0
+    else
+        fail "Manual-path VSS validation failed. See validate-vss-manual.log"
+    fi
+}
+
 # --- Build the current borg-ui.exe on the VM (for validate-vss et al.) ---
 # Type-checks borg-platform-win FIRST (fast fail for the Windows-only VSS cfg
 # code that the Linux build can't compile), then the full release binary. The
@@ -623,6 +645,7 @@ main() {
         validate-autostart-login) run_validate_autostart_login ;;
         validate-vss-spike) run_validate_vss_spike ;;
         validate-vss) run_validate_vss ;;
+        validate-vss-manual) run_validate_vss_manual ;;
         all)
             start_vm
             wait_for_ssh
@@ -710,7 +733,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|autostart-login-all|vss-spike-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|validate-autostart-login|validate-vss-spike|validate-vss|status|down}"
+            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|autostart-login-all|vss-spike-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|validate-autostart-login|validate-vss-spike|validate-vss|validate-vss-manual|build-app|status|down}"
             exit 1
             ;;
     esac
