@@ -336,31 +336,34 @@ pub async fn create_backup(
     }
 
     let raw_paths: Vec<PathBuf> = source_paths.into_iter().map(PathBuf::from).collect();
-    // NOTE: VSS snapshots are intentionally not used here. The shadow-copy path
-    // (`\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\...`) is stored verbatim
-    // by borg and the `?` makes the archive un-restorable on Windows (tracked in
-    // .claude/PRPs/plans/fix-vss-paths-in-archive.plan.md). We back up live files
-    // instead. Files that are exclusively locked at backup time are skipped with
-    // a warning rather than failing the whole backup (see the returned warnings).
-    let backup_paths = raw_paths;
+
+    // Register the cancel slot before taking a snapshot, so a concurrent backup
+    // is rejected up front and never leaves a VSS snapshot/junction behind.
+    let cancel = state.try_register_cancel(BACKUP_OP, "a backup is already running")?;
+
+    // VSS (Windows, admin, single-volume): snapshot the source volume and back
+    // up from a read-only junction mount so borg stores clean, restorable paths
+    // and exclusively-locked files are still captured. Multi-volume, non-admin,
+    // or any failure transparently falls back to live-file backup; no-op off
+    // Windows. See crates/borg-platform-win/src/vss.rs.
+    let vss = borg_platform_win::vss::prepare_snapshot(&raw_paths).await;
 
     let pass = lookup_passphrase(&repo);
 
     let profile = borg_core::config::BackupProfile {
         name: MANUAL_PROFILE_NAME.into(),
-        source_paths: backup_paths,
+        source_paths: vss.source_paths.clone(),
         excludes,
         compression,
         repo,
     };
 
-    let cancel = state.try_register_cancel(BACKUP_OP, "a backup is already running")?;
     let result = state
         .borg
         .create(
             &profile,
             &archive_name,
-            None,
+            vss.cwd.as_deref(),
             pass.as_deref(),
             &cancel,
             move |event| {
@@ -369,6 +372,8 @@ pub async fn create_backup(
         )
         .await;
     state.unregister_cancel(BACKUP_OP);
+    // Release the snapshot + junction regardless of how the backup ended.
+    vss.release().await;
 
     let mut warnings = result
         .map(|outcome| outcome.warnings)
