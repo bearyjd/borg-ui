@@ -257,17 +257,18 @@ impl SnapshotPlan {
         self.cwd.is_some()
     }
 
-    /// Remove the junction(s) then delete the snapshot(s). Best-effort: errors
-    /// are logged, never propagated — releasing must not fail a backup.
+    /// Remove the junction(s) then delete the snapshot(s) — the normal,
+    /// non-blocking async cleanup. Best-effort: errors are logged, never
+    /// propagated — releasing must not fail a backup.
     ///
-    /// This is an explicit call, not a `Drop` guard (release is async and Drop
-    /// cannot await). Both callers invoke it after `borg.create(...).await` on
-    /// every happy/error path, so the only leak window is a panic/unwind between
-    /// `prepare_snapshot` and here — rare, and self-limiting: `mount_snapshot`
-    /// clears a stale junction on the next run and a leaked shadow copy is
-    /// reclaimed on reboot. A `Drop`-based safety net is a possible follow-up.
-    pub async fn release(self) {
-        for mount in &self.mounts {
+    /// Draining `mounts`/`handles` here makes the [`Drop`] safety net (below) a
+    /// no-op on the happy/error paths. Both callers invoke this after
+    /// `borg.create(...).await` on every non-panic exit; the `Drop` guard only
+    /// fires if a panic/unwind skips this call.
+    pub async fn release(mut self) {
+        let mounts = std::mem::take(&mut self.mounts);
+        let handles = std::mem::take(&mut self.handles);
+        for mount in &mounts {
             #[cfg(windows)]
             {
                 unmount_snapshot(mount).await;
@@ -277,7 +278,42 @@ impl SnapshotPlan {
                 let _ = mount;
             }
         }
-        release_all(self.handles).await;
+        release_all(handles).await;
+    }
+}
+
+impl Drop for SnapshotPlan {
+    /// Safety net for the panic/unwind path. [`SnapshotPlan::release`] drains
+    /// `mounts`/`handles` on every normal exit (and live plans never set them), so
+    /// the loops below are a no-op then. Reaching here with un-drained resources
+    /// means a panic/unwind skipped `release` — do a best-effort SYNCHRONOUS
+    /// cleanup (Drop cannot await) so the snapshot + junction don't leak (a leaked
+    /// shadow holds copy-on-write disk until reboot).
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            for mount in &self.mounts {
+                // rmdir removes only the junction reparse point, never the shadow.
+                let _ = std::process::Command::new("cmd")
+                    .args(["/c", "rmdir"])
+                    .arg(mount)
+                    .output();
+                if let Some(base) = mount.parent() {
+                    let _ = std::fs::remove_dir(base);
+                }
+            }
+            for handle in &self.handles {
+                // The id is a Win32_ShadowCopy GUID validated at creation, so the
+                // WMID filter string is safe. Best-effort; Drop can't propagate.
+                let script = format!(
+                    "Get-WmiObject Win32_ShadowCopy | Where-Object {{ $_.ID -eq '{}' }} | ForEach-Object {{ $_.Delete() }}",
+                    handle.snapshot_id
+                );
+                let _ = std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                    .output();
+            }
+        }
     }
 }
 
@@ -687,5 +723,14 @@ mod tests {
             let result = create_snapshot(Path::new("C:\\")).await.unwrap();
             assert!(result.is_none());
         }
+    }
+
+    #[test]
+    fn drop_without_release_is_safe() {
+        // A live-file plan owns no snapshot/junction; dropping it WITHOUT calling
+        // release() must hit the Drop empty-check fast path -- never panic, never
+        // shell out. (Mirrors the panic/unwind window the Drop guard protects.)
+        let plan = SnapshotPlan::live(&[PathBuf::from("C:\\Users\\me")]);
+        drop(plan);
     }
 }
