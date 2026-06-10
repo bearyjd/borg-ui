@@ -7,9 +7,14 @@ to a local folder, external/USB drive, or network share — without WSL.
 
 - **Backup destinations**: a borg server over SSH, **or** a local folder / USB
   drive / network share (no server required).
-- **Reliable backups**: a file that's locked or in use at backup time (Outlook
-  data, open documents, browser profiles) is skipped with a *warning* — it never
-  fails the whole backup. Backups can be **cancelled** mid-run, and stalled SSH
+- **Consistent backups of open files (Windows VSS)**: files that are locked or in
+  use at backup time (Outlook data, databases, open documents, browser profiles)
+  are captured from a **Volume Shadow Copy** — a point-in-time snapshot of the
+  drive — so they back up correctly instead of being skipped. Requires
+  administrator rights and a single source volume; when VSS can't run, BorgUI
+  automatically falls back to a live-file backup, where a locked file is skipped
+  with a *warning* rather than failing the whole backup.
+- **Reliable backups**: backups can be **cancelled** mid-run, and stalled SSH
   calls **time out** instead of freezing the app.
 - **Restore**: browse an archive's contents and restore everything or a selected
   subset.
