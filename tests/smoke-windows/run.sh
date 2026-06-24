@@ -622,6 +622,47 @@ setup_ssh() {
     log "OpenSSH install keystrokes sent. Wait 30s then try SSH."
 }
 
+# --- Installer validation: install the built MSI/NSIS, assert borg layout, round-trip ---
+# Uploads installers from a local dir (INSTALLER_DIR, default $SCRIPT_DIR/installers)
+# to the VM, then runs validate-installer.ps1, which silently installs each and
+# verifies borg-ui.exe + borg.exe + _internal\ land together and the bundled
+# engine works end-to-end (init/create/extract/byte-verify). NSIS is per-user
+# (/S, no elevation); MSI SKIPs if UAC blocks msiexec over SSH.
+run_validate_installer() {
+    local src_dir="${INSTALLER_DIR:-$SCRIPT_DIR/installers}"
+    local installers
+    installers=$(find "$src_dir" -maxdepth 2 \( -name '*.msi' -o -name '*-setup.exe' \) 2>/dev/null)
+    if [ -z "$installers" ]; then
+        fail "No installers (*.msi / *-setup.exe) found under $src_dir. Set INSTALLER_DIR or 'gh run download' the release artifact there."
+    fi
+
+    log "Preparing remote installer dir..."
+    $SSH_CMD 'powershell -Command "New-Item -ItemType Directory -Force -Path $env:USERPROFILE\borgui-installers | Out-Null; Get-ChildItem $env:USERPROFILE\borgui-installers -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue"'
+
+    log "Uploading installer(s) from $src_dir ..."
+    local f
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        log "  -> $(basename "$f")"
+        $SCP_CMD "$f" "$SSH_USER@$SSH_HOST:borgui-installers/$(basename "$f")"
+    done <<< "$installers"
+
+    log "Uploading installer validation script..."
+    $SCP_CMD "$SCRIPT_DIR/validate-installer.ps1" "$SSH_USER@$SSH_HOST:validate-installer.ps1"
+
+    log "Running installer validation (silent install -> layout + borg round-trip -> uninstall)..."
+    local output
+    output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-installer.ps1' 2>&1) || true
+    echo "$output" | tee "$SCRIPT_DIR/validate-installer.log"
+
+    if echo "$output" | grep -qE "Failed:[[:space:]]+0"; then
+        log "Installer validation: no failures."
+        return 0
+    else
+        fail "Installer validation failed. See validate-installer.log"
+    fi
+}
+
 # --- Main ---
 main() {
     log "=== BorgUI Windows Smoke Test ==="
@@ -646,6 +687,7 @@ main() {
         validate-vss-spike) run_validate_vss_spike ;;
         validate-vss) run_validate_vss ;;
         validate-vss-manual) run_validate_vss_manual ;;
+        validate-installer) run_validate_installer ;;
         all)
             start_vm
             wait_for_ssh
@@ -718,6 +760,15 @@ main() {
             start_vm
             wait_for_ssh
             run_validate_vss_spike
+            ;;
+        installer-all)
+            # Installer validation on a running/booted VM: silently install the
+            # MSI/NSIS from INSTALLER_DIR (default tests/smoke-windows/installers)
+            # and verify the bundled borg layout + a real engine round-trip. Build
+            # the installers in CI and 'gh run download' them there first.
+            start_vm
+            wait_for_ssh
+            run_validate_installer
             ;;
         quick)
             # Skip VM boot — assume already running with SSH

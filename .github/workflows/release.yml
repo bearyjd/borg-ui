@@ -1,16 +1,18 @@
 name: Release
 
-# Builds the Windows installers (MSI + NSIS) with borg bundled and publishes
-# them to a GitHub Release.
+# Builds the Windows installers (MSI + NSIS) with borg bundled, uploads them as
+# build artifacts on every run, and publishes a GitHub Release ONLY for version
+# tags.
 #
-# Trigger by pushing a version tag, e.g.:
+# Cut a release:
 #   git tag v0.1.0 && git push origin v0.1.0
+# → builds, uploads artifacts, and creates a DRAFT release with the installers
+#   attached. Review the assets, then click "Publish release". To auto-publish,
+#   change `--draft` below.
 #
-# The release is created as a DRAFT — review the attached installers, then click
-# "Publish release". To auto-publish instead, set `releaseDraft: false` below.
-#
-# `workflow_dispatch` lets you run a build manually (best dispatched from a tag
-# ref so the release attaches to that tag rather than a branch name).
+# Dry-run (no release): Actions → Release → "Run workflow" (workflow_dispatch),
+# or push any non-tag ref. The build + artifact-upload still run, so you get
+# downloadable installers; only the publish step is skipped.
 
 on:
   push:
@@ -23,7 +25,7 @@ permissions:
 
 jobs:
   release:
-    name: Build & publish Windows installers
+    name: Build Windows installers
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -48,7 +50,8 @@ jobs:
       # bundle: borg.exe needs its sibling _internal\ (python311.dll + deps) right
       # beside it or it dies at startup. We download the pinned release, verify its
       # SHA-256, and drop the whole dist into src-tauri/binaries/borg/ so the Tauri
-      # bundler (see tauri.conf.json `resources`) lays it down next to borg-ui.exe.
+      # bundler (see tauri.windows.conf.json `resources`) lays it down next to
+      # borg-ui.exe in the installed app.
       - name: Fetch and stage borg
         shell: pwsh
         run: |
@@ -82,18 +85,33 @@ jobs:
           if (-not (Test-Path (Join-Path $dest '_internal'))) { throw '_internal missing after staging (PyInstaller onedir incomplete)' }
           & (Join-Path $dest 'borg.exe') --version
 
-      # Only publish a release for an actual version tag. A workflow_dispatch from
-      # a branch still runs every step above (a safe build/staging dry-run) but
-      # skips this one, so it can't create a release named after a branch.
-      - name: Build and publish
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Always build, so a dispatch/non-tag run is a real dry-run of the bundle.
+      - name: Build installers
+        working-directory: app-tauri
+        run: pnpm tauri build
+
+      # Always upload, so every run produces downloadable installers (used by the
+      # headless installer test in tests/smoke-windows/validate-installer.ps1).
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: app-tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: "BorgUI ${{ github.ref_name }}"
-          releaseBody: "Windows installers (MSI and NSIS .exe) are attached below. The installers are unsigned — on first run Windows SmartScreen may warn; click \"More info\" then \"Run anyway\"."
-          releaseDraft: true
-          prerelease: false
+          name: borgui-windows-installers
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+      # Publish a draft release ONLY for a version tag. Uses the first-party gh
+      # CLI (no third-party action holds the write-scoped token).
+      - name: Publish draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-ChildItem -Path target/release/bundle/msi/*.msi, target/release/bundle/nsis/*-setup.exe |
+                     Select-Object -ExpandProperty FullName)
+          if ($files.Count -eq 0) { throw 'no installers found to publish' }
+          $notes = 'Windows installers (MSI and NSIS .exe) are attached below. The installers are unsigned — on first run Windows SmartScreen may warn; click "More info" then "Run anyway".'
+          gh release create $env:GITHUB_REF_NAME --draft --title "BorgUI $env:GITHUB_REF_NAME" --notes $notes $files

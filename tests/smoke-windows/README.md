@@ -315,6 +315,28 @@ located the checks SKIP — fall back to the **Item 1b** manual checklist above.
 |----------|---------|-------------|
 | `KEEP_VM` | `0` | Set to `1` to keep Windows running after tests |
 | `FORCE_BUILD` | `0` | Set to `1` to force rebuild even if .exe exists |
+| `INSTALLER_DIR` | `tests/smoke-windows/installers` | Local dir holding the built `*.msi` / `*-setup.exe` for `validate-installer` |
+
+## Installer validation
+
+`make validate-installer` (or `installer-all` to boot first) silently installs the
+built Windows installer **and** verifies the bundled borg lands correctly — the one
+thing the other GUI checks never cover (they run a loose `tauri build` exe, never an
+installed layout). `validate-installer.ps1`:
+
+1. Silent-installs each installer it finds (NSIS `/S`, per-user, no elevation; MSI
+   `msiexec /quiet`, which SKIPs if UAC blocks it over SSH).
+2. Asserts `borg-ui.exe` + `borg.exe` + `_internal\python311.dll` are co-located in
+   the install dir (the bundling contract — `lib.rs` resolves borg beside the exe,
+   and borg dies without `_internal`).
+3. Runs the **installed** `borg.exe` through `--version` + a real
+   init→create→delete→extract→byte-verify round-trip (relative repo path to dodge
+   the drive-letter bug).
+4. Silently uninstalls and asserts the app is gone.
+
+Build the installers in CI (the `Release` workflow uploads a `borgui-windows-installers`
+artifact on every run), then `gh run download <run-id> -n borgui-windows-installers -D
+tests/smoke-windows/installers` before running the target.
 
 ## Pre-built Binary
 
