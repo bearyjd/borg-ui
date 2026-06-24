@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all validate-archive-smoke archive-smoke-all validate-autostart-login autostart-login-all validate-vss-spike vss-spike-all validate-vss validate-vss-manual build-app down status logs
+.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all validate-archive-smoke archive-smoke-all validate-autostart-login autostart-login-all validate-vss-spike vss-spike-all validate-vss validate-vss-manual validate-installer installer-all build-app down status logs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -87,6 +87,12 @@ validate-vss: ## Run VSS validation (--scheduled-backup + locked file → snapsh
 
 validate-vss-manual: ## Run MANUAL-path VSS validation (GUI Start Backup + locked file → snapshot) on a running VM (needs a PRODUCTION tauri-build exe + desktop)
 	./run.sh validate-vss-manual
+
+validate-installer: ## Install the built MSI/NSIS (from INSTALLER_DIR) on a running VM and verify the bundled borg layout + engine round-trip
+	./run.sh validate-installer
+
+installer-all: ## Boot VM → wait SSH → installer validation (needs built installers in INSTALLER_DIR; gh run download them first)
+	./run.sh installer-all
 
 down: ## Tear down Windows VM
 	./run.sh down
