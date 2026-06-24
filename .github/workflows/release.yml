@@ -1,0 +1,95 @@
+name: Release
+
+# Builds the Windows installers (MSI + NSIS) with borg bundled and publishes
+# them to a GitHub Release.
+#
+# Trigger by pushing a version tag, e.g.:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The release is created as a DRAFT — review the attached installers, then click
+# "Publish release". To auto-publish instead, set `releaseDraft: false` below.
+#
+# `workflow_dispatch` lets you run a build manually (best dispatched from a tag
+# ref so the release attaches to that tag rather than a branch name).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish Windows installers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        working-directory: app-tauri
+        run: pnpm install --frozen-lockfile
+
+      # borg.exe (marcpope/borg-windows 1.4.4+win6) is a PyInstaller ONEDIR
+      # bundle: borg.exe needs its sibling _internal\ (python311.dll + deps) right
+      # beside it or it dies at startup. We download the pinned release, verify its
+      # SHA-256, and drop the whole dist into src-tauri/binaries/borg/ so the Tauri
+      # bundler (see tauri.conf.json `resources`) lays it down next to borg-ui.exe.
+      - name: Fetch and stage borg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version  = 'v1.4.4-win6'
+          $url      = "https://github.com/marcpope/borg-windows/releases/download/$version/borg-windows.zip"
+          $expected = '0e5f780d749608beed12be1bdca99526a7f95df2cbdcf1fd151b646e97c070d8'
+
+          $zip = Join-Path $env:RUNNER_TEMP 'borg-windows.zip'
+          Write-Host "Downloading borg $version ..."
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) {
+            throw "borg checksum mismatch: expected $expected but got $actual"
+          }
+          Write-Host "Checksum OK: $actual"
+
+          $extract = Join-Path $env:RUNNER_TEMP 'borg-extract'
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+
+          $borgExe = Get-ChildItem $extract -Recurse -Filter borg.exe | Select-Object -First 1
+          if (-not $borgExe) { throw 'borg.exe not found in archive' }
+          $src = $borgExe.Directory.FullName
+
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'app-tauri/src-tauri/binaries/borg'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
+
+          if (-not (Test-Path (Join-Path $dest 'borg.exe')))  { throw 'borg.exe missing after staging' }
+          if (-not (Test-Path (Join-Path $dest '_internal'))) { throw '_internal missing after staging (PyInstaller onedir incomplete)' }
+          & (Join-Path $dest 'borg.exe') --version
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: "BorgUI ${{ github.ref_name }}"
+          releaseBody: "Windows installers (MSI and NSIS .exe) are attached below. The installers are unsigned — on first run Windows SmartScreen may warn; click \"More info\" then \"Run anyway\"."
+          releaseDraft: true
+          prerelease: false
