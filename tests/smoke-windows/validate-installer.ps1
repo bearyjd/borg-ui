@@ -108,11 +108,13 @@ function Test-InstalledLayout($label, $installDir) {
     }
 
     # borg --version proves _internal/ loads (the whole point of bundling the onedir).
+    # NB: Start-Process -PassThru's ExitCode is unreliable (see validate.ps1), so we
+    # verify by observable output (stdout contains the version banner), not exit code.
     $v = Invoke-Borg -Exe $borg -BorgArgs @('--version') -TimeoutSec 30
-    if (-not $v.TimedOut -and $v.ExitCode -eq 0 -and $v.Stdout -match 'borg') {
+    if (-not $v.TimedOut -and ($v.Stdout -match 'borg')) {
         Pass "$label`_borg_version" $v.Stdout.Trim()
     } else {
-        Fail "$label`_borg_version" ("exit={0} timedout={1} err={2}" -f $v.ExitCode, $v.TimedOut, $v.Stderr)
+        Fail "$label`_borg_version" ("timedout={0} out='{1}' err='{2}'" -f $v.TimedOut, ($v.Stdout).Trim(), ($v.Stderr).Trim())
         return
     }
 
@@ -127,24 +129,29 @@ function Test-InstalledLayout($label, $installDir) {
     Set-Content -Path (Join-Path $work 'src\data.txt') -Value $marker -NoNewline
 
     try {
+        # Gate each step on observable on-disk state (not the flaky PassThru
+        # ExitCode): init creates a repo `config` file; the final byte-verify is the
+        # authoritative proof the whole chain worked. Timeouts are still hard fails.
         $init = Invoke-Borg -Exe $borg -BorgArgs @('init', '--encryption=none', 'repo') -Cwd $work -TimeoutSec 60
-        if ($init.TimedOut -or $init.ExitCode -ne 0) { Fail "$label`_roundtrip" "init failed: exit=$($init.ExitCode) err=$($init.Stderr)"; return }
+        if ($init.TimedOut -or -not (Test-Path (Join-Path $work 'repo\config'))) {
+            Fail "$label`_roundtrip" "init produced no repo: timedout=$($init.TimedOut) err=$($init.Stderr)"; return
+        }
 
         $create = Invoke-Borg -Exe $borg -BorgArgs @('create', 'repo::arch', 'src') -Cwd $work -TimeoutSec 90
-        if ($create.TimedOut -or $create.ExitCode -ne 0) { Fail "$label`_roundtrip" "create failed: exit=$($create.ExitCode) err=$($create.Stderr)"; return }
+        if ($create.TimedOut) { Fail "$label`_roundtrip" "create timed out"; return }
 
         # Delete the original so the extract has to genuinely restore it from the
         # archive. Extract runs in $work with the repo as a relative path ("repo")
-        # — no drive-letter colon, so borg can't misparse it as an SSH remote.
+        # -- no drive-letter colon, so borg can't misparse it as an SSH remote.
         $srcFile = Join-Path $work 'src\data.txt'
         Remove-Item -Force $srcFile
         $extract = Invoke-Borg -Exe $borg -BorgArgs @('extract', 'repo::arch') -Cwd $work -TimeoutSec 90
-        if ($extract.TimedOut -or $extract.ExitCode -ne 0) { Fail "$label`_roundtrip" "extract failed: exit=$($extract.ExitCode) err=$($extract.Stderr)"; return }
+        if ($extract.TimedOut) { Fail "$label`_roundtrip" "extract timed out"; return }
 
         if ((Test-Path $srcFile) -and ((Get-Content $srcFile -Raw) -eq $marker)) {
             Pass "$label`_roundtrip" "installed borg.exe init->create->delete->extract byte-verified"
         } else {
-            Fail "$label`_roundtrip" "restored file missing or content mismatch at $srcFile"
+            Fail "$label`_roundtrip" "restored file missing/mismatch; create_err='$($create.Stderr)' extract_err='$($extract.Stderr)'"
         }
     } finally {
         Remove-Item -Recurse -Force $work -EA SilentlyContinue
@@ -152,7 +159,7 @@ function Test-InstalledLayout($label, $installDir) {
 }
 
 # ==================================================================
-# NSIS installer (per-user, /S — no elevation needed)
+# NSIS installer (per-user, /S -- no elevation needed)
 # ==================================================================
 Write-TestHeader "nsis_install"
 $nsis = Get-ChildItem -Path $InstallerDir -Filter '*-setup.exe' -EA SilentlyContinue | Select-Object -First 1
@@ -185,7 +192,7 @@ if (-not $nsis) {
 }
 
 # ==================================================================
-# MSI installer (per-machine — needs elevation; SKIP if UAC blocks it)
+# MSI installer (per-machine -- needs elevation; SKIP if UAC blocks it)
 # ==================================================================
 Write-TestHeader "msi_install"
 $msi = Get-ChildItem -Path $InstallerDir -Filter '*.msi' -EA SilentlyContinue | Select-Object -First 1
@@ -220,5 +227,5 @@ Write-Host "  Passed:  $script:Passed" -ForegroundColor Green
 Write-Host "  Failed:  $script:Failed" -ForegroundColor $(if ($script:Failed -gt 0) { "Red" } else { "Green" })
 Write-Host "  Skipped: $script:Skipped" -ForegroundColor Yellow
 if ($script:Passed -eq 0 -and $script:Failed -eq 0) {
-    Write-Host "  (nothing ran — no installers were found under $InstallerDir)" -ForegroundColor Yellow
+    Write-Host "  (nothing ran -- no installers were found under $InstallerDir)" -ForegroundColor Yellow
 }
