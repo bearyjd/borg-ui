@@ -1,0 +1,8 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedoc/tauri-conf/main/schemas/tauri.conf.2.json",
+  "bundle": {
+    "resources": {
+      "binaries/borg/": ""
+    }
+  }
+}
