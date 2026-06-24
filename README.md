@@ -24,6 +24,19 @@ to a local folder, external/USB drive, or network share — without WSL.
 - **Self-evident UI**: every settings section has inline help and concrete
   examples aimed at non-technical users.
 
+## Download & install
+
+Grab the latest installer from the [**Releases**](https://github.com/bearyjd/borg-ui/releases) page:
+
+- **`BorgUI_<version>_x64-setup.exe`** — NSIS installer (recommended for most users).
+- **`BorgUI_<version>_x64_en-US.msi`** — MSI installer (for enterprise / Group Policy deployment).
+
+Both bundle BorgBackup (`borg.exe`, BSD-licensed) — no separate borg install is needed.
+
+> **Unsigned installer:** the installers are not code-signed yet, so Windows
+> SmartScreen may show a warning the first time you run one. Click **More info →
+> Run anyway**. (Signing is a planned follow-up.)
+
 ## Architecture
 
 - **borg-core** — Portable Rust library: config, borg CLI wrapper, SSH, progress parsing
@@ -37,7 +50,11 @@ to a local folder, external/USB drive, or network share — without WSL.
 - [Rust](https://rustup.rs/)
 - [Node.js](https://nodejs.org/) (20+)
 - [pnpm](https://pnpm.io/)
-- [borg.exe](https://github.com/marcpope/borg-windows/releases) (place in `app-tauri/src-tauri/binaries/`)
+- [borg.exe](https://github.com/marcpope/borg-windows/releases) — download `borg-windows.zip`
+  (1.4.4+win6) and extract the **whole** dist (`borg.exe` **and** its sibling
+  `_internal/` folder) into `app-tauri/src-tauri/binaries/borg/`. borg is a
+  PyInstaller onedir bundle; `borg.exe` will not start without `_internal/` beside it.
+  The release workflow stages this automatically; it's only needed for local builds.
 
 ### Setup
 
