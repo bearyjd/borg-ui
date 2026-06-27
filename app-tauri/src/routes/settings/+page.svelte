@@ -26,6 +26,12 @@
   let testResult = $state('');
   let saveResult = $state('');
 
+  // Per-field pre-flight checks (Host reachability, SSH key validity).
+  let hostChecking = $state(false);
+  let hostCheckResult = $state('');
+  let keyChecking = $state(false);
+  let keyCheckResult = $state('');
+
   // For a local repo, "configured" means a folder path is filled in. For SSH,
   // we need host + user + path. Used to enable Save/Init/Prune/passphrase.
   let repoConfigured = $derived(
@@ -188,17 +194,45 @@
     testing = true;
     testResult = '';
     try {
-      const ok = await invoke('test_ssh_connection', {
+      await invoke('test_ssh_connection', {
         host: sshHost,
         port: sshPort,
         user: sshUser,
         keyPath: sshKeyPath || null,
       });
-      testResult = ok ? 'Connection successful!' : 'Connection failed.';
+      testResult = 'Connection successful!';
     } catch (e) {
-      testResult = `Error: ${e}`;
+      // The backend now rejects with ssh's real stderr, so show it verbatim
+      // instead of a generic "Connection failed."
+      testResult = `Connection failed: ${e}`;
     } finally {
       testing = false;
+    }
+  }
+
+  async function checkHost() {
+    hostChecking = true;
+    hostCheckResult = '';
+    try {
+      await invoke('check_host_reachable', { host: sshHost, port: sshPort });
+      hostCheckResult = `Reachable on port ${sshPort}.`;
+    } catch (e) {
+      hostCheckResult = `Not reachable: ${e}`;
+    } finally {
+      hostChecking = false;
+    }
+  }
+
+  async function checkKey() {
+    keyChecking = true;
+    keyCheckResult = '';
+    try {
+      const pubkey = await invoke<string>('validate_ssh_key', { keyPath: sshKeyPath });
+      keyCheckResult = `Valid key. Its public key — this must be in the server's authorized_keys:\n${pubkey}`;
+    } catch (e) {
+      keyCheckResult = `Invalid key: ${e}`;
+    } finally {
+      keyChecking = false;
     }
   }
 
@@ -327,8 +361,18 @@
       {:else}
         <div class="field">
           <label for="ssh-host">Host</label>
-          <input id="ssh-host" type="text" bind:value={sshHost} placeholder="backup.example.com" />
-          <FieldHelp text="The address of your backup server." examples={[{ input: 'backup.example.com' }]} />
+          <div class="inline-row">
+            <input id="ssh-host" type="text" bind:value={sshHost} placeholder="backup.example.com" />
+            <button type="button" class="btn btn-secondary" onclick={checkHost} disabled={hostChecking || !sshHost}>
+              {hostChecking ? 'Checking…' : 'Check reachable'}
+            </button>
+          </div>
+          <FieldHelp text="The address of your backup server — just the hostname or IP, no “user@” or path." />
+          {#if hostCheckResult}
+            <div class="field-result" class:success={hostCheckResult.startsWith('Reachable')} class:error={hostCheckResult.startsWith('Not reachable')}>
+              {hostCheckResult}
+            </div>
+          {/if}
         </div>
 
         <div class="field-row">
@@ -341,18 +385,28 @@
             <input id="ssh-port" type="number" bind:value={sshPort} />
           </div>
         </div>
-        <FieldHelp text="The login name on the server, and the SSH port (almost always 22)." examples={[{ input: 'user borg' }, { input: 'port 22' }]} />
+        <FieldHelp text="The login name on the server, and the SSH port (almost always 22)." />
 
         <div class="field">
           <label for="repo-path">Repository Path</label>
           <input id="repo-path" type="text" bind:value={repoPath} placeholder="/backups/her-pc" />
-          <FieldHelp text="The folder on the server where this PC's backups are kept." examples={[{ input: '/backups/her-pc' }]} />
+          <FieldHelp text="The folder on the server for THIS PC's repository — a single repo per folder, not a parent folder of several." />
         </div>
 
         <div class="field">
           <label for="ssh-key">SSH Key Path (optional)</label>
-          <input id="ssh-key" type="text" bind:value={sshKeyPath} placeholder="C:\Users\her\.ssh\id_ed25519" />
-          <FieldHelp text="A key file that lets you log in without typing the server password each time. Leave blank if you don't use one." examples={[{ input: 'C:\\Users\\her\\.ssh\\id_ed25519' }]} />
+          <div class="inline-row">
+            <input id="ssh-key" type="text" bind:value={sshKeyPath} placeholder="C:\Users\her\.ssh\id_ed25519" />
+            <button type="button" class="btn btn-secondary" onclick={checkKey} disabled={keyChecking || !sshKeyPath}>
+              {keyChecking ? 'Checking…' : 'Check key'}
+            </button>
+          </div>
+          <FieldHelp text="Your PRIVATE key file (not the .pub). Its matching public key must be in the server's authorized_keys. Leave blank to use your default SSH key." />
+          {#if keyCheckResult}
+            <div class="field-result" class:success={keyCheckResult.startsWith('Valid')} class:error={keyCheckResult.startsWith('Invalid')}>
+              {keyCheckResult}
+            </div>
+          {/if}
         </div>
 
         <div class="form-actions">
@@ -797,6 +851,31 @@
   }
 
   .test-result.error {
+    background: var(--color-danger-muted);
+    color: var(--color-danger);
+  }
+
+  /* Per-field check result (Host reachable / key valid). Monospace + wrapping
+     so a long derived public key stays readable instead of overflowing. */
+  .field-result {
+    margin-top: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    background: var(--color-surface-hover);
+    color: var(--color-text-muted);
+  }
+
+  .field-result.success {
+    background: var(--color-success-muted);
+    color: var(--color-success);
+  }
+
+  .field-result.error {
     background: var(--color-danger-muted);
     color: var(--color-danger);
   }
