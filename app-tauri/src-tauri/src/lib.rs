@@ -1,15 +1,17 @@
 mod archive_naming;
 mod commands;
+mod diagnostics;
 mod history;
 mod keychain;
+mod logging;
 mod profiles;
+mod redaction;
 mod scheduled;
 mod tray;
 
 use borg_core::borg::BorgClient;
 use commands::AppState;
 use tauri::{Manager, WindowEvent};
-use tracing_subscriber::EnvFilter;
 
 /// CLI flag the Windows Task Scheduler entry passes to trigger a headless
 /// backup (see `commands::save_schedule_config`).
@@ -21,13 +23,6 @@ const START_MINIMIZED_FLAG: &str = "--minimized";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env()
-                .add_directive("borg_ui=debug".parse().expect("valid tracing directive")),
-        )
-        .init();
-
     let borg_path = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -44,6 +39,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
+            let log_dir = app.path().app_log_dir()?;
+            logging::initialize(&log_dir).map_err(std::io::Error::other)?;
             if scheduled {
                 start_scheduled_backup(app.handle().clone(), setup_borg_path);
             } else {
@@ -106,6 +103,11 @@ pub fn run() {
             commands::preview_archive_name,
             commands::export_profile,
             commands::import_profile,
+            commands::open_log_folder,
+            commands::export_support_bundle,
+            commands::export_configuration,
+            commands::preview_configuration_import,
+            commands::import_configuration,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

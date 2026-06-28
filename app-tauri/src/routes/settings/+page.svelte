@@ -12,6 +12,7 @@
   import StartupSection from '$lib/components/settings/StartupSection.svelte';
   import ScheduleSection from '$lib/components/settings/ScheduleSection.svelte';
   import RetentionSection from '$lib/components/settings/RetentionSection.svelte';
+  import DiagnosticsSection from '$lib/components/settings/DiagnosticsSection.svelte';
 
   type RepoType = 'ssh' | 'local';
 
@@ -643,6 +644,8 @@
   <ScheduleSection />
 
   <StartupSection />
+
+  <DiagnosticsSection />
 
   {#if clearPassphraseModalOpen}
     <div class="modal-backdrop" onclick={() => (clearPassphraseModalOpen = false)} role="presentation">
