@@ -46,13 +46,19 @@ class RepoState {
     return config;
   }
 
-  async save(repo: RepoConfig): Promise<void> {
+  async save(repo: RepoConfig, options: { connectionVerified?: boolean } = {}): Promise<void> {
     await invoke('save_repo_config', { repo });
     this.config = repo;
     if (isLocalRepo(repo)) {
       // Local/USB/network-folder repos have no server to test against; a
       // saved config with a destination path counts as "connected".
       this.connected = repo.repo_path.trim() !== '';
+      return;
+    }
+    if (options.connectionVerified) {
+      // The caller already completed the same SSH probe immediately before
+      // saving. Reuse that result instead of opening a second SSH session.
+      this.connected = true;
       return;
     }
     try {

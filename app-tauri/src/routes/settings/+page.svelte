@@ -25,24 +25,50 @@
   let saving = $state(false);
   let testResult = $state('');
   let saveResult = $state('');
+  let connectionStage = $state('');
 
   // Per-field pre-flight checks (Host reachability, SSH key validity).
-  let hostChecking = $state(false);
   let hostCheckResult = $state('');
   let keyChecking = $state(false);
   let keyCheckResult = $state('');
+  let keyPublicKey = $state('');
 
   // For a local repo, "configured" means a folder path is filled in. For SSH,
   // we need host + user + path. Used to enable Save/Init/Prune/passphrase.
   let repoConfigured = $derived(
     repoType === 'local'
       ? repoPath.trim() !== ''
-      : sshHost.trim() !== '' && repoPath.trim() !== ''
+      : sshHost.trim() !== '' && sshUser.trim() !== '' && repoPath.trim() !== ''
   );
 
   async function browseLocalRepoFolder() {
     const selected = await open({ directory: true, multiple: false, title: 'Select backup folder' });
     if (selected) repoPath = selected as string;
+  }
+
+  async function browseSshKey() {
+    const selected = await open({
+      directory: false,
+      multiple: false,
+      title: 'Select an unencrypted SSH private key',
+    });
+    if (!selected) return;
+    sshKeyPath = selected as string;
+    clearKeyResult();
+    await checkKey();
+  }
+
+  function clearConnectionResults() {
+    hostCheckResult = '';
+    testResult = '';
+    saveResult = '';
+  }
+
+  function clearKeyResult() {
+    keyCheckResult = '';
+    keyPublicKey = '';
+    testResult = '';
+    saveResult = '';
   }
 
   /** Build a RepoConfig from the current form, honoring the repo type. */
@@ -190,48 +216,64 @@
     }
   });
 
-  async function testConnection() {
+  async function verifyAndSave() {
     testing = true;
+    saving = true;
     testResult = '';
+    saveResult = '';
+
     try {
+      if (sshKeyPath && !(await checkKey())) return;
+      if (!(await checkHost())) return;
+
+      connectionStage = 'Signing in to the server…';
       await invoke('test_ssh_connection', {
         host: sshHost,
         port: sshPort,
         user: sshUser,
         keyPath: sshKeyPath || null,
       });
-      testResult = 'Connection successful!';
+      connectionStage = 'Saving connection…';
+      await repoState.save(buildRepoConfig(), { connectionVerified: true });
+      testResult = 'Connection verified and saved.';
     } catch (e) {
-      // The backend now rejects with ssh's real stderr, so show it verbatim
-      // instead of a generic "Connection failed."
-      testResult = `Connection failed: ${e}`;
+      testResult = connectionStage === 'Saving connection…'
+        ? `Connection worked, but settings could not be saved: ${e}`
+        : `Could not sign in: ${e}`;
     } finally {
+      connectionStage = '';
       testing = false;
+      saving = false;
     }
   }
 
-  async function checkHost() {
-    hostChecking = true;
+  async function checkHost(): Promise<boolean> {
+    connectionStage = 'Checking server address…';
     hostCheckResult = '';
     try {
       await invoke('check_host_reachable', { host: sshHost, port: sshPort });
-      hostCheckResult = `Reachable on port ${sshPort}.`;
+      hostCheckResult = `Server is reachable on port ${sshPort}.`;
+      return true;
     } catch (e) {
-      hostCheckResult = `Not reachable: ${e}`;
-    } finally {
-      hostChecking = false;
+      hostCheckResult = `Could not reach this server: ${e}`;
+      return false;
     }
   }
 
-  async function checkKey() {
+  async function checkKey(): Promise<boolean> {
+    connectionStage = 'Checking private key…';
     keyChecking = true;
     keyCheckResult = '';
+    keyPublicKey = '';
     try {
-      const pubkey = await invoke<string>('validate_ssh_key', { keyPath: sshKeyPath });
-      keyCheckResult = `Valid key. Its public key — this must be in the server's authorized_keys:\n${pubkey}`;
+      keyPublicKey = await invoke<string>('validate_ssh_key', { keyPath: sshKeyPath });
+      keyCheckResult = 'Valid unencrypted private key.';
+      return true;
     } catch (e) {
-      keyCheckResult = `Invalid key: ${e}`;
+      keyCheckResult = `This key cannot be used: ${e}`;
+      return false;
     } finally {
+      connectionStage = '';
       keyChecking = false;
     }
   }
@@ -307,7 +349,7 @@
     <CommandsSection />
   {/if}
 
-  <form class="settings-form" onsubmit={(e) => { e.preventDefault(); save(); }}>
+  <form class="settings-form" onsubmit={(e) => { e.preventDefault(); repoType === 'local' ? save() : verifyAndSave(); }}>
     <fieldset class="form-group">
       <legend>Connection</legend>
       <FieldHelp text="Where should your backups be stored? Pick the kind of destination, then fill in the details below." />
@@ -359,67 +401,122 @@
           </button>
         </div>
       {:else}
-        <div class="field">
-          <label for="ssh-host">Host</label>
-          <div class="inline-row">
-            <input id="ssh-host" type="text" bind:value={sshHost} placeholder="backup.example.com" />
-            <button type="button" class="btn btn-secondary" onclick={checkHost} disabled={hostChecking || !sshHost}>
-              {hostChecking ? 'Checking…' : 'Check reachable'}
-            </button>
-          </div>
-          <FieldHelp text="The address of your backup server — just the hostname or IP, no “user@” or path." />
-          {#if hostCheckResult}
-            <div class="field-result" class:success={hostCheckResult.startsWith('Reachable')} class:error={hostCheckResult.startsWith('Not reachable')}>
-              {hostCheckResult}
-            </div>
-          {/if}
-        </div>
-
         <div class="field-row">
           <div class="field">
-            <label for="ssh-user">User</label>
-            <input id="ssh-user" type="text" bind:value={sshUser} placeholder="borg" />
+            <label for="ssh-host">Server address</label>
+            <input
+              id="ssh-host"
+              type="text"
+              bind:value={sshHost}
+              oninput={clearConnectionResults}
+              placeholder="backup.example.com"
+              autocomplete="off"
+              spellcheck="false"
+              aria-describedby="ssh-host-help"
+              required
+            />
           </div>
           <div class="field field-sm">
             <label for="ssh-port">Port</label>
-            <input id="ssh-port" type="number" bind:value={sshPort} />
+            <input
+              id="ssh-port"
+              type="number"
+              bind:value={sshPort}
+              oninput={clearConnectionResults}
+              min="1"
+              max="65535"
+              inputmode="numeric"
+              required
+            />
           </div>
         </div>
-        <FieldHelp text="The login name on the server, and the SSH port (almost always 22)." />
+        <div id="ssh-host-help">
+          <FieldHelp text="Enter only the hostname or IP address. Keep port 22 unless your server provider gave you a different port." />
+        </div>
+        {#if hostCheckResult}
+          <div class="field-result" role="status" class:success={hostCheckResult.startsWith('Server is')} class:error={hostCheckResult.startsWith('Could not')}>
+            {hostCheckResult}
+          </div>
+        {/if}
 
         <div class="field">
-          <label for="repo-path">Repository Path</label>
-          <input id="repo-path" type="text" bind:value={repoPath} placeholder="/backups/her-pc" />
-          <FieldHelp text="The folder on the server for THIS PC's repository — a single repo per folder, not a parent folder of several." />
+          <label for="ssh-user">SSH username</label>
+          <input
+            id="ssh-user"
+            type="text"
+            bind:value={sshUser}
+            oninput={clearConnectionResults}
+            placeholder="borg"
+            autocomplete="username"
+            spellcheck="false"
+            aria-describedby="ssh-user-help"
+            required
+          />
+          <div id="ssh-user-help">
+            <FieldHelp text="The login name provided by your server host. This is often “borg”, but it is not necessarily your Windows username." />
+          </div>
         </div>
 
         <div class="field">
-          <label for="ssh-key">SSH Key Path (optional)</label>
+          <label for="repo-path">Repository folder on server</label>
+          <input
+            id="repo-path"
+            type="text"
+            bind:value={repoPath}
+            oninput={clearConnectionResults}
+            placeholder="/backups/her-pc"
+            autocomplete="off"
+            spellcheck="false"
+            aria-describedby="repo-path-help"
+            required
+          />
+          <div id="repo-path-help">
+            <FieldHelp text="Use one folder for this PC. Enter the path your server provider gave you; do not include the server address or username." />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="ssh-key">Private key <span class="optional">(optional)</span></label>
           <div class="inline-row">
-            <input id="ssh-key" type="text" bind:value={sshKeyPath} placeholder="C:\Users\her\.ssh\id_ed25519" />
-            <button type="button" class="btn btn-secondary" onclick={checkKey} disabled={keyChecking || !sshKeyPath}>
-              {keyChecking ? 'Checking…' : 'Check key'}
+            <input
+              id="ssh-key"
+              type="text"
+              bind:value={sshKeyPath}
+              oninput={clearKeyResult}
+              placeholder="Use the default SSH key"
+              autocomplete="off"
+              spellcheck="false"
+              aria-describedby="ssh-key-help"
+            />
+            <button type="button" class="btn btn-secondary" onclick={browseSshKey} disabled={keyChecking}>
+              {keyChecking ? 'Checking…' : 'Browse…'}
             </button>
           </div>
-          <FieldHelp text="Your unencrypted PRIVATE key file (not the .pub). Passphrase-protected keys cannot be used for unattended backups. Its matching public key must be in the server's authorized_keys. Leave blank to use your default SSH key." />
+          <div id="ssh-key-help">
+            <FieldHelp text="Usually you can leave this blank. If your provider gave you a key, select the private key—not the .pub file. For unattended backups it must not have a passphrase." />
+          </div>
           {#if keyCheckResult}
-            <div class="field-result" class:success={keyCheckResult.startsWith('Valid')} class:error={keyCheckResult.startsWith('Invalid')}>
+            <div class="field-result" role="status" class:success={keyCheckResult.startsWith('Valid')} class:error={keyCheckResult.startsWith('This key')}>
               {keyCheckResult}
             </div>
           {/if}
+          {#if keyPublicKey}
+            <details class="public-key">
+              <summary>Show public key to add to the server</summary>
+              <code>{keyPublicKey}</code>
+            </details>
+          {/if}
         </div>
 
-        <div class="form-actions">
-          <button type="button" class="btn btn-secondary" onclick={testConnection} disabled={testing || !sshHost}>
-            {testing ? 'Testing...' : 'Test Connection'}
+        <div class="form-actions connection-actions">
+          <button type="submit" class="btn btn-primary" disabled={testing || saving}>
+            {connectionStage || 'Verify & save'}
           </button>
-          <button type="submit" class="btn btn-primary" disabled={saving || !sshHost || !repoPath}>
-            {saving ? 'Saving...' : 'Save'}
-          </button>
+          <span class="action-hint">Checks the server, key, and sign-in before saving.</span>
         </div>
 
         {#if testResult}
-          <div class="test-result" class:success={testResult.includes('successful')} class:error={testResult.includes('Error') || testResult.includes('failed')}>
+          <div class="test-result" role="status" class:success={testResult.includes('verified')} class:error={testResult.startsWith('Could not') || testResult.includes('could not be saved')}>
             {testResult}
           </div>
         {/if}
@@ -438,33 +535,40 @@
       <legend>Initialize Repository</legend>
       <FieldHelp text="“Initialize” sets up a fresh, empty backup repository at the destination above. Do this once for a brand-new destination. Skip it if you're connecting to a backup that already exists — initializing again is not needed." />
 
-      <div class="field">
-        <label for="init-encryption">Encryption</label>
-        <select id="init-encryption" bind:value={initEncryption}>
-          <option value="repokey-blake2">repokey-blake2 (recommended)</option>
-          <option value="repokey">repokey</option>
-          <option value="keyfile-blake2">keyfile-blake2</option>
-          <option value="keyfile">keyfile</option>
-          <option value="authenticated-blake2">authenticated-blake2 (no encryption)</option>
-          <option value="authenticated">authenticated (no encryption)</option>
-          <option value="none">none (no encryption, no auth)</option>
-        </select>
-        <ul class="var-help">
-          <li><code>repokey-blake2</code> <span>recommended — encrypts your files; the key lives inside the repository</span></li>
-          <li><code>repokey</code> <span>same idea, slightly slower checksum</span></li>
-          <li><code>keyfile-blake2</code> <span>encrypts your files; key stored on this PC (back it up!)</span></li>
-          <li><code>keyfile</code> <span>same, slightly slower checksum</span></li>
-          <li><code>authenticated</code> <span>tamper-detection only</span></li>
-          <li><code>none</code> <span>no protection at all</span></li>
-        </ul>
-      </div>
+      <details class="advanced-options">
+        <summary>
+          {initEncryption === 'repokey-blake2'
+            ? 'Encryption: Recommended'
+            : `Encryption: ${initEncryption}`}
+        </summary>
+        <div class="field">
+          <label for="init-encryption">Encryption method</label>
+          <select id="init-encryption" bind:value={initEncryption}>
+            <option value="repokey-blake2">repokey-blake2 (recommended)</option>
+            <option value="repokey">repokey</option>
+            <option value="keyfile-blake2">keyfile-blake2</option>
+            <option value="keyfile">keyfile</option>
+            <option value="authenticated-blake2">authenticated-blake2 (no encryption)</option>
+            <option value="authenticated">authenticated (no encryption)</option>
+            <option value="none">none (no encryption, no auth)</option>
+          </select>
+          <ul class="var-help">
+            <li><code>repokey-blake2</code> <span>recommended — encrypts your files; the key lives inside the repository</span></li>
+            <li><code>repokey</code> <span>same idea, slightly slower checksum</span></li>
+            <li><code>keyfile-blake2</code> <span>encrypts your files; key stored on this PC (back it up!)</span></li>
+            <li><code>keyfile</code> <span>same, slightly slower checksum</span></li>
+            <li><code>authenticated</code> <span>tamper-detection only</span></li>
+            <li><code>none</code> <span>no protection at all</span></li>
+          </ul>
+        </div>
+      </details>
 
-      <div class="warning-box">
-        <strong>Heads up:</strong> <code>none</code>, <code>authenticated</code> and
-        <code>authenticated-blake2</code> do <strong>not</strong> encrypt your file contents.
-        Anyone with access to the backup could read your files. For private data, keep the
-        recommended <code>repokey-blake2</code>.
-      </div>
+      {#if initEncryption === 'none' || initEncryption.startsWith('authenticated')}
+        <div class="warning-box">
+          <strong>Not encrypted:</strong> anyone with access to this repository can read
+          your files. Use the recommended encryption for private data.
+        </div>
+      {/if}
 
       {#if needsPassphrase}
         <div class="field">
@@ -653,6 +757,25 @@
     margin-top: var(--space-6);
   }
 
+  .advanced-options {
+    margin-top: var(--space-4);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--color-bg);
+  }
+
+  .advanced-options summary {
+    color: var(--color-text-muted);
+    cursor: pointer;
+    font-size: var(--text-sm);
+    font-weight: 500;
+  }
+
+  .advanced-options[open] summary {
+    color: var(--color-text);
+  }
+
   .var-help {
     list-style: none;
     display: flex;
@@ -697,12 +820,6 @@
   }
 
   .warning-box strong {
-    color: var(--color-warning);
-  }
-
-  .warning-box code {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
     color: var(--color-warning);
   }
 
@@ -764,6 +881,11 @@
     color: var(--color-text-muted);
   }
 
+  .optional {
+    color: var(--color-text-dim);
+    font-weight: 400;
+  }
+
   .field input {
     background: var(--color-bg);
     border: 1px solid var(--color-border);
@@ -801,6 +923,20 @@
     display: flex;
     gap: var(--space-3);
     margin-top: var(--space-6);
+  }
+
+  .connection-actions {
+    align-items: center;
+  }
+
+  .connection-actions .btn-primary {
+    min-width: 9rem;
+  }
+
+  .action-hint {
+    color: var(--color-text-dim);
+    font-size: var(--text-xs);
+    line-height: 1.4;
   }
 
   .btn {
@@ -880,6 +1016,32 @@
     color: var(--color-danger);
   }
 
+  .public-key {
+    margin-top: var(--space-2);
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .public-key summary {
+    width: fit-content;
+    color: var(--color-accent);
+    cursor: pointer;
+  }
+
+  .public-key code {
+    display: block;
+    margin-top: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg);
+    color: var(--color-text-muted);
+    font-size: 0.7rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    user-select: text;
+  }
+
   select {
     background: var(--color-bg);
     border: 1px solid var(--color-border);
@@ -953,5 +1115,21 @@
     justify-content: flex-end;
     gap: var(--space-2);
     margin-top: var(--space-4);
+  }
+
+  @media (max-width: 620px) {
+    .repo-type-toggle,
+    .field-row {
+      flex-direction: column;
+    }
+
+    .field-row .field-sm {
+      flex-basis: auto;
+    }
+
+    .connection-actions {
+      align-items: stretch;
+      flex-direction: column;
+    }
   }
 </style>
