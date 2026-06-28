@@ -8,6 +8,7 @@
     format_version: number;
     added: string[];
     replaced: string[];
+    removed: string[];
     active_profile: string | null;
   }
 
@@ -118,6 +119,9 @@
         <p>Format version {preview.format_version}</p>
         <p>Will add: {preview.added.length ? preview.added.join(', ') : 'none'}</p>
         <p>Will replace: {preview.replaced.length ? preview.replaced.join(', ') : 'none'}</p>
+        <p class:destructive={preview.removed.length > 0}>
+          Will remove: {preview.removed.length ? preview.removed.join(', ') : 'none'}
+        </p>
         <div class="confirm-actions">
           <button class="btn btn-secondary" type="button" onclick={() => {
             preview = null;
@@ -172,6 +176,10 @@
   }
   .preview strong {
     color: var(--color-text);
+  }
+  .preview .destructive {
+    color: var(--color-danger);
+    font-weight: 600;
   }
   .confirm-actions {
     display: flex;

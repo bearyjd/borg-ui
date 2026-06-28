@@ -32,6 +32,7 @@ pub struct ImportPreview {
     pub format_version: u32,
     pub added: Vec<String>,
     pub replaced: Vec<String>,
+    pub removed: Vec<String>,
     pub active_profile: Option<String>,
 }
 
@@ -48,8 +49,20 @@ pub async fn preview_import(config_dir: &Path, source: &Path) -> Result<ImportPr
     let imported = read_and_validate_import(source).await?;
     let current = profiles::load(config_dir).await?;
     let current_ids: HashSet<_> = current.profiles.iter().map(|p| p.id.as_str()).collect();
+    let imported_ids: HashSet<_> = imported
+        .configuration
+        .profiles
+        .iter()
+        .map(|p| p.id.as_str())
+        .collect();
     let mut added = Vec::new();
     let mut replaced = Vec::new();
+    let removed = current
+        .profiles
+        .iter()
+        .filter(|profile| !imported_ids.contains(profile.id.as_str()))
+        .map(|profile| profile.name.clone())
+        .collect();
     for profile in &imported.configuration.profiles {
         if current_ids.contains(profile.id.as_str()) {
             replaced.push(profile.name.clone());
@@ -61,6 +74,7 @@ pub async fn preview_import(config_dir: &Path, source: &Path) -> Result<ImportPr
         format_version: imported.metadata.format_version,
         added,
         replaced,
+        removed,
         active_profile: imported.configuration.active_id,
     })
 }
@@ -344,6 +358,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(preview.added, vec!["Work"]);
+        assert_eq!(preview.removed, vec!["Old"]);
         import_configuration(destination.path(), &export_path)
             .await
             .unwrap();

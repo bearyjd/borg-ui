@@ -63,10 +63,6 @@ fn nonempty(s: &Option<String>) -> Option<&str> {
     s.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
-fn history_path(config_dir: &Path) -> PathBuf {
-    config_dir.join("history.json")
-}
-
 fn build_archive_name(profile: &Profile) -> String {
     let template = profile
         .archive_template
@@ -117,7 +113,7 @@ async fn finish(
         error_message: error.clone(),
     };
     // Best-effort: a history write failure must not change the backup outcome.
-    let _ = history::append(&history_path(config_dir), event).await;
+    let _ = history::append(config_dir, event).await;
 
     RunReport {
         archive_name: Some(archive_name.to_string()),
@@ -315,7 +311,7 @@ mod tests {
         assert_eq!(Some(archives[0].name.clone()), report.archive_name);
 
         // A success event was written to history.
-        let events = history::load(&history_path(&config_dir)).await.unwrap();
+        let events = history::load(&config_dir).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].outcome, "success");
         assert_eq!(events[0].kind, "backup");
@@ -337,7 +333,7 @@ mod tests {
         assert!(!report.succeeded());
         assert!(report.error.as_deref().unwrap().contains("schedule"));
         // No archive named -> no history written.
-        let events = history::load(&history_path(&config_dir)).await.unwrap();
+        let events = history::load(&config_dir).await.unwrap();
         assert!(events.is_empty());
     }
 
