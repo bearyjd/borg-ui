@@ -21,6 +21,12 @@ pub enum BorgError {
     #[error("SSH connection failed: {message}")]
     SshFailed { message: String },
 
+    /// A local pre-flight check (TCP reachability, key-file validation) failed.
+    /// The message is the underlying tool/OS error, surfaced verbatim to the UI,
+    /// so this variant deliberately has no domain prefix of its own.
+    #[error("{message}")]
+    CheckFailed { message: String },
+
     #[error("invalid configuration: {message}")]
     InvalidConfig { message: String },
 
@@ -219,6 +225,9 @@ mod tests {
             BorgError::PassphraseRequired,
             BorgError::SshFailed {
                 message: "timeout".into(),
+            },
+            BorgError::CheckFailed {
+                message: "unreachable".into(),
             },
             BorgError::InvalidConfig {
                 message: "missing field".into(),
