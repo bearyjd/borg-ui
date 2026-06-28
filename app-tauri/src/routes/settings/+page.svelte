@@ -401,7 +401,7 @@
               {keyChecking ? 'Checking…' : 'Check key'}
             </button>
           </div>
-          <FieldHelp text="Your PRIVATE key file (not the .pub). Its matching public key must be in the server's authorized_keys. Leave blank to use your default SSH key." />
+          <FieldHelp text="Your unencrypted PRIVATE key file (not the .pub). Passphrase-protected keys cannot be used for unattended backups. Its matching public key must be in the server's authorized_keys. Leave blank to use your default SSH key." />
           {#if keyCheckResult}
             <div class="field-result" class:success={keyCheckResult.startsWith('Valid')} class:error={keyCheckResult.startsWith('Invalid')}>
               {keyCheckResult}

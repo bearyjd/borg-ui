@@ -64,14 +64,16 @@ pub async fn check_reachable(host: &str, port: u16) -> Result<()> {
     }
 }
 
-/// Validate a private-key file locally (no network) by deriving its public key
-/// with `ssh-keygen -y`. On success returns the public key text so the caller
-/// can compare it against the server's `authorized_keys`. Runs non-interactively
-/// (stdin is closed by `output()`), so a passphrase-protected key fails fast
-/// rather than blocking on a prompt.
+/// Validate an unencrypted private-key file locally (no network) by deriving
+/// its public key with `ssh-keygen -y`. On success returns the public key text
+/// so the caller can compare it against the server's `authorized_keys`.
+///
+/// Passing an explicit empty passphrase makes the check non-interactive and
+/// deliberately rejects passphrase-protected keys, which BorgUI cannot unlock
+/// during unattended backups.
 pub async fn validate_key(key_path: &Path) -> Result<String> {
     let output = proc::command("ssh-keygen")
-        .args(["-y", "-f", &key_path.to_string_lossy()])
+        .args(["-y", "-P", "", "-f", &key_path.to_string_lossy()])
         .output()
         .await?;
 
@@ -79,14 +81,11 @@ pub async fn validate_key(key_path: &Path) -> Result<String> {
         return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let message = stderr.trim();
     Err(BorgError::CheckFailed {
-        message: if message.is_empty() {
-            "not a valid private key file".to_string()
-        } else {
-            message.to_string()
-        },
+        message: "The selected file is not a valid unencrypted private key. \
+                  Passphrase-protected keys are not supported because unattended backups \
+                  cannot unlock them."
+            .to_string(),
     })
 }
 
@@ -248,8 +247,29 @@ mod tests {
         let path = dir.path().join("notakey");
         tokio::fs::write(&path, "garbage").await.unwrap();
 
-        let result = validate_key(&path).await;
-        assert!(result.is_err());
+        let error = validate_key(&path).await.unwrap_err();
+        assert!(error.to_string().contains("valid unencrypted private key"));
+    }
+
+    #[tokio::test]
+    async fn validate_key_rejects_passphrase_protected_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("encrypted_key");
+        let output = proc::command("ssh-keygen")
+            .args(["-t", "ed25519"])
+            .args(["-f", &key_path.to_string_lossy()])
+            .args(["-N", "test-passphrase"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+
+        let error = validate_key(&key_path).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Passphrase-protected keys are not supported")
+        );
     }
 
     #[tokio::test]
