@@ -15,6 +15,7 @@ export interface Profile {
 }
 
 export interface ProfilesData {
+  schema_version: number;
   profiles: Profile[];
   active_id: string | null;
 }
