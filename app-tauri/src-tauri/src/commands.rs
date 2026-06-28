@@ -118,9 +118,25 @@ pub async fn test_ssh_connection(
     port: u16,
     user: String,
     key_path: Option<String>,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     let key = key_path.map(PathBuf::from);
     borg_core::ssh::test_connection(&host, port, &user, key.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Per-field pre-flight: can we reach the SSH server on this host:port?
+#[tauri::command]
+pub async fn check_host_reachable(host: String, port: u16) -> Result<(), String> {
+    borg_core::ssh::check_reachable(&host, port)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Per-field pre-flight: validate the private-key file and return its public key.
+#[tauri::command]
+pub async fn validate_ssh_key(key_path: String) -> Result<String, String> {
+    borg_core::ssh::validate_key(&PathBuf::from(key_path))
         .await
         .map_err(|e| e.to_string())
 }

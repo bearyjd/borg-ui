@@ -56,13 +56,14 @@ class RepoState {
       return;
     }
     try {
-      const ok = await invoke<boolean>('test_ssh_connection', {
+      // Resolves on success, rejects with ssh's stderr on failure.
+      await invoke('test_ssh_connection', {
         host: repo.ssh_host,
         port: repo.ssh_port,
         user: repo.ssh_user,
         keyPath: repo.ssh_key_path,
       });
-      this.connected = ok;
+      this.connected = true;
     } catch {
       this.connected = false;
     }

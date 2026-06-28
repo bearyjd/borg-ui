@@ -21,17 +21,10 @@
     <p class="help-text">{@render children()}</p>
   {/if}
   {#if examples && examples.length > 0}
-    <ul class="help-examples">
-      {#each examples as ex (ex.input)}
-        <li>
-          <code>{ex.input}</code>
-          {#if ex.output}
-            <span class="arrow" aria-hidden="true">→</span>
-            <code class="output">{ex.output}</code>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+    <p class="help-examples">
+      <span class="eg">e.g.</span>
+      {#each examples as ex, i (ex.input)}<span class="example"><code>{ex.input}</code>{#if ex.output}<span class="arrow" aria-hidden="true">→</span><code class="output">{ex.output}</code>{/if}</span>{#if i < examples.length - 1}<span class="sep" aria-hidden="true">·</span>{/if}{/each}
+    </p>
   {/if}
 </div>
 
@@ -57,23 +50,25 @@
     border-radius: var(--radius-sm);
   }
 
+  /* Examples render as a subtle inline hint, not a bordered box — a box with
+     a background + monospace text reads as a second, disabled input field. */
   .help-examples {
-    list-style: none;
     display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    padding: var(--space-2) var(--space-3);
-    background: var(--color-bg);
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-sm);
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    font-size: 0.7rem;
+    color: var(--color-text-dim);
   }
 
-  .help-examples li {
-    display: flex;
+  .help-examples .eg {
+    font-style: italic;
+  }
+
+  .help-examples .example {
+    display: inline-flex;
     align-items: center;
-    gap: var(--space-2);
-    flex-wrap: wrap;
-    font-size: 0.7rem;
+    gap: var(--space-1);
   }
 
   .help-examples code {
@@ -86,8 +81,8 @@
     color: var(--color-accent);
   }
 
-  .help-examples .arrow {
+  .help-examples .arrow,
+  .help-examples .sep {
     color: var(--color-text-dim);
-    font-size: 0.7rem;
   }
 </style>
