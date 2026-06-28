@@ -4,6 +4,8 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
+pub const PROFILE_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub id: String,
@@ -25,10 +27,22 @@ pub struct Profile {
     pub post_backup: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfilesData {
+    #[serde(default)]
+    pub schema_version: u32,
     pub profiles: Vec<Profile>,
     pub active_id: Option<String>,
+}
+
+impl Default for ProfilesData {
+    fn default() -> Self {
+        Self {
+            schema_version: PROFILE_SCHEMA_VERSION,
+            profiles: Vec::new(),
+            active_id: None,
+        }
+    }
 }
 
 impl ProfilesData {
@@ -67,8 +81,33 @@ impl ProfilesData {
 pub async fn load(config_dir: &Path) -> Result<ProfilesData, String> {
     let path = config_dir.join("profiles.json");
     match tokio::fs::read_to_string(&path).await {
-        Ok(data) => serde_json::from_str(&data).map_err(|e| e.to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => migrate_legacy(config_dir).await,
+        Ok(data) => {
+            let value: serde_json::Value =
+                serde_json::from_str(&data).map_err(|e| format!("invalid profiles.json: {e}"))?;
+            let version = value
+                .get("schema_version")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            if version > u64::from(PROFILE_SCHEMA_VERSION) {
+                return Err(format!(
+                    "profiles.json schema version {version} is newer than supported version {PROFILE_SCHEMA_VERSION}"
+                ));
+            }
+            let mut parsed: ProfilesData =
+                serde_json::from_value(value).map_err(|e| format!("invalid profiles.json: {e}"))?;
+            if version == 0 {
+                parsed.schema_version = PROFILE_SCHEMA_VERSION;
+                save(config_dir, &parsed).await?;
+            }
+            Ok(parsed)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let data = migrate_legacy(config_dir).await?;
+            if !data.profiles.is_empty() {
+                save(config_dir, &data).await?;
+            }
+            Ok(data)
+        }
         Err(e) => Err(e.to_string()),
     }
 }
@@ -83,9 +122,51 @@ pub async fn save(config_dir: &Path, data: &ProfilesData) -> Result<(), String> 
     tokio::fs::write(&tmp, &json)
         .await
         .map_err(|e| e.to_string())?;
-    tokio::fs::rename(&tmp, &path)
+    replace_atomic(&tmp, &path).await
+}
+
+#[cfg(not(windows))]
+async fn replace_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+    tokio::fs::rename(source, destination)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+async fn replace_atomic(source: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let source: Vec<u16> = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    tokio::task::spawn_blocking(move || {
+        // SAFETY: both pointers reference NUL-terminated UTF-16 buffers that
+        // remain alive for the duration of the call.
+        let succeeded = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if succeeded == 0 {
+            Err(std::io::Error::last_os_error().to_string())
+        } else {
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
@@ -114,6 +195,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
     };
 
     Ok(ProfilesData {
+        schema_version: PROFILE_SCHEMA_VERSION,
         active_id: Some(profile.id.clone()),
         profiles: vec![profile],
     })
@@ -304,5 +386,47 @@ mod tests {
         let data = migrate_legacy(dir.path()).await.unwrap();
         assert_eq!(data.profiles.len(), 1);
         assert!(data.profiles[0].schedule.is_none());
+    }
+
+    #[tokio::test]
+    async fn unversioned_profiles_are_migrated_and_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = serde_json::json!({
+            "profiles": [profile_with_id("work")],
+            "active_id": "work"
+        });
+        tokio::fs::write(
+            dir.path().join("profiles.json"),
+            serde_json::to_vec_pretty(&json).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let data = load(dir.path()).await.unwrap();
+        assert_eq!(data.schema_version, PROFILE_SCHEMA_VERSION);
+        let saved: serde_json::Value = serde_json::from_slice(
+            &tokio::fs::read(dir.path().join("profiles.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            saved["schema_version"],
+            serde_json::Value::from(PROFILE_SCHEMA_VERSION)
+        );
+    }
+
+    #[tokio::test]
+    async fn future_schema_is_rejected_without_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.json");
+        let original = format!(
+            r#"{{"schema_version":{},"profiles":[],"active_id":null}}"#,
+            PROFILE_SCHEMA_VERSION + 1
+        );
+        tokio::fs::write(&path, &original).await.unwrap();
+
+        assert!(load(dir.path()).await.unwrap_err().contains("newer"));
+        assert_eq!(tokio::fs::read_to_string(path).await.unwrap(), original);
     }
 }

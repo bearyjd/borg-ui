@@ -277,6 +277,7 @@ mod tests {
 
     async fn write_profile(config_dir: &Path, profile: Profile) {
         let data = ProfilesData {
+            schema_version: profiles::PROFILE_SCHEMA_VERSION,
             active_id: Some(profile.id.clone()),
             profiles: vec![profile],
         };
