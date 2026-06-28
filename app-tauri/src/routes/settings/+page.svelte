@@ -234,7 +234,7 @@
         keyPath: sshKeyPath || null,
       });
       connectionStage = 'Saving connection…';
-      await repoState.save(buildRepoConfig());
+      await repoState.save(buildRepoConfig(), { connectionVerified: true });
       testResult = 'Connection verified and saved.';
     } catch (e) {
       testResult = connectionStage === 'Saving connection…'
