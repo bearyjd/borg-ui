@@ -128,8 +128,10 @@ pub async fn generate_key(path: &Path, overwrite: bool) -> Result<PathBuf> {
     tokio::fs::write(&private_tmp, private_text.as_bytes()).await?;
     restrict_private_key_permissions(&private_tmp).await?;
     tokio::fs::write(&public_tmp, format!("{public_text}\n")).await?;
-    replace_file(&private_tmp, path, overwrite).await?;
-    if let Err(error) = replace_file(&public_tmp, &public_path, overwrite).await {
+    if let Err(error) =
+        commit_keypair(&private_tmp, &public_tmp, path, &public_path, overwrite).await
+    {
+        let _ = tokio::fs::remove_file(&private_tmp).await;
         let _ = tokio::fs::remove_file(&public_tmp).await;
         return Err(error);
     }
@@ -137,12 +139,82 @@ pub async fn generate_key(path: &Path, overwrite: bool) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-async fn replace_file(source: &Path, destination: &Path, overwrite: bool) -> Result<()> {
-    if overwrite && tokio::fs::try_exists(destination).await? {
-        tokio::fs::remove_file(destination).await?;
+async fn commit_keypair(
+    private_source: &Path,
+    public_source: &Path,
+    private_destination: &Path,
+    public_destination: &Path,
+    overwrite: bool,
+) -> Result<()> {
+    let private_backup = private_destination.with_extension("borgui-private.bak");
+    let public_backup = public_destination.with_extension("borgui-public.bak");
+    let mut backed_up_private = false;
+    let mut backed_up_public = false;
+
+    if overwrite && tokio::fs::try_exists(private_destination).await? {
+        tokio::fs::rename(private_destination, &private_backup).await?;
+        backed_up_private = true;
     }
-    tokio::fs::rename(source, destination).await?;
+    if overwrite && tokio::fs::try_exists(public_destination).await? {
+        if let Err(error) = tokio::fs::rename(public_destination, &public_backup).await {
+            if backed_up_private {
+                let _ = tokio::fs::rename(&private_backup, private_destination).await;
+            }
+            return Err(error.into());
+        }
+        backed_up_public = true;
+    }
+
+    if let Err(error) = tokio::fs::rename(private_source, private_destination).await {
+        restore_keypair(
+            private_destination,
+            public_destination,
+            &private_backup,
+            &public_backup,
+            backed_up_private,
+            backed_up_public,
+        )
+        .await;
+        return Err(error.into());
+    }
+    if let Err(error) = tokio::fs::rename(public_source, public_destination).await {
+        restore_keypair(
+            private_destination,
+            public_destination,
+            &private_backup,
+            &public_backup,
+            backed_up_private,
+            backed_up_public,
+        )
+        .await;
+        return Err(error.into());
+    }
+
+    if backed_up_private {
+        let _ = tokio::fs::remove_file(private_backup).await;
+    }
+    if backed_up_public {
+        let _ = tokio::fs::remove_file(public_backup).await;
+    }
     Ok(())
+}
+
+async fn restore_keypair(
+    private_destination: &Path,
+    public_destination: &Path,
+    private_backup: &Path,
+    public_backup: &Path,
+    backed_up_private: bool,
+    backed_up_public: bool,
+) {
+    let _ = tokio::fs::remove_file(private_destination).await;
+    let _ = tokio::fs::remove_file(public_destination).await;
+    if backed_up_private {
+        let _ = tokio::fs::rename(private_backup, private_destination).await;
+    }
+    if backed_up_public {
+        let _ = tokio::fs::rename(public_backup, public_destination).await;
+    }
 }
 
 #[cfg(unix)]
@@ -228,6 +300,40 @@ mod tests {
         generate_key(&key_path, true).await.unwrap();
         assert_ne!(tokio::fs::read(&key_path).await.unwrap(), original);
         assert!(validate_key(&key_path).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn keypair_commit_restores_original_pair_when_public_commit_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let private_path = dir.path().join("id_ed25519");
+        let public_path = dir.path().join("id_ed25519.pub");
+        let private_tmp = dir.path().join("private.tmp");
+        let missing_public_tmp = dir.path().join("missing-public.tmp");
+        tokio::fs::write(&private_path, "old private")
+            .await
+            .unwrap();
+        tokio::fs::write(&public_path, "old public").await.unwrap();
+        tokio::fs::write(&private_tmp, "new private").await.unwrap();
+
+        assert!(
+            commit_keypair(
+                &private_tmp,
+                &missing_public_tmp,
+                &private_path,
+                &public_path,
+                true,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&private_path).await.unwrap(),
+            "old private"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&public_path).await.unwrap(),
+            "old public"
+        );
     }
 
     #[tokio::test]
@@ -341,6 +447,24 @@ mod tests {
                 .to_string()
                 .contains("Passphrase-protected keys are not supported")
         );
+    }
+
+    #[tokio::test]
+    async fn validate_key_accepts_existing_ecdsa_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("ecdsa_key");
+        let output = proc::command("ssh-keygen")
+            .args(["-t", "ecdsa"])
+            .args(["-b", "256"])
+            .args(["-f", &key_path.to_string_lossy()])
+            .args(["-N", ""])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+
+        let public_key = validate_key(&key_path).await.unwrap();
+        assert!(public_key.starts_with("ecdsa-sha2-nistp256 "));
     }
 
     #[tokio::test]
