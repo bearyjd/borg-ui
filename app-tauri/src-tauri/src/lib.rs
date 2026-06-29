@@ -5,6 +5,7 @@ mod history;
 mod keychain;
 mod logging;
 mod profiles;
+mod recovery;
 mod redaction;
 mod scheduled;
 mod tray;
@@ -117,6 +118,8 @@ pub fn run() {
             commands::export_configuration,
             commands::preview_configuration_import,
             commands::import_configuration,
+            commands::export_recovery_key,
+            commands::import_recovery_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

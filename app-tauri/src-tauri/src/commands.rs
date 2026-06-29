@@ -979,3 +979,107 @@ pub async fn import_configuration(app: tauri::AppHandle, path: String) -> Result
     let config_dir = config_dir(&app).await?;
     diagnostics::import_configuration(&config_dir, &PathBuf::from(path)).await
 }
+
+#[tauri::command]
+pub async fn export_recovery_key(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    recovery_passphrase: String,
+) -> Result<(), String> {
+    if recovery_passphrase.is_empty() {
+        return Err("recovery passphrase cannot be empty".into());
+    }
+    let destination = PathBuf::from(path);
+    if destination.exists() {
+        return Err("destination already exists; choose a new file name".into());
+    }
+
+    let data = read_profiles(&app).await?;
+    let profile = data
+        .active()
+        .cloned()
+        .ok_or_else(|| "no active profile; configure repository first".to_string())?;
+    precheck_repo(&profile.repo).await?;
+    let passphrase = lookup_passphrase(&profile.repo);
+    let info = state
+        .borg
+        .info(&profile.repo, passphrase.as_deref())
+        .await
+        .map_err(|error| error.detail())?;
+    let repository_id = info
+        .pointer("/repository/id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Borg did not return a repository identifier".to_string())?
+        .to_string();
+
+    let dir = config_dir(&app).await?;
+    let plain = crate::recovery::restrictive_temp(&dir)?;
+    let plain_path = plain.path().to_path_buf();
+    let export_result = state
+        .borg
+        .export_key(&profile.repo, &plain_path, passphrase.as_deref())
+        .await;
+    if let Err(error) = export_result {
+        let _ = crate::recovery::secure_remove(plain);
+        return Err(error.detail());
+    }
+
+    let read_result = tokio::fs::read(&plain_path).await;
+    let cleanup = crate::recovery::secure_remove(plain);
+    let mut key = read_result.map_err(|error| error.to_string())?;
+    if let Err(error) = cleanup {
+        use zeroize::Zeroize;
+        key.zeroize();
+        return Err(format!("could not securely remove temporary key: {error}"));
+    }
+    let envelope = crate::recovery::encrypt(key, repository_id, recovery_passphrase)?;
+    let encoded = serde_json::to_vec_pretty(&envelope).map_err(|error| error.to_string())?;
+    tokio::task::spawn_blocking(move || crate::recovery::write_exclusive(&destination, &encoded))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn import_recovery_key(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    recovery_passphrase: String,
+) -> Result<(), String> {
+    let source = tokio::fs::read(path)
+        .await
+        .map_err(|error| error.to_string())?;
+    let envelope = crate::recovery::parse(&source)?;
+    let mut key = crate::recovery::decrypt(&envelope, recovery_passphrase)?;
+    let data = read_profiles(&app).await?;
+    let profile = data
+        .active()
+        .cloned()
+        .ok_or_else(|| "no active profile; configure repository first".to_string())?;
+    precheck_repo(&profile.repo).await?;
+
+    let dir = config_dir(&app).await?;
+    let mut plain = crate::recovery::restrictive_temp(&dir)?;
+    use std::io::Write;
+    use zeroize::Zeroize;
+    if let Err(error) = plain.write_all(&key) {
+        key.zeroize();
+        let _ = crate::recovery::secure_remove(plain);
+        return Err(error.to_string());
+    }
+    key.zeroize();
+    if let Err(error) = plain.as_file_mut().sync_all() {
+        let _ = crate::recovery::secure_remove(plain);
+        return Err(error.to_string());
+    }
+    let plain_path = plain.path().to_path_buf();
+    let repo_passphrase = lookup_passphrase(&profile.repo);
+    let result = state
+        .borg
+        .import_key(&profile.repo, &plain_path, repo_passphrase.as_deref())
+        .await;
+    let cleanup = crate::recovery::secure_remove(plain);
+    cleanup.map_err(|error| format!("could not securely remove temporary key: {error}"))?;
+    result.map_err(|error| error.detail())
+}
