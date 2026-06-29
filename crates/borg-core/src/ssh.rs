@@ -46,7 +46,43 @@ pub async fn test_connection(
     } else {
         message.to_string()
     };
+    let classification = classify_ssh_failure_message(&message);
+    let message = format!("{classification}: {message}");
     Err(BorgError::SshFailed { message })
+}
+
+pub fn classify_ssh_failure_message(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("host key verification failed")
+        || lower.contains("remote host identification has changed")
+        || lower.contains("no hostkey alg")
+    {
+        "host-key trust failed"
+    } else if lower.contains("permission denied")
+        || lower.contains("authentication failed")
+        || lower.contains("too many authentication failures")
+        || lower.contains("publickey")
+    {
+        "authentication failed"
+    } else if lower.contains("administratively prohibited")
+        || lower.contains("not allowed to execute")
+        || lower.contains("shell request failed")
+        || lower.contains("sftp connections only")
+        || lower.contains("account is currently not available")
+    {
+        "authorization failed"
+    } else if lower.contains("connection refused")
+        || lower.contains("connection timed out")
+        || lower.contains("operation timed out")
+        || lower.contains("network is unreachable")
+        || lower.contains("no route to host")
+        || lower.contains("could not resolve hostname")
+        || lower.contains("temporary failure in name resolution")
+    {
+        "reachability failed"
+    } else {
+        "ssh failed"
+    }
 }
 
 /// Pre-flight reachability check: can we open a TCP connection to `host:port`?
@@ -476,5 +512,27 @@ mod tests {
         // The whole point of the change: a failure carries a real, non-empty
         // diagnostic for the UI to display, not just a boolean.
         assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn classifies_common_ssh_failures() {
+        assert_eq!(
+            classify_ssh_failure_message("Host key verification failed."),
+            "host-key trust failed"
+        );
+        assert_eq!(
+            classify_ssh_failure_message("Permission denied (publickey)."),
+            "authentication failed"
+        );
+        assert_eq!(
+            classify_ssh_failure_message("This service allows sftp connections only."),
+            "authorization failed"
+        );
+        assert_eq!(
+            classify_ssh_failure_message(
+                "ssh: connect to host example port 22: Connection refused"
+            ),
+            "reachability failed"
+        );
     }
 }
