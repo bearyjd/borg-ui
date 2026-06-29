@@ -88,7 +88,35 @@ jobs:
       # Always build, so a dispatch/non-tag run is a real dry-run of the bundle.
       - name: Build installers
         working-directory: app-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm tauri build
+
+      - name: Build updater manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS updater installer not found' }
+          $signaturePath = "$($installer.FullName).sig"
+          if (-not (Test-Path $signaturePath)) { throw "updater signature missing: $signaturePath" }
+          $signature = (Get-Content $signaturePath -Raw).Trim()
+          $config = Get-Content app-tauri/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $version = $config.version
+          $tag = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF_NAME } else { "v$version" }
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$($installer.Name)"
+          $manifest = @{
+            version = $version
+            notes = "BorgUI $version"
+            pub_date = (Get-Date).ToUniversalTime().ToString('o')
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $signature
+                url = $url
+              }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content target/release/bundle/latest.json -Encoding utf8
 
       # Always upload, so every run produces downloadable installers (used by the
       # headless installer test in tests/smoke-windows/validate-installer.ps1).
@@ -98,7 +126,10 @@ jobs:
           name: borgui-windows-installers
           path: |
             target/release/bundle/msi/*.msi
+            target/release/bundle/msi/*.sig
             target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*.sig
+            target/release/bundle/latest.json
           if-no-files-found: error
 
       # Publish a draft release ONLY for a version tag. Uses the first-party gh
@@ -110,7 +141,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $files = @(Get-ChildItem -Path target/release/bundle/msi/*.msi, target/release/bundle/nsis/*-setup.exe |
+          $files = @(Get-ChildItem -Path target/release/bundle/msi/*.msi, target/release/bundle/msi/*.sig, target/release/bundle/nsis/*-setup.exe, target/release/bundle/nsis/*.sig, target/release/bundle/latest.json |
                      Select-Object -ExpandProperty FullName)
           if ($files.Count -eq 0) { throw 'no installers found to publish' }
           $notes = 'Windows installers (MSI and NSIS .exe) are attached below. The installers are unsigned — on first run Windows SmartScreen may warn; click "More info" then "Run anyway".'

@@ -8,6 +8,7 @@
   import { scheduleState } from '$lib/stores/schedule.svelte';
   import { retentionState } from '$lib/stores/retention.svelte';
   import { profilesState } from '$lib/stores/profiles.svelte';
+  import { updateState } from '$lib/stores/update.svelte';
 
   interface Props {
     children: import('svelte').Snippet;
@@ -62,6 +63,8 @@
     } catch (e) {
       console.warn('Failed to subscribe to tray events:', e);
     }
+
+    await updateState.check();
   });
 
   onDestroy(() => {
@@ -121,6 +124,28 @@
     {@render children()}
   </main>
 </div>
+
+{#if updateState.status === 'available' || updateState.status === 'installing'}
+  <div class="modal-backdrop" role="presentation">
+    <div class="update-modal" role="dialog" aria-modal="true" aria-labelledby="update-title" tabindex="-1">
+      <h2 id="update-title">BorgUI {updateState.version} is available</h2>
+      {#if updateState.notes}
+        <div class="release-notes">{updateState.notes}</div>
+      {:else}
+        <p>No release notes were provided.</p>
+      {/if}
+      <p>The signed update will only be downloaded and installed after you confirm. BorgUI may restart or close while Windows finishes installation.</p>
+      {#if updateState.status === 'installing'}
+        <p>Downloading… {updateState.total ? `${Math.round(updateState.downloaded / updateState.total * 100)}%` : ''}</p>
+      {:else}
+        <div class="modal-actions">
+          <button class="btn btn-secondary" type="button" onclick={() => updateState.dismiss()}>Not now</button>
+          <button class="btn btn-primary" type="button" onclick={() => updateState.install()}>Download and install</button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
   .app-shell {
@@ -272,4 +297,10 @@
     overflow-y: auto;
     padding: var(--space-8);
   }
+
+  .modal-backdrop { position: fixed; inset: 0; z-index: 200; background: var(--color-backdrop); display: grid; place-items: center; }
+  .update-modal { width: min(560px, 90vw); max-height: 80vh; overflow: auto; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: var(--space-6); }
+  .update-modal h2 { margin-bottom: var(--space-3); }
+  .update-modal p, .release-notes { color: var(--color-text-muted); white-space: pre-wrap; margin-top: var(--space-3); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-6); }
 </style>
