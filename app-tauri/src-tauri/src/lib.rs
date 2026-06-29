@@ -97,6 +97,7 @@ pub fn run() {
             commands::save_repo_config,
             commands::load_schedule_config,
             commands::save_schedule_config,
+            commands::scheduled_backup_status,
             commands::record_backup_event,
             commands::load_backup_history,
             commands::clear_backup_history,

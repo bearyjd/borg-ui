@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 const MAX_EVENTS: usize = 200;
-const DATABASE_SCHEMA_VERSION: i64 = 2;
+const DATABASE_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupEvent {
@@ -30,6 +30,18 @@ pub struct IntegrityEvent {
     pub mode: String,
     pub outcome: String,
     pub duration_seconds: u64,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduledAttempt {
+    pub run_id: String,
+    pub profile_id: String,
+    pub attempt: u8,
+    pub timestamp: String,
+    pub outcome: String,
+    pub transient: bool,
     #[serde(default)]
     pub error_message: Option<String>,
 }
@@ -151,6 +163,67 @@ pub async fn latest_integrity(
     .map_err(|e| e.to_string())?
 }
 
+pub async fn append_scheduled_attempt(
+    config_dir: &Path,
+    attempt: ScheduledAttempt,
+) -> Result<(), String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.execute(
+            "INSERT INTO scheduled_attempts (
+                run_id, profile_id, attempt, timestamp, outcome, transient, error_message
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                attempt.run_id,
+                attempt.profile_id,
+                attempt.attempt,
+                attempt.timestamp,
+                attempt.outcome,
+                attempt.transient,
+                attempt.error_message,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub async fn latest_scheduled_attempt(
+    config_dir: &Path,
+    profile_id: &str,
+) -> Result<Option<ScheduledAttempt>, String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    let profile_id = profile_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.query_row(
+            "SELECT run_id, profile_id, attempt, timestamp, outcome, transient, error_message
+             FROM scheduled_attempts WHERE profile_id = ?1 ORDER BY sequence DESC LIMIT 1",
+            [profile_id],
+            |row| {
+                Ok(ScheduledAttempt {
+                    run_id: row.get(0)?,
+                    profile_id: row.get(1)?,
+                    attempt: row.get(2)?,
+                    timestamp: row.get(3)?,
+                    outcome: row.get(4)?,
+                    transient: row.get(5)?,
+                    error_message: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn initialize_sync(config_dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(config_dir).map_err(|e| e.to_string())?;
     let mut conn = open(config_dir)?;
@@ -222,6 +295,16 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
              mode TEXT NOT NULL CHECK(mode IN ('repository', 'verify_data')),
              outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure', 'cancelled')),
              duration_seconds INTEGER NOT NULL,
+             error_message TEXT
+         );
+         CREATE TABLE IF NOT EXISTS scheduled_attempts (
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+             run_id TEXT NOT NULL,
+             profile_id TEXT NOT NULL,
+             attempt INTEGER NOT NULL,
+             timestamp TEXT NOT NULL,
+             outcome TEXT NOT NULL,
+             transient INTEGER NOT NULL,
              error_message TEXT
          );",
     )
@@ -378,6 +461,34 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduled_attempts_are_separate_from_user_history() {
+        let dir = tempfile::tempdir().unwrap();
+        append_scheduled_attempt(
+            dir.path(),
+            ScheduledAttempt {
+                run_id: "run-1".into(),
+                profile_id: "work".into(),
+                attempt: 2,
+                timestamp: "2026-06-29T00:00:00Z".into(),
+                outcome: "success".into(),
+                transient: false,
+                error_message: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(load(dir.path()).await.unwrap().is_empty());
+        assert_eq!(
+            latest_scheduled_attempt(dir.path(), "work")
+                .await
+                .unwrap()
+                .unwrap()
+                .attempt,
+            2
         );
     }
 }
