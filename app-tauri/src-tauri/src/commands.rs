@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use borg_core::archive::ArchiveEntry;
 use borg_core::borg::{ArchiveInfo, BorgClient, CancelToken, DiffEntry};
 use borg_core::config::RepoConfig;
+use serde::Serialize;
 
 /// Registry key for the single in-flight backup operation.
 const BACKUP_OP: &str = "backup";
@@ -140,6 +141,36 @@ pub async fn validate_ssh_key(key_path: String) -> Result<String, String> {
     borg_core::ssh::validate_key(&PathBuf::from(key_path))
         .await
         .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize)]
+pub struct GeneratedSshKey {
+    pub private_key_path: String,
+    pub public_key: String,
+}
+
+/// Generate BorgUI's managed Ed25519 key without requiring Windows OpenSSH.
+#[tauri::command]
+pub async fn generate_ssh_key(
+    app: tauri::AppHandle,
+    overwrite: bool,
+) -> Result<GeneratedSshKey, String> {
+    let key_path = config_dir(&app)
+        .await?
+        .join("ssh")
+        .join("id_ed25519_borgui");
+    borg_core::ssh::generate_key(&key_path, overwrite)
+        .await
+        .map_err(|e| e.to_string())?;
+    let public_key = borg_core::ssh::read_public_key(&key_path)
+        .await
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_string();
+    Ok(GeneratedSshKey {
+        private_key_path: key_path.to_string_lossy().into_owned(),
+        public_key,
+    })
 }
 
 #[tauri::command]
