@@ -239,6 +239,33 @@ impl BorgClient {
         Ok(serde_json::from_slice(&output.stdout)?)
     }
 
+    pub async fn export_key(
+        &self,
+        repo: &RepoConfig,
+        destination: &Path,
+        passphrase: Option<&str>,
+    ) -> Result<()> {
+        let mut cmd = self.base_command_with(passphrase);
+        cmd.args(["key", "export", &repo.location()])
+            .arg(destination);
+        self.run_checked(cmd, "key export", Some(QUICK_OP_TIMEOUT_SECS))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn import_key(
+        &self,
+        repo: &RepoConfig,
+        source: &Path,
+        passphrase: Option<&str>,
+    ) -> Result<()> {
+        let mut cmd = self.base_command_with(passphrase);
+        cmd.args(["key", "import", &repo.location()]).arg(source);
+        self.run_checked(cmd, "key import", Some(QUICK_OP_TIMEOUT_SECS))
+            .await?;
+        Ok(())
+    }
+
     /// Spawn borg, stream its `--log-json` progress events to `on_progress`,
     /// drain stdout so the child can never block on a full pipe, honour
     /// `cancel`, and interpret the exit code with warning semantics. Shared by

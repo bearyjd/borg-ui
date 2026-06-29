@@ -98,6 +98,28 @@ async fn repository_metadata_and_data_checks_pass() {
     }
 }
 
+#[tokio::test]
+async fn encrypted_repository_key_exports_and_imports() {
+    let client = borg_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = local_repo(&tmp.path().join("repo"));
+    let key_path = tmp.path().join("borg-key.txt");
+    let passphrase = Some("repository passphrase");
+    client
+        .init_repo(&repo, "repokey-blake2", passphrase)
+        .await
+        .unwrap();
+    client
+        .export_key(&repo, &key_path, passphrase)
+        .await
+        .unwrap();
+    assert!(fs::read(&key_path).unwrap().starts_with(b"BORG_KEY "));
+    client
+        .import_key(&repo, &key_path, passphrase)
+        .await
+        .unwrap();
+}
+
 /// init → create → list → list-contents → extract → byte-for-byte verify,
 /// with no encryption.
 #[tokio::test]
