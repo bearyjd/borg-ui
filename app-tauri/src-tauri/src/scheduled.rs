@@ -63,6 +63,91 @@ fn nonempty(s: &Option<String>) -> Option<&str> {
     s.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
+const RETRY_DELAYS_SECONDS: [u64; 2] = [30, 120];
+
+fn is_transient(error: &borg_core::error::BorgError) -> bool {
+    use borg_core::error::BorgError;
+    match error {
+        BorgError::Timeout { .. } | BorgError::SshFailed { .. } => true,
+        BorgError::Io(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::BrokenPipe
+        ),
+        BorgError::ProcessFailed { stderr, .. } => {
+            let message = stderr.to_ascii_lowercase();
+            let permanent = [
+                "permission denied",
+                "authentication",
+                "repository does not exist",
+                "repository not found",
+                "integrity",
+                "passphrase",
+                "config",
+            ];
+            !permanent.iter().any(|needle| message.contains(needle))
+                && [
+                    "timed out",
+                    "timeout",
+                    "connection reset",
+                    "connection refused",
+                    "network is unreachable",
+                    "temporary failure",
+                    "broken pipe",
+                    "remote host closed",
+                ]
+                .iter()
+                .any(|needle| message.contains(needle))
+        }
+        _ => false,
+    }
+}
+
+async fn retry_delay(index: usize) {
+    #[cfg(not(test))]
+    tokio::time::sleep(std::time::Duration::from_secs(RETRY_DELAYS_SECONDS[index])).await;
+    #[cfg(test)]
+    let _ = index;
+}
+
+pub fn is_missed(last_attempt: &str, grace_seconds: u64, now: chrono::DateTime<Utc>) -> bool {
+    chrono::DateTime::parse_from_rfc3339(last_attempt)
+        .map(|timestamp| {
+            now.signed_duration_since(timestamp.with_timezone(&Utc))
+                .num_seconds()
+                > grace_seconds as i64
+        })
+        .unwrap_or(false)
+}
+
+async fn record_attempt(
+    config_dir: &Path,
+    run_id: &str,
+    profile_id: &str,
+    attempt: u8,
+    result: &borg_core::error::Result<borg_core::borg::OpOutcome>,
+) {
+    let transient = result.as_ref().err().is_some_and(is_transient);
+    let event = history::ScheduledAttempt {
+        run_id: run_id.into(),
+        profile_id: profile_id.into(),
+        attempt,
+        timestamp: Utc::now().to_rfc3339(),
+        outcome: if result.is_ok() {
+            "success".into()
+        } else {
+            "failure".into()
+        },
+        transient,
+        error_message: result.as_ref().err().map(|error| error.detail()),
+    };
+    let _ = history::append_scheduled_attempt(config_dir, event).await;
+}
+
 fn build_archive_name(profile: &Profile) -> String {
     let template = profile
         .archive_template
@@ -184,16 +269,28 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
         repo: profile.repo.clone(),
     };
     let cancel = CancelToken::new();
-    let create_result = borg
-        .create(
-            &backup_profile,
-            &archive_name,
-            vss.cwd.as_deref(),
-            pass.as_deref(),
-            &cancel,
-            |_| {},
-        )
-        .await;
+    let run_id = Utc::now().timestamp_millis().to_string();
+    let mut create_result = None;
+    for attempt in 1_u8..=3 {
+        let result = borg
+            .create(
+                &backup_profile,
+                &archive_name,
+                vss.cwd.as_deref(),
+                pass.as_deref(),
+                &cancel,
+                |_| {},
+            )
+            .await;
+        record_attempt(config_dir, &run_id, &profile.id, attempt, &result).await;
+        let retry = result.as_ref().err().is_some_and(is_transient) && attempt < 3;
+        create_result = Some(result);
+        if !retry {
+            break;
+        }
+        retry_delay(usize::from(attempt - 1)).await;
+    }
+    let create_result = create_result.expect("retry loop always runs");
     // Release the snapshot + junction regardless of how the backup ended.
     vss.release().await;
     let mut warnings = match create_result {
@@ -379,6 +476,13 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].outcome, "success");
         assert_eq!(events[0].kind, "backup");
+        let attempt = history::latest_scheduled_attempt(&config_dir, "default")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(attempt.attempt, 1);
+        assert_eq!(attempt.outcome, "success");
+        assert!(!attempt.transient);
     }
 
     #[tokio::test]
@@ -415,5 +519,42 @@ mod tests {
                 .unwrap()
                 .contains("no active profile")
         );
+    }
+
+    #[test]
+    fn retry_classification_only_accepts_transport_failures() {
+        use borg_core::error::BorgError;
+        assert!(is_transient(&BorgError::Timeout { seconds: 30 }));
+        assert!(is_transient(&BorgError::ProcessFailed {
+            message: "create".into(),
+            exit_code: Some(2),
+            stderr: "Connection reset by peer".into(),
+        }));
+        for stderr in [
+            "Permission denied (publickey)",
+            "Repository does not exist",
+            "Incorrect passphrase",
+            "Data integrity error",
+        ] {
+            assert!(!is_transient(&BorgError::ProcessFailed {
+                message: "create".into(),
+                exit_code: Some(2),
+                stderr: stderr.into(),
+            }));
+        }
+    }
+
+    #[test]
+    fn retry_delays_are_fixed() {
+        assert_eq!(RETRY_DELAYS_SECONDS, [30, 120]);
+    }
+
+    #[test]
+    fn missed_run_respects_grace_boundary() {
+        use chrono::TimeZone;
+        let now = Utc.with_ymd_and_hms(2026, 6, 29, 12, 0, 0).unwrap();
+        assert!(!is_missed("2026-06-29T10:30:00Z", 90 * 60, now));
+        assert!(is_missed("2026-06-29T10:29:59Z", 90 * 60, now));
+        assert!(!is_missed("not-a-timestamp", 90 * 60, now));
     }
 }
