@@ -13,6 +13,11 @@
     mode: string;
     outcome: string;
   } | null>(null);
+  let scheduledStatus = $state<{
+    missed: boolean;
+    task_registered: boolean;
+    last_attempt: { timestamp: string; outcome: string; attempt: number } | null;
+  } | null>(null);
 
   let repoHost = $derived(repoState.config ? describeRepo(repoState.config) : '');
   let hasRepo = $derived(repoState.hasRepo);
@@ -83,6 +88,11 @@
     } catch (e) {
       console.warn('Failed to load integrity status:', e);
     }
+    try {
+      scheduledStatus = await invoke('scheduled_backup_status');
+    } catch (e) {
+      console.warn('Failed to load scheduled backup status:', e);
+    }
   });
 </script>
 
@@ -91,6 +101,15 @@
     <h1>Dashboard</h1>
     <p class="subtitle">Backup status overview</p>
   </header>
+
+  {#if scheduledStatus?.missed}
+    <div class="schedule-warning">
+      A scheduled backup appears to have been missed. The last attempt was
+      {scheduledStatus.last_attempt ? formatRelative(scheduledStatus.last_attempt.timestamp) : 'not recorded'}.
+      {#if !scheduledStatus.task_registered} Windows Task Scheduler does not report the BorgUI backup task as registered.{/if}
+      Review the schedule in <a href="/settings">Settings</a>.
+    </div>
+  {/if}
 
   <div class="status-grid">
     <div class="status-card">
@@ -235,6 +254,14 @@
 
   .page-header {
     margin-bottom: var(--space-8);
+  }
+
+  .schedule-warning {
+    border: 1px solid var(--color-warning);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    margin-bottom: var(--space-4);
+    color: var(--color-text-muted);
   }
 
   .page-header h1 {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
   import { scheduleState, nextRun, type ScheduleConfig } from '$lib/stores/schedule.svelte';
@@ -16,6 +17,7 @@
   let scheduleExcludeInput = $state('');
   let scheduleSaving = $state(false);
   let scheduleResult = $state('');
+  let taskDiagnostic = $state('');
 
   let scheduleNextRunLabel = $derived.by(() => {
     if (!scheduleEnabled) return '';
@@ -66,6 +68,7 @@
         excludes: scheduleExcludes,
       };
       await scheduleState.save(config);
+      await loadTaskDiagnostic();
       scheduleResult = scheduleEnabled ? 'Schedule saved and activated.' : 'Schedule disabled.';
     } catch (e) {
       scheduleResult = `Schedule save failed: ${e}`;
@@ -74,9 +77,20 @@
     }
   }
 
+  async function loadTaskDiagnostic() {
+    const status = await invoke<{
+      task_registered: boolean;
+      last_attempt: { outcome: string; attempt: number } | null;
+    }>('scheduled_backup_status');
+    taskDiagnostic = status.task_registered
+      ? `Windows task registered${status.last_attempt ? `; last run ended ${status.last_attempt.outcome} on attempt ${status.last_attempt.attempt}` : ''}.`
+      : 'Windows task is not registered.';
+  }
+
   onMount(async () => {
     try {
       await scheduleState.load();
+      await loadTaskDiagnostic();
       if (scheduleState.config) {
         scheduleEnabled = scheduleState.config.enabled;
         schedulePaths = [...scheduleState.config.source_paths];
@@ -99,6 +113,9 @@
     const id = profilesState.activeId;
     if (id === lastActiveId) return;
     lastActiveId = id;
+    loadTaskDiagnostic().catch(() => {
+      taskDiagnostic = '';
+    });
 
     if (scheduleState.config) {
       scheduleEnabled = scheduleState.config.enabled;
@@ -232,6 +249,7 @@
         {scheduleResult}
       </div>
     {/if}
+    {#if scheduleEnabled && taskDiagnostic}<p class="task-diagnostic">{taskDiagnostic}</p>{/if}
   </fieldset>
 </form>
 

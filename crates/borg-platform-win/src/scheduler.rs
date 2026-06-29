@@ -100,6 +100,15 @@ pub async fn unschedule_backup(task_name: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn task_exists(task_name: &str) -> Result<bool> {
+    validate_schtasks_input(task_name, "task_name")?;
+    let output = tokio::process::Command::new("schtasks")
+        .args(["/Query", "/TN", task_name])
+        .output()
+        .await?;
+    Ok(output.status.success())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Schedule {
