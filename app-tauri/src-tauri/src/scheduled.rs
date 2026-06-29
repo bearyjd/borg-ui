@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use chrono::Utc;
 
-use borg_core::borg::{BorgClient, CancelToken};
+use borg_core::borg::{BorgClient, CancelToken, CheckMode};
 use borg_core::config::{BackupProfile, Compression, RepoConfig};
 use borg_core::hooks::HookContext;
 
@@ -222,6 +222,69 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
     finish(config_dir, &archive_name, started, Ok(warnings)).await
 }
 
+/// Run the opt-in monthly metadata-only repository check for the active profile.
+pub async fn run_scheduled_integrity_check(
+    config_dir: &Path,
+    borg: &BorgClient,
+) -> Result<crate::history::IntegrityEvent, String> {
+    let data = crate::profiles::load(config_dir).await?;
+    let profile = data
+        .active()
+        .ok_or_else(|| "no active profile".to_string())?;
+    if !profile
+        .integrity_schedule
+        .as_ref()
+        .is_some_and(|schedule| schedule.enabled)
+    {
+        return Err("monthly integrity check is not enabled".into());
+    }
+
+    let started = std::time::Instant::now();
+    let passphrase = crate::keychain::get_passphrase(&profile.repo.ssh_url())
+        .ok()
+        .flatten();
+    let result = borg
+        .check(
+            &profile.repo,
+            CheckMode::Repository,
+            passphrase.as_deref(),
+            &CancelToken::new(),
+            |_| {},
+        )
+        .await;
+    let warnings = result
+        .as_ref()
+        .ok()
+        .map(|outcome| outcome.warnings.clone())
+        .unwrap_or_default();
+    let event = crate::history::IntegrityEvent {
+        id: Utc::now().timestamp_millis().to_string(),
+        timestamp: Utc::now().to_rfc3339(),
+        profile_id: profile.id.clone(),
+        mode: "repository".into(),
+        outcome: if result.is_ok() && warnings.is_empty() {
+            "success".into()
+        } else {
+            "failure".into()
+        },
+        duration_seconds: started.elapsed().as_secs(),
+        error_message: result
+            .as_ref()
+            .err()
+            .map(|error| error.detail())
+            .or_else(|| (!warnings.is_empty()).then(|| warnings.join("\n"))),
+    };
+    history::append_integrity(config_dir, event.clone()).await?;
+    result.map_err(|error| error.detail())?;
+    if !warnings.is_empty() {
+        return Err(format!(
+            "repository check completed with warnings: {}",
+            warnings.join("; ")
+        ));
+    }
+    Ok(event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +327,7 @@ mod tests {
                 schedule: Schedule::Hourly,
                 excludes: Vec::new(),
             }),
+            integrity_schedule: None,
             retention: None,
             archive_template: None,
             pre_backup: None,
