@@ -542,8 +542,9 @@ async fn streaming_list_matches_collected_listing() {
     let batches = Arc::new(Mutex::new(0usize));
     let sink = streamed.clone();
     let batch_counter = batches.clone();
+    let list_cancel = CancelToken::new();
     let total = client
-        .list_contents_streaming(&repo, "big-1", None, move |batch| {
+        .list_contents_streaming(&repo, "big-1", None, &list_cancel, move |batch| {
             assert!(!batch.is_empty(), "batches should never be empty");
             *batch_counter.lock().unwrap() += 1;
             sink.lock()
