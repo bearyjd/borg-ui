@@ -78,6 +78,7 @@ pub fn run() {
             commands::get_repo_info,
             commands::list_archives,
             commands::stream_archive_contents,
+            commands::cancel_archive_listing,
             commands::diff_archives,
             commands::compact_repo,
             commands::init_repo,

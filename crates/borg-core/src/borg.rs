@@ -572,7 +572,8 @@ impl BorgClient {
     ) -> Result<Vec<ArchiveEntry>> {
         let collected: Arc<Mutex<Vec<ArchiveEntry>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = collected.clone();
-        self.list_contents_streaming(repo, archive_name, passphrase, move |batch| {
+        let cancel = CancelToken::new();
+        self.list_contents_streaming(repo, archive_name, passphrase, &cancel, move |batch| {
             sink.lock()
                 .expect("list_contents sink mutex poisoned")
                 .extend(batch);
@@ -597,8 +598,12 @@ impl BorgClient {
         repo: &RepoConfig,
         archive_name: &str,
         passphrase: Option<&str>,
+        cancel: &CancelToken,
         on_batch: impl Fn(Vec<ArchiveEntry>) + Send,
     ) -> Result<usize> {
+        if cancel.is_cancelled() {
+            return Err(BorgError::Cancelled);
+        }
         let archive = format!("{}::{}", repo.location(), archive_name);
 
         let mut cmd = self.base_command_with(passphrase);
@@ -636,6 +641,12 @@ impl BorgClient {
         let mut total = 0usize;
         let read = async {
             while let Some(line) = lines.next_line().await? {
+                if cancel.is_cancelled() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "operation cancelled",
+                    ));
+                }
                 if let Ok(entry) = serde_json::from_str::<ArchiveEntry>(&line) {
                     batch.push(entry);
                     total += 1;
@@ -649,16 +660,38 @@ impl BorgClient {
             }
             Ok::<(), std::io::Error>(())
         };
-        tokio::time::timeout(Duration::from_secs(LIST_CONTENTS_TIMEOUT_SECS), read)
-            .await
-            .map_err(|_| BorgError::Timeout {
-                seconds: LIST_CONTENTS_TIMEOUT_SECS,
-            })??;
+        tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(LIST_CONTENTS_TIMEOUT_SECS), read) => {
+                result
+                    .map_err(|_| BorgError::Timeout {
+                        seconds: LIST_CONTENTS_TIMEOUT_SECS,
+                    })?
+                    .map_err(|error| {
+                        if error.kind() == std::io::ErrorKind::Interrupted && cancel.is_cancelled() {
+                            BorgError::Cancelled
+                        } else {
+                            error.into()
+                        }
+                    })?;
+            }
+            _ = cancel.cancelled() => {
+                let _ = child.kill().await;
+                let _ = stderr_task.await;
+                return Err(BorgError::Cancelled);
+            }
+        }
         if !batch.is_empty() {
             on_batch(batch);
         }
 
-        let status = child.wait().await?;
+        let status = tokio::select! {
+            status = child.wait() => status?,
+            _ = cancel.cancelled() => {
+                let _ = child.kill().await;
+                let _ = stderr_task.await;
+                return Err(BorgError::Cancelled);
+            }
+        };
         let _ = stderr_task.await;
 
         match classify_exit(status.code()) {
@@ -1045,6 +1078,28 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), t2.cancelled())
             .await
             .expect("cancelled() should resolve immediately once cancelled");
+    }
+
+    #[tokio::test]
+    async fn list_contents_streaming_returns_cancelled_before_spawn() {
+        let client = BorgClient::new("borg-that-should-not-start".into());
+        let repo = RepoConfig {
+            ssh_host: String::new(),
+            ssh_port: 0,
+            ssh_user: String::new(),
+            repo_path: "/tmp/repo".into(),
+            ssh_key_path: None,
+        };
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        let result = client
+            .list_contents_streaming(&repo, "archive", None, &cancel, |_| {
+                panic!("cancelled listing must not emit batches");
+            })
+            .await;
+
+        assert!(matches!(result, Err(BorgError::Cancelled)));
     }
 
     #[test]
