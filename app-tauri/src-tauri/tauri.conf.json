@@ -25,6 +25,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -34,5 +35,16 @@
       "icons/icon.ico"
     ],
     "resources": []
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgzQTg0RTk0QkNEQTQzQ0MKUldUTVE5cThsRTZvZzR4ajNxZnhsM08xRFJscE5QdC9vUURGQkFuaE1jcm1HQ0Z0bE1HeHdBTVAK",
+      "endpoints": [
+        "https://github.com/bearyjd/borg-ui/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

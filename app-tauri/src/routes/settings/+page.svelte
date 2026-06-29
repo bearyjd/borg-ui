@@ -15,6 +15,7 @@
   import DiagnosticsSection from '$lib/components/settings/DiagnosticsSection.svelte';
   import IntegritySection from '$lib/components/settings/IntegritySection.svelte';
   import RecoverySection from '$lib/components/settings/RecoverySection.svelte';
+  import UpdateSection from '$lib/components/settings/UpdateSection.svelte';
 
   type RepoType = 'ssh' | 'local';
 
@@ -698,6 +699,8 @@
   {/if}
 
   <StartupSection />
+
+  <UpdateSection />
 
   <DiagnosticsSection />
 
