@@ -1,3 +1,5 @@
+use rand_core::OsRng;
+use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -64,48 +66,167 @@ pub async fn check_reachable(host: &str, port: u16) -> Result<()> {
     }
 }
 
-/// Validate an unencrypted private-key file locally (no network) by deriving
-/// its public key with `ssh-keygen -y`. On success returns the public key text
-/// so the caller can compare it against the server's `authorized_keys`.
-///
-/// Passing an explicit empty passphrase makes the check non-interactive and
-/// deliberately rejects passphrase-protected keys, which BorgUI cannot unlock
-/// during unattended backups.
+/// Validate an unencrypted OpenSSH private key and derive its public key
+/// without depending on an installed `ssh-keygen`.
 pub async fn validate_key(key_path: &Path) -> Result<String> {
-    let output = proc::command("ssh-keygen")
-        .args(["-y", "-P", "", "-f", &key_path.to_string_lossy()])
-        .output()
-        .await?;
-
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    let encoded = tokio::fs::read(key_path).await?;
+    let private_key = PrivateKey::from_openssh(&encoded).map_err(|e| BorgError::CheckFailed {
+        message: format!("The selected file is not a valid OpenSSH private key: {e}"),
+    })?;
+    if private_key.is_encrypted() {
+        return Err(BorgError::CheckFailed {
+            message: "Passphrase-protected keys are not supported because unattended backups cannot unlock them."
+                .into(),
+        });
     }
-
-    Err(BorgError::CheckFailed {
-        message: "The selected file is not a valid unencrypted private key. \
-                  Passphrase-protected keys are not supported because unattended backups \
-                  cannot unlock them."
-            .to_string(),
-    })
+    private_key
+        .public_key()
+        .to_openssh()
+        .map_err(|e| BorgError::CheckFailed {
+            message: format!("failed to derive public key: {e}"),
+        })
 }
 
-pub async fn generate_key(path: &Path) -> Result<PathBuf> {
-    let output = proc::command("ssh-keygen")
-        .args(["-t", "ed25519"])
-        .args(["-f", &path.to_string_lossy()])
-        .args(["-N", ""])
-        .args(["-C", "borgui-backup-key"])
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        return Err(BorgError::SshFailed {
-            message: String::from_utf8_lossy(&output.stderr).into(),
+/// Generate an unencrypted Ed25519 keypair in OpenSSH format.
+///
+/// Existing files are only replaced when `overwrite` is explicitly true.
+pub async fn generate_key(path: &Path, overwrite: bool) -> Result<PathBuf> {
+    let public_path = path.with_extension("pub");
+    if !overwrite
+        && (tokio::fs::try_exists(path).await? || tokio::fs::try_exists(&public_path).await?)
+    {
+        return Err(BorgError::CheckFailed {
+            message: "An SSH key already exists at this location.".into(),
         });
     }
 
+    let parent = path.parent().ok_or_else(|| BorgError::CheckFailed {
+        message: "SSH key path has no parent directory.".into(),
+    })?;
+    tokio::fs::create_dir_all(parent).await?;
+
+    let mut private_key =
+        PrivateKey::random(&mut OsRng, Algorithm::Ed25519).map_err(|e| BorgError::SshFailed {
+            message: format!("failed to generate Ed25519 key: {e}"),
+        })?;
+    private_key.set_comment("borgui-backup-key");
+    let private_text =
+        private_key
+            .to_openssh(LineEnding::LF)
+            .map_err(|e| BorgError::SshFailed {
+                message: format!("failed to encode private key: {e}"),
+            })?;
+    let public_text = private_key
+        .public_key()
+        .to_openssh()
+        .map_err(|e| BorgError::SshFailed {
+            message: format!("failed to encode public key: {e}"),
+        })?;
+
+    let private_tmp = path.with_extension("borgui-private.tmp");
+    let public_tmp = path.with_extension("borgui-public.tmp");
+    tokio::fs::write(&private_tmp, private_text.as_bytes()).await?;
+    restrict_private_key_permissions(&private_tmp).await?;
+    tokio::fs::write(&public_tmp, format!("{public_text}\n")).await?;
+    if let Err(error) =
+        commit_keypair(&private_tmp, &public_tmp, path, &public_path, overwrite).await
+    {
+        let _ = tokio::fs::remove_file(&private_tmp).await;
+        let _ = tokio::fs::remove_file(&public_tmp).await;
+        return Err(error);
+    }
     debug!("generated SSH key at {:?}", path);
     Ok(path.to_path_buf())
+}
+
+async fn commit_keypair(
+    private_source: &Path,
+    public_source: &Path,
+    private_destination: &Path,
+    public_destination: &Path,
+    overwrite: bool,
+) -> Result<()> {
+    let private_backup = private_destination.with_extension("borgui-private.bak");
+    let public_backup = public_destination.with_extension("borgui-public.bak");
+    let mut backed_up_private = false;
+    let mut backed_up_public = false;
+
+    if overwrite && tokio::fs::try_exists(private_destination).await? {
+        tokio::fs::rename(private_destination, &private_backup).await?;
+        backed_up_private = true;
+    }
+    if overwrite && tokio::fs::try_exists(public_destination).await? {
+        if let Err(error) = tokio::fs::rename(public_destination, &public_backup).await {
+            if backed_up_private {
+                let _ = tokio::fs::rename(&private_backup, private_destination).await;
+            }
+            return Err(error.into());
+        }
+        backed_up_public = true;
+    }
+
+    if let Err(error) = tokio::fs::rename(private_source, private_destination).await {
+        restore_keypair(
+            private_destination,
+            public_destination,
+            &private_backup,
+            &public_backup,
+            backed_up_private,
+            backed_up_public,
+        )
+        .await;
+        return Err(error.into());
+    }
+    if let Err(error) = tokio::fs::rename(public_source, public_destination).await {
+        restore_keypair(
+            private_destination,
+            public_destination,
+            &private_backup,
+            &public_backup,
+            backed_up_private,
+            backed_up_public,
+        )
+        .await;
+        return Err(error.into());
+    }
+
+    if backed_up_private {
+        let _ = tokio::fs::remove_file(private_backup).await;
+    }
+    if backed_up_public {
+        let _ = tokio::fs::remove_file(public_backup).await;
+    }
+    Ok(())
+}
+
+async fn restore_keypair(
+    private_destination: &Path,
+    public_destination: &Path,
+    private_backup: &Path,
+    public_backup: &Path,
+    backed_up_private: bool,
+    backed_up_public: bool,
+) {
+    let _ = tokio::fs::remove_file(private_destination).await;
+    let _ = tokio::fs::remove_file(public_destination).await;
+    if backed_up_private {
+        let _ = tokio::fs::rename(private_backup, private_destination).await;
+    }
+    if backed_up_public {
+        let _ = tokio::fs::rename(public_backup, public_destination).await;
+    }
+}
+
+#[cfg(unix)]
+async fn restrict_private_key_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn restrict_private_key_permissions(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 pub async fn read_public_key(private_key_path: &Path) -> Result<String> {
@@ -126,7 +247,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("test_key");
 
-        let result = generate_key(&key_path).await.unwrap();
+        let result = generate_key(&key_path, false).await.unwrap();
 
         assert_eq!(result, key_path);
         assert!(key_path.exists());
@@ -137,7 +258,7 @@ mod tests {
     async fn generate_key_creates_ed25519() {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("test_key");
-        generate_key(&key_path).await.unwrap();
+        generate_key(&key_path, false).await.unwrap();
 
         let pub_content = tokio::fs::read_to_string(key_path.with_extension("pub"))
             .await
@@ -149,7 +270,7 @@ mod tests {
     async fn generate_key_includes_comment() {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("test_key");
-        generate_key(&key_path).await.unwrap();
+        generate_key(&key_path, false).await.unwrap();
 
         let pub_content = tokio::fs::read_to_string(key_path.with_extension("pub"))
             .await
@@ -158,11 +279,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generate_key_refuses_overwrite_without_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("test_key");
+        generate_key(&key_path, false).await.unwrap();
+        let original = tokio::fs::read(&key_path).await.unwrap();
+
+        let error = generate_key(&key_path, false).await.unwrap_err();
+        assert!(error.to_string().contains("already exists"));
+        assert_eq!(tokio::fs::read(&key_path).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn generate_key_replaces_pair_after_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("test_key");
+        generate_key(&key_path, false).await.unwrap();
+        let original = tokio::fs::read(&key_path).await.unwrap();
+
+        generate_key(&key_path, true).await.unwrap();
+        assert_ne!(tokio::fs::read(&key_path).await.unwrap(), original);
+        assert!(validate_key(&key_path).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn keypair_commit_restores_original_pair_when_public_commit_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let private_path = dir.path().join("id_ed25519");
+        let public_path = dir.path().join("id_ed25519.pub");
+        let private_tmp = dir.path().join("private.tmp");
+        let missing_public_tmp = dir.path().join("missing-public.tmp");
+        tokio::fs::write(&private_path, "old private")
+            .await
+            .unwrap();
+        tokio::fs::write(&public_path, "old public").await.unwrap();
+        tokio::fs::write(&private_tmp, "new private").await.unwrap();
+
+        assert!(
+            commit_keypair(
+                &private_tmp,
+                &missing_public_tmp,
+                &private_path,
+                &public_path,
+                true,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&private_path).await.unwrap(),
+            "old private"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&public_path).await.unwrap(),
+            "old public"
+        );
+    }
+
+    #[tokio::test]
     async fn generate_key_fails_on_invalid_path() {
-        let result = generate_key(Path::new("/nonexistent/dir/key")).await;
+        let result = generate_key(Path::new("/nonexistent/dir/key"), false).await;
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, BorgError::SshFailed { .. }));
     }
 
     #[tokio::test]
@@ -193,7 +370,7 @@ mod tests {
     async fn read_public_key_after_generate() {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("roundtrip_key");
-        generate_key(&key_path).await.unwrap();
+        generate_key(&key_path, false).await.unwrap();
 
         let pub_content = read_public_key(&key_path).await.unwrap();
         assert!(pub_content.starts_with("ssh-ed25519 "));
@@ -235,7 +412,7 @@ mod tests {
     async fn validate_key_returns_public_key() {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("vkey");
-        generate_key(&key_path).await.unwrap();
+        generate_key(&key_path, false).await.unwrap();
 
         let pubkey = validate_key(&key_path).await.unwrap();
         assert!(pubkey.starts_with("ssh-ed25519 "));
@@ -248,7 +425,7 @@ mod tests {
         tokio::fs::write(&path, "garbage").await.unwrap();
 
         let error = validate_key(&path).await.unwrap_err();
-        assert!(error.to_string().contains("valid unencrypted private key"));
+        assert!(error.to_string().contains("valid OpenSSH private key"));
     }
 
     #[tokio::test]
@@ -270,6 +447,24 @@ mod tests {
                 .to_string()
                 .contains("Passphrase-protected keys are not supported")
         );
+    }
+
+    #[tokio::test]
+    async fn validate_key_accepts_existing_ecdsa_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("ecdsa_key");
+        let output = proc::command("ssh-keygen")
+            .args(["-t", "ecdsa"])
+            .args(["-b", "256"])
+            .args(["-f", &key_path.to_string_lossy()])
+            .args(["-N", ""])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+
+        let public_key = validate_key(&key_path).await.unwrap();
+        assert!(public_key.starts_with("ecdsa-sha2-nistp256 "));
     }
 
     #[tokio::test]

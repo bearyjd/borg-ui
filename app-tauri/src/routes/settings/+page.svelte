@@ -33,6 +33,14 @@
   let keyChecking = $state(false);
   let keyCheckResult = $state('');
   let keyPublicKey = $state('');
+  let keyGenerating = $state(false);
+  let overwriteKeyModalOpen = $state(false);
+  let copyKeyResult = $state('');
+
+  interface GeneratedSshKey {
+    private_key_path: string;
+    public_key: string;
+  }
 
   // For a local repo, "configured" means a folder path is filled in. For SSH,
   // we need host + user + path. Used to enable Save/Init/Prune/passphrase.
@@ -57,6 +65,37 @@
     sshKeyPath = selected as string;
     clearKeyResult();
     await checkKey();
+  }
+
+  async function generateSshKey(overwrite = false) {
+    keyGenerating = true;
+    keyCheckResult = '';
+    copyKeyResult = '';
+    try {
+      const generated = await invoke<GeneratedSshKey>('generate_ssh_key', { overwrite });
+      sshKeyPath = generated.private_key_path;
+      keyPublicKey = generated.public_key;
+      keyCheckResult = 'New Ed25519 key generated. Add the public key to your backup server.';
+      overwriteKeyModalOpen = false;
+    } catch (e) {
+      const message = String(e);
+      if (!overwrite && message.includes('already exists')) {
+        overwriteKeyModalOpen = true;
+      } else {
+        keyCheckResult = `Could not generate key: ${message}`;
+      }
+    } finally {
+      keyGenerating = false;
+    }
+  }
+
+  async function copyPublicKey() {
+    try {
+      await navigator.clipboard.writeText(keyPublicKey);
+      copyKeyResult = 'Copied.';
+    } catch (e) {
+      copyKeyResult = `Copy failed: ${e}`;
+    }
   }
 
   function clearConnectionResults() {
@@ -183,12 +222,13 @@
   // click-backdrop-to-close behaviour so modals are dismissable from the
   // keyboard too.
   $effect(() => {
-    const anyOpen = clearPassphraseModalOpen || passphraseModalOpen;
+    const anyOpen = clearPassphraseModalOpen || passphraseModalOpen || overwriteKeyModalOpen;
     if (!anyOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       clearPassphraseModalOpen = false;
       passphraseModalOpen = false;
+      overwriteKeyModalOpen = false;
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -492,19 +532,26 @@
             <button type="button" class="btn btn-secondary" onclick={browseSshKey} disabled={keyChecking}>
               {keyChecking ? 'Checking…' : 'Browse…'}
             </button>
+            <button type="button" class="btn btn-secondary" onclick={() => generateSshKey()} disabled={keyGenerating || keyChecking}>
+              {keyGenerating ? 'Generating…' : 'Generate'}
+            </button>
           </div>
           <div id="ssh-key-help">
-            <FieldHelp text="Usually you can leave this blank. If your provider gave you a key, select the private key—not the .pub file. For unattended backups it must not have a passphrase." />
+            <FieldHelp text="Usually you can leave this blank. Select an existing unencrypted private key, or generate a dedicated Ed25519 key directly in BorgUI. Generation does not require Windows OpenSSH." />
           </div>
           {#if keyCheckResult}
-            <div class="field-result" role="status" class:success={keyCheckResult.startsWith('Valid')} class:error={keyCheckResult.startsWith('This key')}>
+            <div class="field-result" role="status" class:success={keyCheckResult.startsWith('Valid') || keyCheckResult.startsWith('New Ed25519')} class:error={keyCheckResult.startsWith('This key') || keyCheckResult.startsWith('Could not')}>
               {keyCheckResult}
             </div>
           {/if}
           {#if keyPublicKey}
-            <details class="public-key">
+            <details class="public-key" open={keyCheckResult.startsWith('New Ed25519')}>
               <summary>Show public key to add to the server</summary>
               <code>{keyPublicKey}</code>
+              <div class="public-key-actions">
+                <button type="button" class="btn btn-secondary" onclick={copyPublicKey}>Copy public key</button>
+                {#if copyKeyResult}<span>{copyKeyResult}</span>{/if}
+              </div>
             </details>
           {/if}
         </div>
@@ -646,6 +693,29 @@
   <StartupSection />
 
   <DiagnosticsSection />
+
+  {#if overwriteKeyModalOpen}
+    <div class="modal-backdrop" onclick={() => (overwriteKeyModalOpen = false)} role="presentation">
+      <div
+        class="modal"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={() => {}}
+        role="dialog"
+        tabindex="-1"
+        aria-modal="true"
+        aria-labelledby="overwrite-key-title"
+      >
+        <h2 id="overwrite-key-title">Replace generated SSH key?</h2>
+        <p>A BorgUI-managed SSH key already exists. Replacing it will prevent server access until you install the new public key on the server.</p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" onclick={() => (overwriteKeyModalOpen = false)}>Cancel</button>
+          <button type="button" class="btn btn-delete-confirm" disabled={keyGenerating} onclick={() => generateSshKey(true)}>
+            {keyGenerating ? 'Replacing…' : 'Replace key'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   {#if clearPassphraseModalOpen}
     <div class="modal-backdrop" onclick={() => (clearPassphraseModalOpen = false)} role="presentation">
@@ -1043,6 +1113,13 @@
     line-height: 1.5;
     overflow-wrap: anywhere;
     user-select: text;
+  }
+
+  .public-key-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
   }
 
   select {
