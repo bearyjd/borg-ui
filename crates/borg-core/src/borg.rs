@@ -22,6 +22,7 @@ const QUICK_OP_TIMEOUT_SECS: u64 = 120;
 /// one archive, which backs the archive browser). Generous, but bounded so a
 /// stalled SSH connection can't freeze the UI forever.
 const LIST_CONTENTS_TIMEOUT_SECS: u64 = 600;
+const CHECK_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 
 /// Number of archive entries streamed per batch by
 /// [`BorgClient::list_contents_streaming`]. Large enough to amortise the IPC
@@ -37,6 +38,21 @@ const LIST_BATCH_SIZE: usize = 5_000;
 #[derive(Debug, Default, Clone)]
 pub struct OpOutcome {
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckMode {
+    Repository,
+    VerifyData,
+}
+
+impl CheckMode {
+    fn args(self) -> &'static [&'static str] {
+        match self {
+            Self::Repository => &["check"],
+            Self::VerifyData => &["check", "--verify-data"],
+        }
+    }
 }
 
 impl OpOutcome {
@@ -235,6 +251,7 @@ impl BorgClient {
         on_progress: impl Fn(ProgressEvent) + Send + 'static,
     ) -> Result<OpOutcome> {
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
 
         let mut child = cmd.spawn()?;
         let stderr = child.stderr.take().expect("stderr was piped");
@@ -311,6 +328,34 @@ impl BorgClient {
                 })
             }
         }
+    }
+
+    /// Verify repository metadata, or metadata plus every archived data chunk.
+    /// Borg's repair mode is intentionally not represented by this API.
+    pub async fn check(
+        &self,
+        repo: &RepoConfig,
+        mode: CheckMode,
+        passphrase: Option<&str>,
+        cancel: &CancelToken,
+        on_progress: impl Fn(ProgressEvent) + Send + 'static,
+    ) -> Result<OpOutcome> {
+        let mut cmd = self.base_command_with(passphrase);
+        cmd.args(mode.args())
+            .args(["--progress", "--log-json"])
+            .arg(repo.location());
+
+        tokio::time::timeout(
+            Duration::from_secs(CHECK_TIMEOUT_SECS),
+            self.run_streaming(cmd, "check", cancel, on_progress),
+        )
+        .await
+        .map_err(|_| {
+            cancel.cancel();
+            BorgError::Timeout {
+                seconds: CHECK_TIMEOUT_SECS,
+            }
+        })?
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -941,6 +986,15 @@ mod tests {
         assert!(matches!(classify_exit(Some(128)), ExitClass::Error));
         // A process killed by a signal reports no exit code -> treat as error.
         assert!(matches!(classify_exit(None), ExitClass::Error));
+    }
+
+    #[test]
+    fn check_modes_never_include_repair() {
+        assert_eq!(CheckMode::Repository.args(), &["check"]);
+        assert_eq!(CheckMode::VerifyData.args(), &["check", "--verify-data"]);
+        for mode in [CheckMode::Repository, CheckMode::VerifyData] {
+            assert!(!mode.args().contains(&"--repair"));
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@ export interface Profile {
   name: string;
   repo: RepoConfig;
   schedule: ScheduleConfig | null;
+  integrity_schedule: { enabled: boolean } | null;
   retention: RetentionConfig | null;
   archive_template: string | null;
   pre_backup: string | null;

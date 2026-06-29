@@ -16,6 +16,7 @@ use tauri::{Manager, WindowEvent};
 /// CLI flag the Windows Task Scheduler entry passes to trigger a headless
 /// backup (see `commands::save_schedule_config`).
 const SCHEDULED_BACKUP_FLAG: &str = "--scheduled-backup";
+const SCHEDULED_INTEGRITY_FLAG: &str = "--scheduled-integrity-check";
 
 /// CLI flag the autostart `Run`-key entry passes so BorgUI starts hidden in the
 /// tray at login instead of popping the window open (see `commands::set_autostart`).
@@ -32,6 +33,7 @@ pub fn run() {
     // When launched by the Task Scheduler we run one backup headlessly and exit,
     // rather than showing the GUI.
     let scheduled = std::env::args().any(|a| a == SCHEDULED_BACKUP_FLAG);
+    let scheduled_integrity = std::env::args().any(|a| a == SCHEDULED_INTEGRITY_FLAG);
     let start_minimized = std::env::args().any(|a| a == START_MINIMIZED_FLAG);
     let setup_borg_path = borg_path.clone();
 
@@ -41,7 +43,9 @@ pub fn run() {
         .setup(move |app| {
             let log_dir = app.path().app_log_dir()?;
             logging::initialize(&log_dir).map_err(std::io::Error::other)?;
-            if scheduled {
+            if scheduled_integrity {
+                start_scheduled_integrity_check(app.handle().clone(), setup_borg_path);
+            } else if scheduled {
                 start_scheduled_backup(app.handle().clone(), setup_borg_path);
             } else {
                 tray::setup(app.handle())?;
@@ -82,6 +86,10 @@ pub fn run() {
             commands::cancel_backup,
             commands::restore_archive,
             commands::cancel_restore,
+            commands::check_repository,
+            commands::cancel_repository_check,
+            commands::latest_integrity_check,
+            commands::set_monthly_integrity_check,
             commands::load_repo_config,
             commands::save_repo_config,
             commands::load_schedule_config,
@@ -112,6 +120,31 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn start_scheduled_integrity_check(app: tauri::AppHandle, borg_path: std::path::PathBuf) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    tauri::async_runtime::spawn(async move {
+        let code = match app.path().app_config_dir() {
+            Ok(config_dir) => {
+                let borg = BorgClient::new(borg_path);
+                match scheduled::run_scheduled_integrity_check(&config_dir, &borg).await {
+                    Ok(_) => 0,
+                    Err(error) => {
+                        tracing::error!("scheduled integrity check failed: {error}");
+                        1
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::error!("scheduled integrity check: cannot resolve config dir: {error}");
+                1
+            }
+        };
+        app.exit(code);
+    });
 }
 
 /// Headless path: hide the window, run one backup from the active profile's

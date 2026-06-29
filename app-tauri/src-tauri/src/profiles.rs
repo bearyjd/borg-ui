@@ -4,7 +4,12 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 1;
+pub const PROFILE_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IntegritySchedule {
+    pub enabled: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
@@ -13,6 +18,8 @@ pub struct Profile {
     pub repo: RepoConfig,
     #[serde(default)]
     pub schedule: Option<ScheduleConfig>,
+    #[serde(default)]
+    pub integrity_schedule: Option<IntegritySchedule>,
     #[serde(default)]
     pub retention: Option<RetentionConfig>,
     #[serde(default)]
@@ -95,7 +102,7 @@ pub async fn load(config_dir: &Path) -> Result<ProfilesData, String> {
             }
             let mut parsed: ProfilesData =
                 serde_json::from_value(value).map_err(|e| format!("invalid profiles.json: {e}"))?;
-            if version == 0 {
+            if version < u64::from(PROFILE_SCHEMA_VERSION) {
                 parsed.schema_version = PROFILE_SCHEMA_VERSION;
                 save(config_dir, &parsed).await?;
             }
@@ -188,6 +195,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         name: "Default".into(),
         repo,
         schedule,
+        integrity_schedule: None,
         retention,
         archive_template: None,
         pre_backup: None,
@@ -256,6 +264,7 @@ mod tests {
             name: id.into(),
             repo: sample_repo(),
             schedule: None,
+            integrity_schedule: None,
             retention: None,
             archive_template: None,
             pre_backup: None,
