@@ -58,6 +58,29 @@ pub async fn schedule_backup(
     Ok(())
 }
 
+/// Install the separate, opt-in monthly metadata-only integrity task.
+pub async fn schedule_monthly_check(task_name: &str, exe_path: &str, args: &str) -> Result<()> {
+    validate_schtasks_input(task_name, "task_name")?;
+    validate_schtasks_input(exe_path, "exe_path")?;
+    validate_schtasks_input(args, "args")?;
+
+    let output = tokio::process::Command::new("schtasks")
+        .args(["/Create", "/F"])
+        .args(["/TN", task_name])
+        .args(["/TR", &format!("\"{}\" {}", exe_path, args)])
+        .args(["/SC", "MONTHLY", "/D", "1", "/ST", "03:00"])
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(BorgError::ProcessFailed {
+            message: "schtasks integrity-check scheduling failed".into(),
+            exit_code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).into(),
+        });
+    }
+    Ok(())
+}
+
 pub async fn unschedule_backup(task_name: &str) -> Result<()> {
     validate_schtasks_input(task_name, "task_name")?;
 

@@ -17,7 +17,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use borg_core::borg::{BorgClient, CancelToken};
+use borg_core::borg::{BorgClient, CancelToken, CheckMode};
 use borg_core::config::{BackupProfile, Compression, RepoConfig};
 
 /// Returns the borg binary to test against, or `None` to skip.
@@ -63,6 +63,38 @@ fn profile(repo: RepoConfig, sources: Vec<PathBuf>, excludes: Vec<String>) -> Ba
         excludes,
         compression: Compression::Zstd { level: 3 },
         repo,
+    }
+}
+
+#[tokio::test]
+async fn repository_metadata_and_data_checks_pass() {
+    let client = borg_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let source = tmp.path().join("source");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("checked.txt"), b"integrity check fixture").unwrap();
+
+    let repo = local_repo(&repo_path);
+    client.init_repo(&repo, "none", None).await.unwrap();
+    client
+        .create(
+            &profile(repo.clone(), vec![PathBuf::from(".")], vec![]),
+            "check-fixture",
+            Some(&source),
+            None,
+            &CancelToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    for mode in [CheckMode::Repository, CheckMode::VerifyData] {
+        let outcome = client
+            .check(&repo, mode, None, &CancelToken::new(), |_| {})
+            .await
+            .unwrap();
+        assert!(!outcome.had_warnings());
     }
 }
 

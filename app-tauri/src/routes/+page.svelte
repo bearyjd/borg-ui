@@ -8,6 +8,11 @@
 
   let borgVersion = $state('checking...');
   let borgError = $state('');
+  let latestIntegrity = $state<{
+    timestamp: string;
+    mode: string;
+    outcome: string;
+  } | null>(null);
 
   let repoHost = $derived(repoState.config ? describeRepo(repoState.config) : '');
   let hasRepo = $derived(repoState.hasRepo);
@@ -73,6 +78,11 @@
     } catch (e) {
       console.warn('Failed to load schedule:', e);
     }
+    try {
+      latestIntegrity = await invoke('latest_integrity_check');
+    } catch (e) {
+      console.warn('Failed to load integrity status:', e);
+    }
   });
 </script>
 
@@ -127,6 +137,22 @@
       {:else}
         <div class="card-value dimmed">Not scheduled</div>
         <a href="/settings" class="card-action">Set up →</a>
+      {/if}
+    </div>
+
+    <div class="status-card">
+      <div class="card-label">Repository Integrity</div>
+      {#if latestIntegrity}
+        <div class="card-value" class:error={latestIntegrity.outcome === 'failure'}>
+          {latestIntegrity.outcome}
+        </div>
+        <div class="card-detail">
+          {latestIntegrity.mode === 'verify_data' ? 'Full data' : 'Metadata'} ·
+          {formatRelative(latestIntegrity.timestamp)}
+        </div>
+      {:else}
+        <div class="card-value dimmed">Not checked</div>
+        <a href="/settings" class="card-action">Run check →</a>
       {/if}
     </div>
   </div>

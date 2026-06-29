@@ -13,6 +13,7 @@
   import ScheduleSection from '$lib/components/settings/ScheduleSection.svelte';
   import RetentionSection from '$lib/components/settings/RetentionSection.svelte';
   import DiagnosticsSection from '$lib/components/settings/DiagnosticsSection.svelte';
+  import IntegritySection from '$lib/components/settings/IntegritySection.svelte';
 
   type RepoType = 'ssh' | 'local';
 
@@ -689,6 +690,10 @@
   <NotificationsSection />
 
   <ScheduleSection />
+
+  {#if profilesState.active}
+    <IntegritySection />
+  {/if}
 
   <StartupSection />
 

@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 const MAX_EVENTS: usize = 200;
-const DATABASE_SCHEMA_VERSION: i64 = 1;
+const DATABASE_SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupEvent {
@@ -18,6 +18,18 @@ pub struct BackupEvent {
     pub file_count: Option<u64>,
     #[serde(default)]
     pub original_size: Option<u64>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IntegrityEvent {
+    pub id: String,
+    pub timestamp: String,
+    pub profile_id: String,
+    pub mode: String,
+    pub outcome: String,
+    pub duration_seconds: u64,
     #[serde(default)]
     pub error_message: Option<String>,
 }
@@ -68,6 +80,72 @@ pub async fn clear(config_dir: &Path) -> Result<(), String> {
         conn.execute("DELETE FROM operation_history", [])
             .map(|_| ())
             .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub async fn append_integrity(config_dir: &Path, event: IntegrityEvent) -> Result<(), String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut conn = open(&dir)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO integrity_history (
+                id, timestamp, profile_id, mode, outcome, duration_seconds, error_message
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                event.id,
+                event.timestamp,
+                event.profile_id,
+                event.mode,
+                event.outcome,
+                event.duration_seconds,
+                event.error_message,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM integrity_history WHERE rowid NOT IN (
+                SELECT rowid FROM integrity_history ORDER BY sequence DESC LIMIT ?1
+            )",
+            [MAX_EVENTS],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub async fn latest_integrity(
+    config_dir: &Path,
+    profile_id: &str,
+) -> Result<Option<IntegrityEvent>, String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    let profile_id = profile_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.query_row(
+            "SELECT id, timestamp, profile_id, mode, outcome, duration_seconds, error_message
+             FROM integrity_history WHERE profile_id = ?1 ORDER BY sequence DESC LIMIT 1",
+            [profile_id],
+            |row| {
+                Ok(IntegrityEvent {
+                    id: row.get(0)?,
+                    timestamp: row.get(1)?,
+                    profile_id: row.get(2)?,
+                    mode: row.get(3)?,
+                    outcome: row.get(4)?,
+                    duration_seconds: row.get(5)?,
+                    error_message: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -134,6 +212,16 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
              duration_seconds INTEGER NOT NULL,
              file_count INTEGER,
              original_size INTEGER,
+             error_message TEXT
+         );
+         CREATE TABLE IF NOT EXISTS integrity_history (
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+             id TEXT NOT NULL,
+             timestamp TEXT NOT NULL,
+             profile_id TEXT NOT NULL,
+             mode TEXT NOT NULL CHECK(mode IN ('repository', 'verify_data')),
+             outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure', 'cancelled')),
+             duration_seconds INTEGER NOT NULL,
              error_message TEXT
          );",
     )
@@ -251,5 +339,45 @@ mod tests {
         std::fs::write(&path, "not json").unwrap();
         assert!(initialize(dir.path()).await.is_err());
         assert_eq!(std::fs::read_to_string(path).unwrap(), "not json");
+    }
+
+    #[tokio::test]
+    async fn integrity_history_returns_latest_for_requested_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        for (id, profile_id, outcome) in [
+            ("one", "work", "failure"),
+            ("two", "personal", "success"),
+            ("three", "work", "success"),
+        ] {
+            append_integrity(
+                dir.path(),
+                IntegrityEvent {
+                    id: id.into(),
+                    timestamp: "2026-06-29T00:00:00Z".into(),
+                    profile_id: profile_id.into(),
+                    mode: "repository".into(),
+                    outcome: outcome.into(),
+                    duration_seconds: 3,
+                    error_message: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(
+            latest_integrity(dir.path(), "work")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            "three"
+        );
+        assert!(
+            latest_integrity(dir.path(), "missing")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }
