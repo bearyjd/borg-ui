@@ -67,6 +67,7 @@ pub fn run() {
             commands::test_ssh_connection,
             commands::check_host_reachable,
             commands::validate_ssh_key,
+            commands::generate_ssh_key,
             commands::get_repo_info,
             commands::list_archives,
             commands::stream_archive_contents,
