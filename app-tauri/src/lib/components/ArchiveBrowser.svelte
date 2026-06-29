@@ -42,6 +42,7 @@
   // Monotonic token: a newer load() invalidates any still-in-flight earlier one
   // so a slow stream for a previous archive can't clobber the current tree.
   let loadGen = 0;
+  let activeRequestId: string | null = null;
 
   let totalFiles = $derived(tree ? tree.leafCount : 0);
   let selectedCount = $derived.by(() => {
@@ -88,11 +89,17 @@
 
   $effect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') closeBrowser();
     };
     window.addEventListener('keydown', handler);
     cancelBtn?.focus();
     return () => window.removeEventListener('keydown', handler);
+  });
+
+  $effect(() => {
+    return () => {
+      cancelActiveListing();
+    };
   });
 
   $effect(() => {
@@ -103,8 +110,25 @@
     void load();
   });
 
+  function cancelActiveListing() {
+    if (!activeRequestId) return;
+    const requestId = activeRequestId;
+    activeRequestId = null;
+    invoke<boolean>('cancel_archive_listing', { requestId }).catch((e) => {
+      console.warn('Failed to cancel archive listing:', e);
+    });
+  }
+
+  function closeBrowser() {
+    cancelActiveListing();
+    onClose();
+  }
+
   async function load() {
+    cancelActiveListing();
     const gen = ++loadGen;
+    const requestId = `${Date.now()}-${gen}`;
+    activeRequestId = requestId;
     loading = true;
     error = '';
     loadedCount = 0;
@@ -121,7 +145,7 @@
     const incoming: ArchiveEntry[] = [];
     const channel = new Channel<ArchiveEntry[]>();
     channel.onmessage = (batch) => {
-      if (gen !== loadGen) return; // superseded by a newer load
+      if (gen !== loadGen || requestId !== activeRequestId) return; // superseded or cancelled
       for (const entry of batch) incoming.push(entry);
       loadedCount = incoming.length;
     };
@@ -130,17 +154,20 @@
       await invoke<number>('stream_archive_contents', {
         repo,
         archiveName,
+        requestId,
         onBatch: channel,
       });
-      if (gen !== loadGen) return;
+      if (gen !== loadGen || requestId !== activeRequestId) return;
       isEmpty = incoming.length === 0;
       const built = buildTree(incoming);
       tree = built;
       selection = new Selection(built);
     } catch (e) {
-      if (gen !== loadGen) return;
+      if (gen !== loadGen || requestId !== activeRequestId) return;
+      if (String(e).toLowerCase().includes('operation cancelled')) return;
       error = `Failed to load archive contents: ${e}`;
     } finally {
+      if (requestId === activeRequestId) activeRequestId = null;
       if (gen === loadGen) loading = false;
     }
   }
@@ -176,7 +203,7 @@
   }
 </script>
 
-<div class="modal-backdrop" onclick={onClose} role="presentation">
+<div class="modal-backdrop" onclick={closeBrowser} role="presentation">
   <div
     class="modal browser"
     onclick={(e) => e.stopPropagation()}
@@ -280,7 +307,7 @@
     {/if}
 
     <footer class="browser-footer">
-      <button bind:this={cancelBtn} class="btn btn-secondary" onclick={onClose}>Cancel</button>
+      <button bind:this={cancelBtn} class="btn btn-secondary" onclick={closeBrowser}>Cancel</button>
       <button
         class="btn btn-restore"
         onclick={handleRestore}
