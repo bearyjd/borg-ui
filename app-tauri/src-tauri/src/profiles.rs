@@ -4,7 +4,7 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 2;
+pub const PROFILE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IntegritySchedule {
@@ -423,6 +423,25 @@ mod tests {
             saved["schema_version"],
             serde_json::Value::from(PROFILE_SCHEMA_VERSION)
         );
+    }
+
+    #[tokio::test]
+    async fn older_profiles_are_migrated_to_current_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = serde_json::json!({
+            "schema_version": 2,
+            "profiles": [profile_with_id("work")],
+            "active_id": "work"
+        });
+        tokio::fs::write(
+            dir.path().join("profiles.json"),
+            serde_json::to_vec_pretty(&json).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let data = load(dir.path()).await.unwrap();
+        assert_eq!(data.schema_version, PROFILE_SCHEMA_VERSION);
     }
 
     #[tokio::test]
