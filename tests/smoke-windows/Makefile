@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all validate-archive-smoke archive-smoke-all validate-autostart-login autostart-login-all validate-vss-spike vss-spike-all validate-vss validate-vss-manual validate-installer installer-all build-app down status logs
+.PHONY: help smoke quick vm ssh setup-ssh build-env deploy test validate validate-all provision-edge validate-edge edge-all validate-gui gui-all validate-tray tray-all validate-gui-flows gui-flows-all validate-archive-smoke archive-smoke-all validate-autostart-login autostart-login-all validate-vss-spike vss-spike-all validate-vss validate-vss-manual validate-installer installer-all validate-updater updater-all build-app down status logs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -93,6 +93,12 @@ validate-installer: ## Install the built MSI/NSIS (from INSTALLER_DIR) on a runn
 
 installer-all: ## Boot VM → wait SSH → installer validation (needs built installers in INSTALLER_DIR; gh run download them first)
 	./run.sh installer-all
+
+validate-updater: ## Install an updater-capable baseline NSIS installer and verify it updates to EXPECTED_UPDATE_VERSION
+	./run.sh validate-updater
+
+updater-all: ## Boot VM → wait SSH → installed-app updater validation (needs BASELINE_INSTALLER)
+	./run.sh updater-all
 
 down: ## Tear down Windows VM
 	./run.sh down
