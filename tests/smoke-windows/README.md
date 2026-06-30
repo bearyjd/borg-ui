@@ -59,6 +59,12 @@ make archive-smoke-all
 # i.e. the Run key actually fires at login. Needs a PRODUCTION tauri-build exe.
 make autostart-login-all
 
+# Installed-app updater: install an updater-capable lower-version NSIS package,
+# accept the published update in the real UI, and verify the installed exe was
+# replaced. The original public v0.1.0 package predates updater support.
+BASELINE_INSTALLER=/path/to/BorgUI_0.1.0_x64-setup.exe \
+EXPECTED_UPDATE_VERSION=0.2.0 make updater-all
+
 # Or step-by-step:
 make vm             # Boot Windows container
 make ssh            # Wait for SSH (inspect with `make shell`)
@@ -210,6 +216,16 @@ separately in `borg-platform-win`.
    `%USERPROFILE%\autostart-login-results.json`; console output at
    `validate-autostart-login.log`. **Ran 1/1 PASS on the KVM VM** (pid auto-started
    in session 1, `--minimized`, parent `explorer`).
+
+12. **`validate-updater.ps1`** — the installed-app updater validation. It
+    silently installs an updater-capable baseline NSIS package, relaunches itself
+    in the interactive desktop, waits for the signed published update prompt,
+    invokes **Download and install**, and verifies the installed
+    `borg-ui.exe` product version changes to `EXPECTED_UPDATE_VERSION`. The
+    baseline must be older than the target and must already contain the updater;
+    the original public `v0.1.0` installer is not suitable because it predates
+    updater support. Results are written to
+    `%USERPROFILE%\updater-smoke-result.json` and `validate-updater.log`.
 
 ### Still needs manual confirmation (Tier C — the VNC checklist)
 
