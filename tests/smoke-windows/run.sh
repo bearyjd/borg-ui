@@ -663,6 +663,33 @@ run_validate_installer() {
     fi
 }
 
+# --- Installed-app updater validation: baseline installer -> published release ---
+run_validate_updater() {
+    local baseline="${BASELINE_INSTALLER:-}"
+    local expected="${EXPECTED_UPDATE_VERSION:-0.2.0}"
+    if [[ -z "$baseline" || ! -f "$baseline" ]]; then
+        fail "Set BASELINE_INSTALLER to an updater-capable NSIS installer older than $expected."
+    fi
+    if [[ "$baseline" != *-setup.exe ]]; then
+        fail "BASELINE_INSTALLER must be a Tauri NSIS *-setup.exe installer."
+    fi
+
+    log "Uploading updater baseline $(basename "$baseline")..."
+    $SCP_CMD "$baseline" "$SSH_USER@$SSH_HOST:borgui-updater-baseline.exe"
+    $SCP_CMD "$SCRIPT_DIR/validate-updater.ps1" "$SSH_USER@$SSH_HOST:validate-updater.ps1"
+
+    log "Running installed-app updater validation to version $expected..."
+    local output
+    output=$($SSH_CMD "powershell -ExecutionPolicy Bypass -File C:\\Users\\$SSH_USER\\validate-updater.ps1 -BaselineInstaller C:\\Users\\$SSH_USER\\borgui-updater-baseline.exe -ExpectedVersion '$expected'" 2>&1) || true
+    echo "$output" | tee "$SCRIPT_DIR/validate-updater.log"
+
+    if echo "$output" | grep -qE "Failed:[[:space:]]+0" && echo "$output" | grep -qE "Passed:[[:space:]]+[1-9]"; then
+        log "Installed-app updater validation passed."
+        return 0
+    fi
+    fail "Installed-app updater validation failed. See validate-updater.log"
+}
+
 # --- Main ---
 main() {
     log "=== BorgUI Windows Smoke Test ==="
@@ -688,6 +715,7 @@ main() {
         validate-vss) run_validate_vss ;;
         validate-vss-manual) run_validate_vss_manual ;;
         validate-installer) run_validate_installer ;;
+        validate-updater) run_validate_updater ;;
         all)
             start_vm
             wait_for_ssh
@@ -770,6 +798,14 @@ main() {
             wait_for_ssh
             run_validate_installer
             ;;
+        updater-all)
+            # Installs an updater-capable baseline NSIS package, drives the
+            # consent UI in the interactive desktop, and verifies the published
+            # update replaces the installed executable.
+            start_vm
+            wait_for_ssh
+            run_validate_updater
+            ;;
         quick)
             # Skip VM boot — assume already running with SSH
             setup_env
@@ -784,7 +820,7 @@ main() {
             trap - EXIT
             ;;
         *)
-            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|autostart-login-all|vss-spike-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|validate-autostart-login|validate-vss-spike|validate-vss|validate-vss-manual|build-app|status|down}"
+            echo "Usage: $0 {all|validate-all|edge-all|gui-all|tray-all|gui-flows-all|archive-smoke-all|autostart-login-all|vss-spike-all|installer-all|updater-all|quick|vm|ssh|setup-ssh|build-env|deploy|test|validate|provision-edge|validate-edge|validate-gui|validate-tray|validate-gui-flows|validate-archive-smoke|validate-autostart-login|validate-vss-spike|validate-vss|validate-vss-manual|validate-installer|validate-updater|build-app|status|down}"
             exit 1
             ;;
     esac
