@@ -46,37 +46,49 @@ pub fn active_connection_cost() -> Result<NetworkCost, String> {
 
 #[cfg(windows)]
 fn active_connection_cost_impl() -> Result<NetworkCost, String> {
-    // `GetConnectionCost` lives in iphlpapi. `windows-sys` does not currently
-    // expose it through the features used by this crate, so keep the FFI surface
-    // narrow and local.
-    #[link(name = "iphlpapi")]
-    unsafe extern "system" {
-        fn GetConnectionCost(
-            connection_cost: *mut u32,
-            destination_ip_address: *const core::ffi::c_void,
-        ) -> u32;
+    let script = concat!(
+        "$p=[Windows.Networking.Connectivity.NetworkInformation,",
+        "Windows.Networking.Connectivity,ContentType=WindowsRuntime]",
+        "::GetInternetConnectionProfile();",
+        "if($null -eq $p){'unknown';exit};",
+        "$c=$p.GetConnectionCost();",
+        "if($c.Roaming -or $c.OverDataLimit -or $c.ApproachingDataLimit",
+        " -or $c.NetworkCostType -in @('Fixed','Variable')){'metered'}",
+        "elseif($c.NetworkCostType -eq 'Unrestricted'){'unrestricted'}",
+        "else{'unknown'}"
+    );
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .map_err(|e| format!("could not query Windows network cost: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Windows network cost query failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
-
-    let mut flags = 0_u32;
-    // SAFETY: `flags` is a valid out pointer and a null destination asks Windows
-    // for the default route's cost.
-    let status = unsafe { GetConnectionCost(&mut flags, std::ptr::null()) };
-    if status != 0 {
-        return Err(format!("GetConnectionCost failed with status {status}"));
-    }
-    Ok(classify_connection_cost(flags))
+    parse_connection_cost(&String::from_utf8_lossy(&output.stdout))
 }
 
 #[cfg(not(windows))]
 fn active_connection_cost_impl() -> Result<NetworkCost, String> {
-    let flags = match std::env::var("BORG_UI_TEST_CONNECTION_COST") {
+    match std::env::var("BORG_UI_TEST_CONNECTION_COST") {
         Ok(value) => value
             .parse::<u32>()
-            .map_err(|e| format!("invalid BORG_UI_TEST_CONNECTION_COST: {e}"))?,
-        Err(std::env::VarError::NotPresent) => 1,
-        Err(e) => return Err(e.to_string()),
-    };
-    Ok(classify_connection_cost(flags))
+            .map(classify_connection_cost)
+            .map_err(|e| format!("invalid BORG_UI_TEST_CONNECTION_COST: {e}")),
+        Err(std::env::VarError::NotPresent) => parse_connection_cost("unrestricted"),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn parse_connection_cost(value: &str) -> Result<NetworkCost, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "metered" => Ok(NetworkCost::Metered),
+        "unrestricted" => Ok(NetworkCost::Unrestricted),
+        "unknown" => Ok(NetworkCost::Unknown),
+        other => Err(format!("unexpected Windows network cost response: {other}")),
+    }
 }
 
 #[cfg(test)]
@@ -104,5 +116,22 @@ mod tests {
         ] {
             assert_eq!(classify_connection_cost(flags), NetworkCost::Metered);
         }
+    }
+
+    #[test]
+    fn parses_windows_cost_probe_output() {
+        assert_eq!(
+            parse_connection_cost("metered\r\n").unwrap(),
+            NetworkCost::Metered
+        );
+        assert_eq!(
+            parse_connection_cost("Unrestricted").unwrap(),
+            NetworkCost::Unrestricted
+        );
+        assert_eq!(
+            parse_connection_cost("unknown").unwrap(),
+            NetworkCost::Unknown
+        );
+        assert!(parse_connection_cost("noise").is_err());
     }
 }
