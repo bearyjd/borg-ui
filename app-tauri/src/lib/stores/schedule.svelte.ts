@@ -5,6 +5,7 @@ export interface ScheduleConfig {
   source_paths: string[];
   schedule: { type: 'hourly' } | { type: 'daily'; hour: number; minute: number };
   excludes: string[];
+  skip_metered_networks: boolean;
 }
 
 /** Short human label like "Daily at 02:00" or "Every hour". */

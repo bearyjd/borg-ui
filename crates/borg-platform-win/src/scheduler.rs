@@ -125,6 +125,10 @@ pub struct ScheduleConfig {
     pub schedule: Schedule,
     #[serde(default)]
     pub excludes: Vec<String>,
+    /// When true, unattended scheduled backups skip the run while Windows reports
+    /// the active network as metered. Manual backups are unaffected.
+    #[serde(default)]
+    pub skip_metered_networks: bool,
 }
 
 impl Schedule {
@@ -225,5 +229,17 @@ mod tests {
     #[test]
     fn hourly_validates_ok() {
         assert!(Schedule::Hourly.validate().is_ok());
+    }
+
+    #[test]
+    fn schedule_config_defaults_metered_skip_to_false() {
+        let json = r#"{
+            "enabled": true,
+            "source_paths": ["C:\\Users\\me"],
+            "schedule": { "type": "hourly" },
+            "excludes": []
+        }"#;
+        let config: ScheduleConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.skip_metered_networks);
     }
 }

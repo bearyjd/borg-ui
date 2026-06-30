@@ -4,6 +4,7 @@ mod diagnostics;
 mod history;
 mod keychain;
 mod logging;
+mod network;
 mod profiles;
 mod recovery;
 mod redaction;
@@ -187,7 +188,9 @@ fn notify_scheduled_result(app: &tauri::AppHandle, report: &scheduled::RunReport
     use tauri_plugin_notification::NotificationExt;
 
     let archive = report.archive_name.as_deref().unwrap_or("backup");
-    let (title, body) = if let Some(error) = &report.error {
+    let (title, body) = if let Some(reason) = &report.skipped_reason {
+        ("Scheduled backup skipped".to_string(), reason.clone())
+    } else if let Some(error) = &report.error {
         // `error` is the verbose `BorgError::detail()` (full stderr tail) that the
         // history record wants; a toast wants one readable sentence, so take the
         // first line and cap it rather than dumping a borg `--log-json` blob.

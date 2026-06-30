@@ -35,6 +35,8 @@ pub struct RunReport {
     pub warnings: Vec<String>,
     /// Set when the run failed; `None` means success.
     pub error: Option<String>,
+    /// Set when the scheduled run intentionally did no backup work.
+    pub skipped_reason: Option<String>,
 }
 
 impl RunReport {
@@ -50,6 +52,16 @@ impl RunReport {
             archive_name: None,
             warnings: Vec::new(),
             error: Some(error),
+            skipped_reason: None,
+        }
+    }
+
+    fn skipped(reason: String) -> Self {
+        Self {
+            archive_name: None,
+            warnings: Vec::new(),
+            error: None,
+            skipped_reason: Some(reason),
         }
     }
 }
@@ -64,6 +76,7 @@ fn nonempty(s: &Option<String>) -> Option<&str> {
 }
 
 const RETRY_DELAYS_SECONDS: [u64; 2] = [30, 120];
+const METERED_SKIP_REASON: &str = "Skipped because the active network is marked as metered.";
 
 fn is_transient(error: &borg_core::error::BorgError) -> bool {
     use borg_core::error::BorgError;
@@ -124,6 +137,13 @@ pub fn is_missed(last_attempt: &str, grace_seconds: u64, now: chrono::DateTime<U
         .unwrap_or(false)
 }
 
+fn should_skip_for_metered_network(
+    schedule: &borg_platform_win::scheduler::ScheduleConfig,
+    cost: crate::network::NetworkCost,
+) -> bool {
+    schedule.skip_metered_networks && cost.is_metered()
+}
+
 async fn record_attempt(
     config_dir: &Path,
     run_id: &str,
@@ -144,6 +164,19 @@ async fn record_attempt(
         },
         transient,
         error_message: result.as_ref().err().map(|error| error.detail()),
+    };
+    let _ = history::append_scheduled_attempt(config_dir, event).await;
+}
+
+async fn record_skipped_attempt(config_dir: &Path, profile_id: &str, reason: &str) {
+    let event = history::ScheduledAttempt {
+        run_id: Utc::now().timestamp_millis().to_string(),
+        profile_id: profile_id.into(),
+        attempt: 1,
+        timestamp: Utc::now().to_rfc3339(),
+        outcome: "skipped".into(),
+        transient: false,
+        error_message: Some(reason.into()),
     };
     let _ = history::append_scheduled_attempt(config_dir, event).await;
 }
@@ -204,6 +237,7 @@ async fn finish(
         archive_name: Some(archive_name.to_string()),
         warnings,
         error,
+        skipped_reason: None,
     }
 }
 
@@ -230,6 +264,20 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
     }
     if let Err(e) = borg_core::config::validate_exclude_patterns(&schedule.excludes) {
         return RunReport::preflight(e.to_string());
+    }
+
+    if schedule.skip_metered_networks {
+        match crate::network::active_connection_cost() {
+            Ok(cost) if should_skip_for_metered_network(&schedule, cost) => {
+                let reason = METERED_SKIP_REASON.to_string();
+                record_skipped_attempt(config_dir, &profile.id, &reason).await;
+                return RunReport::skipped(reason);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!("could not determine active network cost: {error}");
+            }
+        }
     }
 
     let archive_name = build_archive_name(&profile);
@@ -423,6 +471,7 @@ mod tests {
                 source_paths: sources,
                 schedule: Schedule::Hourly,
                 excludes: Vec::new(),
+                skip_metered_networks: false,
             }),
             integrity_schedule: None,
             retention: None,
@@ -547,6 +596,39 @@ mod tests {
     #[test]
     fn retry_delays_are_fixed() {
         assert_eq!(RETRY_DELAYS_SECONDS, [30, 120]);
+    }
+
+    #[test]
+    fn skipped_report_is_successful_without_archive() {
+        let report = RunReport::skipped("metered".into());
+        assert!(report.succeeded());
+        assert_eq!(report.archive_name, None);
+        assert_eq!(report.skipped_reason.as_deref(), Some("metered"));
+    }
+
+    #[test]
+    fn metered_skip_decision_requires_opt_in_and_metered_cost() {
+        let mut profile =
+            profile_with_schedule(local_repo(Path::new("/repo")), vec!["/src".into()], true);
+        let schedule = profile.schedule.as_mut().unwrap();
+        assert!(!should_skip_for_metered_network(
+            schedule,
+            crate::network::NetworkCost::Metered
+        ));
+
+        schedule.skip_metered_networks = true;
+        assert!(should_skip_for_metered_network(
+            schedule,
+            crate::network::NetworkCost::Metered
+        ));
+        assert!(!should_skip_for_metered_network(
+            schedule,
+            crate::network::NetworkCost::Unrestricted
+        ));
+        assert!(!should_skip_for_metered_network(
+            schedule,
+            crate::network::NetworkCost::Unknown
+        ));
     }
 
     #[test]
