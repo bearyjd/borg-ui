@@ -14,6 +14,7 @@
   let scheduleMinute = $state(0);
   let schedulePaths = $state<string[]>([]);
   let scheduleExcludes = $state<string[]>([]);
+  let skipMeteredNetworks = $state(false);
   let scheduleExcludeInput = $state('');
   let scheduleSaving = $state(false);
   let scheduleResult = $state('');
@@ -24,7 +25,13 @@
     const schedule = scheduleType === 'hourly'
       ? { type: 'hourly' as const }
       : { type: 'daily' as const, hour: scheduleHour, minute: scheduleMinute };
-    const next = nextRun({ enabled: true, source_paths: [], schedule, excludes: [] });
+    const next = nextRun({
+      enabled: true,
+      source_paths: [],
+      schedule,
+      excludes: [],
+      skip_metered_networks: false,
+    });
     if (!next) return '';
     return next.toLocaleString(undefined, {
       weekday: 'short',
@@ -66,6 +73,7 @@
         source_paths: schedulePaths,
         schedule,
         excludes: scheduleExcludes,
+        skip_metered_networks: skipMeteredNetworks,
       };
       await scheduleState.save(config);
       await loadTaskDiagnostic();
@@ -95,6 +103,7 @@
         scheduleEnabled = scheduleState.config.enabled;
         schedulePaths = [...scheduleState.config.source_paths];
         scheduleExcludes = [...(scheduleState.config.excludes ?? [])];
+        skipMeteredNetworks = scheduleState.config.skip_metered_networks ?? false;
         if (scheduleState.config.schedule.type === 'hourly') {
           scheduleType = 'hourly';
         } else {
@@ -121,6 +130,7 @@
       scheduleEnabled = scheduleState.config.enabled;
       schedulePaths = [...scheduleState.config.source_paths];
       scheduleExcludes = [...(scheduleState.config.excludes ?? [])];
+      skipMeteredNetworks = scheduleState.config.skip_metered_networks ?? false;
       if (scheduleState.config.schedule.type === 'hourly') {
         scheduleType = 'hourly';
       } else {
@@ -135,6 +145,7 @@
       scheduleMinute = 0;
       schedulePaths = [];
       scheduleExcludes = [];
+      skipMeteredNetworks = false;
     }
   });
 </script>
@@ -235,6 +246,14 @@
             </button>
           {/each}
         </div>
+      </div>
+
+      <div class="field">
+        <label class="toggle-row">
+          <input type="checkbox" bind:checked={skipMeteredNetworks} />
+          <span>Skip scheduled backups on metered networks</span>
+        </label>
+        <FieldHelp text="When enabled, scheduled backups do not run while Windows marks the active connection as metered, roaming, or near/over a data limit. Manual backups still run when you start them." />
       </div>
     {/if}
 
