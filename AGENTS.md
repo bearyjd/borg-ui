@@ -3,7 +3,7 @@
 # BorgUI
 
 ## Purpose
-Native Windows GUI for BorgBackup. Lets users back up to a remote borg server over SSH without requiring WSL. Built as a Tauri 2 desktop app with a Svelte 5 frontend and a Rust backend organized as a Cargo workspace.
+Native Windows GUI for BorgBackup. Lets users back up to a remote borg server over SSH or to a local folder/USB/network share without requiring WSL. Built as a Tauri 2 desktop app with a Svelte 5 frontend and a Rust backend organized as a Cargo workspace.
 
 ## Key Files
 
@@ -27,7 +27,7 @@ Native Windows GUI for BorgBackup. Lets users back up to a remote borg server ov
 - This is a Cargo workspace. Run `cargo build`, `cargo test`, `cargo clippy` from the root.
 - Frontend dev server: `cd app-tauri && pnpm tauri dev`
 - The workspace uses Rust edition 2024 — use current Rust idioms.
-- `borg.exe` binary must be placed in `app-tauri/src-tauri/binaries/` for runtime use.
+- For local Windows builds, stage the whole Borg-for-Windows onedir bundle at `app-tauri/src-tauri/binaries/borg/` (`borg.exe` plus `_internal/`). The release workflow does this automatically.
 
 ### Architecture Overview
 ```
@@ -38,18 +38,21 @@ Tauri Commands (app-tauri/src-tauri/src/commands.rs)
 borg-core          borg-platform-win
 (portable)         (Windows-specific)
         ↕                  ↕
-   borg CLI           schtasks / VSS
+   borg CLI           schtasks / VSS / registry
 ```
 
 ### Testing Requirements
-- `cargo test` for all Rust crates
-- `cargo clippy -- -D warnings` must pass
-- `pnpm check` in `app-tauri/` for Svelte/TypeScript checks
+- `cargo test --workspace`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo fmt --all -- --check`
+- `pnpm check` and `pnpm build` in `app-tauri/`
+- `git diff --check`
 
-### v0.1 Scope
-1. Connect to borg repo over SSH
-2. Back up a folder
-3. List archives
+### Shipped Scope
+1. SSH and local/USB/network-share repositories
+2. VSS-backed manual and scheduled backups with cancellation, retries, history, and diagnostics
+3. Restore, selective restore, archive browse/diff/delete/compact, and cancellable large archive listing
+4. Profiles, retention, scheduling, integrity checks, encrypted recovery-key export/import, updater, and release pipeline
 
 ## Dependencies
 
