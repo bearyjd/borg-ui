@@ -11,7 +11,7 @@ SvelteKit file-based routing. Each subdirectory is a page in the app. The layout
 | File | Description |
 |------|-------------|
 | `+layout.svelte` | App shell — sidebar nav (Dashboard, Backup, Archives, Settings) + content area |
-| `+page.svelte` | Dashboard — shows borg version, last backup status, repo connection, next scheduled |
+| `+page.svelte` | Dashboard — shows borg version, backup history, repo connection, next scheduled run, latest integrity check, and missed-run warnings |
 
 ## Subdirectories
 
@@ -35,10 +35,10 @@ SvelteKit file-based routing. Each subdirectory is a page in the app. The layout
 
 | Route | Tauri Commands Used |
 |-------|-------------------|
-| `/` (Dashboard) | `get_borg_version` |
-| `/backup` | `create_backup` |
-| `/archives` | `list_archives` |
-| `/settings` | `test_ssh_connection` |
+| `/` (Dashboard) | `get_borg_version`, history/integrity/scheduled status commands |
+| `/backup` | `create_backup`, `cancel_backup` |
+| `/archives` | `list_archives`, `stream_archive_contents`, `cancel_archive_listing`, restore/diff/delete/compact commands |
+| `/settings` | repo, SSH key, profile, schedule, retention, integrity, recovery, diagnostics, update, startup commands |
 | `/setup` | None (redirect only) |
 
 ### Adding a New Route

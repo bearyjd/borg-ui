@@ -1,118 +1,121 @@
 # Handoff
 
-Snapshot for whoever picks this up next (human or agent). Last updated 2026-06-25.
+Last updated: 2026-06-29.
 
-## Latest — all merged, nothing in flight
+## Current state
 
-`master` is at `e3b398c` (Windows **release packager + installer**, built in CI and headlessly VM-validated; HANDOFF doc bump = #47). **`v0.1.0` is PUBLISHED** — a live GitHub release ([releases/tag/v0.1.0](https://github.com/bearyjd/borg-ui/releases/tag/v0.1.0)) with both installers attached: `BorgUI_0.1.0_x64-setup.exe` (NSIS, ~18.5 MB) and `BorgUI_0.1.0_x64_en-US.msi` (MSI, ~23 MB). The release workflow built them on the tag push; the draft was reviewed and published. **Cutting the next release:** `git tag vX.Y.Z && git push origin vX.Y.Z` → CI builds installers → draft release → review assets → Publish. Everything below is shipped.
+`master` is at `2cb5963` (`feat: cancel archive listing streams`, PR #59) before
+this documentation PR. The v0.1 release exists, and the post-v0.1 roadmap items
+through archive-list cancellation are merged:
 
-- **PRs #44 + #45 + #46 MERGED** (2026-06-24) — **Windows release packager + installer, CI-built and headlessly VM-validated.** `.github/workflows/release.yml`: on a `v*` tag (or a `workflow_dispatch` dry-run) a `windows-latest` job downloads borg-windows 1.4.4-win6 (SHA-256-pinned `0e5f780d749608beed12be1bdca99526a7f95df2cbdcf1fd151b646e97c070d8`) into `app-tauri/src-tauri/binaries/borg/`, runs `pnpm tauri build` (→ MSI via WiX + NSIS, borg bundled), **always** `upload-artifact`s `borgui-windows-installers`, and `gh release create --draft` **only** on tags (so a dispatch is a real dry-run that still produces downloadable installers). **Bundling lives in a Windows-only `app-tauri/src-tauri/tauri.windows.conf.json` overlay** (`resources: {"binaries/borg/": ""}`), NOT base `tauri.conf.json` — `tauri-build`'s build.rs validates `resources` paths during a *plain `cargo build`*, so a base-config entry fails Linux CI (and any borg-less local build) with `resource path 'binaries/borg' doesn't exist` (the bug #44 originally shipped; fixed in #45). The trailing-slash object-map form preserves the nested PyInstaller `_internal/`; on Windows `$RESOURCE` == the exe dir, so borg lands beside `borg-ui.exe` — exactly where `lib.rs` resolves it, **no runtime code change**. New headless installer test `tests/smoke-windows/validate-installer.ps1` (+ `make validate-installer`/`installer-all`, `INSTALLER_DIR` default `tests/smoke-windows/installers`): silent-installs each installer (NSIS `/S` per-user; MSI `msiexec /quiet`, SKIPs if UAC blocks it), asserts `borg-ui.exe` + `borg.exe` + `_internal\python311.dll` are co-located, runs the **installed** borg through `--version` + an init→create→delete→extract→byte-verify round-trip, then uninstalls. **10/10 PASS** on the KVM VM (MSI + NSIS) against the CI-built artifacts — the one thing prior GUI checks never covered (they ran a loose `tauri build` exe, never an installed layout). Both installers install **per-user to `%LOCALAPPDATA%\BorgUI`**. **Unsigned for now** (SmartScreen "More info → Run anyway"; documented in README; Azure Trusted Signing ~$10/mo or Certum OSS ~$80-130/yr if signing later). #45 split the workflow (a tag-guard on the combined `tauri-action` step had been silently skipping the build); #46 fixed two bugs the live run surfaced in the test itself — a non-ASCII em-dash broke PS-5.1 parsing (keep `.ps1` ASCII-only) and `Start-Process -PassThru`'s ExitCode is flaky (verify by on-disk state). Independent code-reviews on #44 (caught a stale pnpm lockfile that `npm`-based CI hid) and #46.
+- repository integrity checks and opt-in monthly metadata check
+- encrypted recovery-key export/import
+- consent-based Tauri updater with signed updater artifacts and `latest.json`
+- Windows release pipeline prepared for Azure Trusted Signing, disabled by default
+- scheduled-backup retry/missed-run reporting
+- guided SSH public-key onboarding
+- archive listing cancellation
 
-- **PR #40 MERGED** (`feat/windows-vss` → `master`, squashed `1b37538`, 2026-06-09) — **Windows VSS implemented + VM-validated.** This closes the last product gap — VSS is no longer disabled. Approach B (NTFS junction) from `.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md`: snapshot the source volume (`vss::create_snapshot`), mount the shadow copy as a junction **named after the drive letter** inside a per-process `%TEMP%` wrapper, run borg with the wrapper as `cwd` and `C\<rel>` sources — so borg stores `C/Users/...` paths **identical to a live backup** (VSS is invisible to excludes/browsing/restore) and **restorable** (the old code stored `\\?\GLOBALROOT\...` device paths that were un-restorable). `crates/borg-platform-win/src/vss.rs` rewritten: `remap_path`→`volume_relative`+`drive_relative_source`, `snapshot_sources`→a `SnapshotPlan` (`prepare_snapshot` + `#[cfg(windows)]` `mount_snapshot`/`unmount_snapshot`); wired into **both** `commands.rs::create_backup` (manual) and `scheduled.rs::run_scheduled_backup` (scheduled), passing `plan.cwd`/`plan.source_paths` to `borg.create` and `plan.release()` on every exit. Single-volume only; multi-volume / non-admin / non-Windows / any failure transparently **falls back to live-file backup** (today's behavior). **De-risked first** by `tests/smoke-windows/validate-vss-spike.ps1` (6/6 on the KVM VM — proved `mklink /J` accepts a `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopyN\` target *with a trailing backslash*). **Validated end-to-end** by `tests/smoke-windows/validate-vss.ps1` (`make validate-vss`; +`build-app` target) — **4/4 on the KVM VM** driving the real `borg-ui.exe --scheduled-backup` (session 1, `/IT /RL HIGHEST`) with one source file **exclusively locked**: the locked file lands in the archive (a live backup would skip it → proves VSS engaged through the production path), the stored path is `C/borgui-vss/src/locked.txt` (matches live), and both files restore byte-correct. Linux: fmt/clippy(`-D warnings`)/`cargo test --workspace` green (incl. 50 `borg-platform-win` tests). Reviewed in a separate lane (APPROVE-WITH-NITS; the two MEDIUM nits — `symlink_metadata` over `exists()`, full-GUID+pid junction name — applied; the exclude/path-layout parity MEDIUM is the reason for the drive-letter-junction design). The low-pri `Drop`-based safety net for the panic-only leak window between `prepare_snapshot` and `release()` is now also done (**PR #41 MERGED**, squash `a89bf72`): `impl Drop for SnapshotPlan` does best-effort synchronous cleanup (rmdir junction+wrapper, WMI-delete the shadow) if `release()` was skipped by an unwind; `release()` drains `mounts`/`handles` so the happy path is a no-op.
+No implementation PR is in flight. Remaining roadmap work is documentation only.
 
-- **PR #39 MERGED** (`test/windows-autostart-login` → `master`, squashed `653b8d4`, 2026-06-06) — **autostart login-cycle validated.** New harness `tests/smoke-windows/validate-autostart-login.ps1` (+ `make validate-autostart-login`/`autostart-login-all`) closes the last "not verified on the app" gap (VSS aside): does the `HKCU\...\Run` value the app registers actually *fire* on login? Two/three phases driven by run.sh across a guest reboot — **set** writes the exact value `borg-platform-win::autostart::enable` writes (`BorgUI` = `"<exe>" --minimized`) after killing any running instance; run.sh then `shutdown /r`'s the guest (real login cycle: reboot → dockur auto-login → Explorer processes Run keys), **proves the reboot happened** (LastBootUpTime delta + hard-fail if sshd never drops), and waits SSH back; **verify** confirms `borg-ui.exe` auto-started; **clean** is the abort-path cleanup. **Ran 1/1 PASS (twice):** `borg-ui.exe` auto-started in **interactive session 1**, launched with **`--minimized`** by **`explorer`** (the shell firing the Run key), cmd `"C:\borgui-test\target\release\borg-ui.exe" --minimized`. The reg add/query/delete round-trip and `--minimized`→tray were already validated (`validate.ps1::autostart_registry_roundtrip` + PR #33 item 2); this is the login-firing piece. **Hardened per a code-reviewer pass** (2nd commit): no session-0 false-pass (interactive session required), positive `VERIFY-COMPLETE` gate (not just absence of failures), explorer-gate SKIP-vs-FAIL for a missing desktop, and `-Phase clean` + cleanup-before-fail so an aborted run never leaves the test exe registered to auto-launch.
+## Architecture map
 
-- **PR #38 MERGED** (`test/windows-archive-smoke` → `master`, squashed `502f522`, 2026-06-06) — **#35 ~100k-archive GUI smoke validated.** New harness `tests/smoke-windows/validate-archive-smoke.ps1` (+ `make validate-archive-smoke`/`archive-smoke-all`) stages a real 100,000-file / 200-folder borg archive on the VM and drives the production app's streaming/virtualized `ArchiveBrowser` via UI Automation. **Ran 5/5 PASS** (twice — once after a devil's-advocate hardening pass) against a current-master `pnpm tauri build --no-bundle` exe: the Browse view **streams all 100k entries and builds the full tree** (header shows `100000 / 100000 files`, progressive "Loading" text seen); the DOM stays **windowed at ~22 rows** for ~201 expanded logical rows (virtualization is real, not just mechanical); **Select all reaches 100000/100000** (the O(leaves) `Selection` model scales); **wheel-scrolling recycles the window** (advanced from dir index 20 → 199); and a **browser selective restore** of one folder extracts **500/500 files byte-correct**. This is the one #35 behaviour the earlier harnesses never stressed live — validate-gui-flows only restores a tiny archive via the row button, never the streaming contents tree. The wrapper stages + cleans up its own 100k repo + profile (a Defender-excluded compiled-C# file factory keeps staging to ~seconds); it needs the production exe + an interactive desktop and SKIPs cleanly otherwise. Closes the last "Still NOT verified on the app" item for #35. Build note: a current-master `pnpm tauri build --no-bundle` on the VM with the cargo registry warm + `CARGO_NET_OFFLINE=true` builds in ~3.5 min (no sparse-index stall).
-- **PR #37 MERGED** (`test/windows-gui-flow-validation` → `master`, squashed `391e726`, 2026-06-06) — **interactive GUI flows validated + VM build toolchain fixed.** `tests/smoke-windows/validate-gui-flows.ps1` (+ `make validate-gui-flows`/`gui-flows-all`) drives the live Svelte UI via UI Automation and **ran 4/4 PASS on the KVM VM**: tray **Backup now** → navigates to the Backup page; **Settings** profile-switch repopulates the repo path; **GUI restore round-trip** (browse → Restore → destination picker → byte-verified extract); **cancel mid-backup** (Start Backup on a ~400 MB source → Cancel → UI returns to ready, no completed archive). Two enablers (documented in the script + README): WebView2 exposes its UIA tree only with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--force-renderer-accessibility`; the native folder picker nests under the Tauri window, opens only when the app is foreground, and is driven via Ctrl+L → path → Enter (confirm = Pane AutomationId 1). **Prereq: a PRODUCTION `tauri build` exe** — and the VM's broken corepack pnpm is now fixed (`corepack disable`; persists in the `win-storage` volume), so `pnpm tauri build --no-bundle` produces one (~13 MB, embedded frontend). Closes the interactive-GUI gap from "Do this before first production use".
-- **PR #36 MERGED** (`test/windows-tray-menu-validation` → `master`, squashed `35098bb`, 2026-06-05) — **tray right-click menu validated (#34, now closed).** `tests/smoke-windows/validate-tray.ps1` (+ `make validate-tray`/`tray-all`) drives the live tray menu via UI Automation + MSAA: it finds the BorgUI tray icon (opening the Win11 overflow flyout, toggle-safe), right-clicks it, reads the native `#32768` popup's items via MSAA (`AccessibleObjectFromWindow`/`accName` — the menu exposes **nothing** to UIA), asserts they are **exactly** `Show BorgUI` / `Backup now` / `Quit`, and exercises **Show** (window appears) + **Quit** (process exits) via positional clicks (muda's menu returns `DISP_E_MEMBERNOTFOUND` for `accDoDefaultAction`). It self-relaunches in session 1 via an `/IT` task. **Ran 3/3 PASS on the KVM VM** (contents + Show + Quit; `tray_backup_now` is a SIGNAL — it emits to the JS frontend, which a dev-mode exe doesn't load, and the backup engine is already proven by validate-gui's scheduled path). Closes the last code-only Tier C item.
-- **PR #35 MERGED** (`perf/archive-contents-streaming-virtualization` → `master`, squashed `e097f8e`, 2026-06-05): archive-contents streaming + virtualization (#23, now closed). Backend `BorgClient::list_contents_streaming` (`borg.rs`) reads `borg list --json-lines` line-by-line and emits batches of 5000 via an `on_batch` callback — bounded memory, only one batch held; `list_contents` delegates to it; `kill_on_drop` cleanup. Tauri `stream_archive_contents` (`commands.rs`) forwards batches over an `ipc::Channel<Vec<ArchiveEntry>>` (replaced `list_archive_contents`). Frontend (`ArchiveBrowser.svelte` + `archive-tree.ts`): fixed-height virtual scrolling, a `Selection` model with O(1) folder checked/indeterminate state, progressive "Loaded N…" feedback (tree built once on completion). Restore paths unchanged. New e2e `streaming_list_matches_collected_listing` (5100 entries, ≥2 batches, order-preserving) + a separate-lane code review (6 findings, all fixed). CI green. **Now also validated live on a 100k-entry archive in the running GUI** (`validate-archive-smoke.ps1`, 5/5 on the KVM VM) — the perf win is no longer only mechanical.
-- **PR #33 MERGED** (`feat/windows-gui-validation-harness` → `master`, squashed `901dc80`, 2026-06-04): the Windows GUI-validation harness (`tests/smoke-windows/validate-gui.ps1` + `make validate-gui`/`gui-all` + an env-gated `keychain.rs` Credential-Manager test) **plus a product fix** — `BorgError::detail()` so failed scheduled backups record borg's real stderr (`error.rs` + `scheduled.rs` + `lib.rs`). **All five real-desktop items + close-to-tray were validated on the KVM Windows VM** (details in Open items → GUI validation). Went through three review passes (code-reviewer agent → devil's-advocate → `/code-review`); artifact at `.claude/PRPs/reviews/pr-33-review.md`.
-- **PR #32 MERGED** (`e8a05e8`, 2026-06-03): friendlier non-admin local-repo preflight + edge-validation harness. VM-validated (non-admin 3/3, admin Failed:0). Report: `.claude/PRPs/reports/windows-nonadmin-preflight-and-validation-report.md`.
-- **Issue housekeeping:** #25 (console-flash / `CREATE_NO_WINDOW`) **closed completed** (validated in #33); #23 (archive virtualization) **closed** (PR #35); #34 (tray right-click menu) **closed** (PR #36) — validated by the automated `validate-tray.ps1` pass (3/3 on the KVM VM). **No open issues remain.** VSS is now implemented + VM-validated (PR #40, squash `1b37538`) — see the Latest section.
-- **No warm smoke VM** — torn down; the Windows disk persists in the `smoke-windows_win-storage` volume, so `make validate-all` / `gui-all` fast-boot (~45 s) instead of reinstalling.
+- `crates/borg-core`: portable Borg CLI wrapper, config validation, SSH helpers,
+  archive/diff parsing, cancellation, updater-independent core logic.
+- `crates/borg-platform-win`: Windows VSS, Task Scheduler, autostart, and
+  Windows-specific command wrappers.
+- `app-tauri/src-tauri`: Tauri IPC commands, profiles, SQLite history,
+  diagnostics import/export, recovery-key handling, keychain, scheduled runners,
+  updater plumbing, tray/window lifecycle.
+- `app-tauri/src`: Svelte 5 UI, stores, Settings sections, archive browser,
+  backup/restore flows, update/recovery/integrity/schedule UI.
 
-## Where things stand
+## Data and secret handling
 
-`master` has, in order: archive browsing + a production-readiness pass (#22), borg non-interactive hardening (#24), the local-repo drive-letter fix (#31) + non-admin preflight (#32), the Windows GUI-validation harness + scheduled-backup stderr fix (#33), and archive-contents streaming + virtualization (#35). The cross-platform backup **engine** is well tested, and the **Windows GUI layer has now been validated on real hardware** (PR #33, on the KVM VM): all Tier A/B/C items — keychain→Credential Manager, scheduled-task firing, window/UI/tray render, `--minimized`, console-flash, close-to-tray, and the tray right-click menu *contents* + Show/Quit actions (automated UIA pass, #34).
+- History is SQLite-backed. User-facing backup/restore events, integrity events,
+  and scheduled-attempt diagnostics are separate record types.
+- Profile schema rejects future versions unless explicitly overwritten.
+- Diagnostics/config exports intentionally exclude passphrases, SSH private key
+  paths/material, recovery payloads, source file listings, and updater private
+  keys.
+- Recovery-key exports are portable JSON files containing age/scrypt-encrypted
+  Borg key material. Store the file and recovery passphrase separately.
+- Updater signing and Windows Authenticode signing are separate trust systems.
+  Keep only the updater private key in `TAURI_SIGNING_PRIVATE_KEY`; the public
+  updater key is committed in Tauri config.
 
-- **Verified (Linux CI + local):** `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (234 tests), `svelte-check` (0/0), production frontend build.
-- **Verified end-to-end against a real borg binary (Linux):** init → create → list → browse → extract → byte-for-byte verify, including encrypted repos, selective restore, special-character filenames, and the locked-file warning path (`crates/borg-core/tests/e2e_backup_restore.rs`).
-- **Verified on real Windows (manual):** the Rust workspace compiles, and manual `borg.exe 1.4.4+win6` operations (init an encrypted repo, version) work with the hardening env vars in place. See the headless-testing section below.
-- **Verified on real Windows (PR #33, KVM VM):** the Tauri app window + UI render, the OS keychain (Windows Credential Manager), Task Scheduler firing a real backup end-to-end, `--minimized`→tray, console-flash suppression, and close-to-tray.
-- **Now validated on the app (GUI-flow harness, PR #37):** GUI-clicked **restore round-trip** (byte-verified), **cancel mid-backup**, **Settings** profile-switch, and tray **Backup now** → Backup-page navigation. Tray menu contents + Show/Quit were validated in #34.
-- **Now validated on the app (#35 large-archive smoke, PR #38):** on a genuinely huge **100,000-file** archive the streaming/virtualized **Browse** view builds the full tree (`100000 / 100000 files`), stays windowed at ~22 DOM rows, scales Select-all to 100k, recycles rows on scroll (dir 20 → 199), and selective-restores a chosen folder byte-correct (500/500) — 5/5 via `validate-archive-smoke.ps1`.
-- **Now validated on the app (autostart login-cycle, PR #39):** after a real guest reboot + auto-login, the `HKCU\...\Run` value the app registers actually launches `borg-ui.exe` — auto-started in interactive session 1, `--minimized`, parented by `explorer` (1/1 via `validate-autostart-login.ps1`).
-- **Now validated on the app (VSS) — BOTH production entry points:** with an **exclusively-locked** source file (a live backup would skip it), the file lands in the archive at `C/...` (matches the live layout) and restores byte-correct. **Scheduled** path (`borg-ui.exe --scheduled-backup` → `scheduled.rs`): 4/4 via `validate-vss.ps1` (PR #40). **Manual GUI** path ("Start Backup" → `commands.rs::create_backup`, driven via UIA, elevated): 3/3 via `validate-vss-manual.ps1` (`make validate-vss-manual`) on the KVM VM.
-- **Still NOT verified on the app:** nothing outstanding (VSS now done; everything else was already validated).
+## Release operations
 
-## Architecture
+1. Confirm local quality gate:
 
-- `crates/borg-core` — portable Rust: config/validation, the borg CLI wrapper (`borg.rs`), SSH, progress parsing. Repo location is SSH **or** a local path (empty host + user = local).
-- `crates/borg-platform-win` — Windows VSS + Task Scheduler.
-- `app-tauri/src-tauri` — Tauri commands (`commands.rs`), keychain, profiles, history, archive naming, tray.
-- `app-tauri/src` — Svelte 5 frontend (routes + `lib/components`, `lib/stores`).
+   ```bash
+   cargo test --workspace
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo fmt --all -- --check
+   cd app-tauri && pnpm check && pnpm build
+   git diff --check
+   ```
 
-## Build & run
+2. Cut a tag:
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+3. The Release workflow stages the pinned Borg-for-Windows bundle, builds MSI and
+   NSIS installers, signs Tauri updater artifacts, writes `latest.json`, uploads
+   artifacts, and creates a draft GitHub Release.
+4. Review the draft release assets and notes, then publish manually.
+5. For a dry run, dispatch the Release workflow manually; it uploads artifacts but
+   does not publish a release.
+
+Authenticode signing remains disabled until Azure Trusted Signing is configured.
+See `docs/windows-signing.md`. If signing is explicitly enabled without required
+secrets/variables or if signing/verification fails, the release workflow fails.
+
+## Windows smoke commands
+
+Run from a host with the KVM Windows harness when the change affects the named
+surface:
 
 ```bash
-cd app-tauri && pnpm install && pnpm tauri dev   # needs borg.exe in src-tauri/binaries/ on Windows
+cd tests/smoke-windows
+make validate-installer
+make validate-vss
+make validate-vss-manual
+make validate-archive-smoke
+make validate-gui-flows
+make validate-autostart-login
 ```
 
-## Tests
+Use Release workflow dry runs for installer/updater/signing changes. The smoke
+harness details are in `tests/smoke-windows/README.md`.
 
-```bash
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
-cd app-tauri && npm run check && npm run build
-```
+## Operational gotchas
 
-Real-borg end-to-end tests are skipped unless `BORG_TEST_BIN` is set:
+- Borg prompts must remain disabled in GUI/headless paths. Keep
+  `BORG_PASSPHRASE`, `BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK`,
+  `BORG_DISPLAY_PASSPHRASE=no`, `BORG_RELOCATED_REPO_ACCESS_IS_OK=yes`, and
+  closed stdin behavior intact.
+- Borg-for-Windows misparses raw drive-letter repository paths (`C:\repo`) as
+  SSH. Use `RepoConfig::location()` so local drive paths are rewritten to UNC.
+- VSS stores archive paths through a drive-letter junction so VSS backups remain
+  restorable and match live backup path layout.
+- `borg extract --progress --log-json` reports restore progress as
+  `progress_percent`, not `archive_progress`; do not infer restore success from
+  file-count events.
+- Archive listing streams are cancellable by request id. Browser close, Escape,
+  archive replacement, component teardown, and closed IPC channels should remain
+  neutral UI states rather than failures.
+- Windows PowerShell smoke scripts should stay ASCII-only for PS 5.1.
 
-```bash
-BORG_TEST_BIN=/path/to/borg cargo test -p borg-core --test e2e_backup_restore -- --nocapture
-```
+## Follow-up issue candidates
 
-CI (`.github/workflows/ci.yml`) does **not** set `BORG_TEST_BIN`, so the e2e suite does not gate CI — run it locally against the bundled 1.4.x `borg.exe` before trusting a release.
-
-## borg must be fully non-interactive (#24)
-
-`borg.rs::base_command_with` sets these so borg **never blocks on a prompt the GUI can't answer** (each one is a real hang if omitted):
-
-- `BORG_PASSPHRASE` always set (empty when none) — no passphrase prompt.
-- `BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK=yes` — no "unknown unencrypted repo? [y/N]" prompt.
-- `BORG_DISPLAY_PASSPHRASE=no` — no "display passphrase for verification? [y/N]" prompt on `init`.
-- `BORG_RELOCATED_REPO_ACCESS_IS_OK=yes`, and stdin closed as a backstop.
-
-Don't remove these — they were found the hard way on Windows. Vorta (the macOS/Linux borg GUI) sets the same vars for the same reason.
-
-## Windows headless testing (`tests/smoke-windows/`)
-
-There is a working KVM-backed Windows VM harness (Docker/`dockurr/windows`, tiny11). On a host with `/dev/kvm` it boots Windows, installs Rust + MinGW + `borg.exe`, deploys the source, and runs the test suite. It now also installs `borg.exe 1.4.4-win6` and has a real-borg e2e step. Run it from `tests/smoke-windows/` with `./run.sh all` (or `make smoke`); `KEEP_VM=1` keeps it warm; `./run.sh down` tears it down. The `.bin/docker` shim is gitignored and auto-detects distrobox.
-
-**Known limitation (important):** the automated e2e could **not** be driven to green headless. `borg.exe` is a PyInstaller bundle; when spawned by the Rust test binary (via tokio, several levels deep under an SSH session with no console), it **hangs at spawn** — even with all the non-interactive env vars, stdin closed, and `CREATE_NO_WINDOW`. The *same* `borg.exe` works when launched directly from PowerShell (which has a console). This is a **test-environment artifact** (console-less spawn under SSH), not a product defect — the real Tauri GUI has a window station. Two practical consequences:
-- The e2e suite validates the engine on Linux; on Windows, run it under a session that has a real console, or validate via the actual app.
-- The `borg-core` unit tests also hang under this harness because the `ssh::` tests spawn real `ssh.exe`/`ssh-keygen.exe` that prompt; skip them (`-- --skip ssh::`) if running unit tests headless.
-
-**Runtime validation pass (`validate.ps1`, headless-safe) — RAN on the KVM VM 2026-06-02.** `tests/smoke-windows/validate.ps1` (via `./run.sh validate` / `make validate-all`) drives the real native tools directly from PowerShell, with every borg call hard-bounded by a timeout so nothing can hang the run. It needs only a booted VM (no Rust toolchain/source). Last result: **5 pass / 0 fail**:
-- ✅ `autostart_registry_roundtrip` — `reg HKCU\…\Run` add/query/delete works (autostart command shape validated on real Windows).
-- ✅ `schtasks_roundtrip` — `schtasks` create/query/delete works (scheduling command shape validated).
-- ✅ `borg_install` + `borg_engine_create` — borg.exe 1.4.4+win6 runs; init→create→list works, so the **borg engine itself is fine on Windows**.
-- ✅ `borg_local_repo_via_unc` — the local-repo fix: a `C:\…`→`\\localhost\C$\…` UNC-rewritten repo round-trips (init → create → cross-cwd extract → byte-verify). Regression test for the drive-letter bug.
-
-The hanging `cargo test` e2e step in `smoke-test.ps1` is now a clear SKIP pointing here. Still needs eyes on a real desktop (can't be asserted headlessly): the Tauri window/tray rendering, `--minimized` landing in the tray, a scheduled task actually firing the headless run, the console-flash being gone, and the keychain writing to Windows Credential Manager.
-
-## Do this before first production use
-
-PR #33 VM-validated the keychain, Task-Scheduler-firing, headless backup, and borg-spawn paths; #34 the tray menu; and the **GUI-flow harness** (`validate-gui-flows.ps1`, PR #37) now covers the interactive flows — a GUI-clicked **restore round-trip** (byte-verified), **Cancel** mid-run, **Settings** profile-switch, and tray **Backup now** nav — all 4/4 PASS on the KVM VM against a production `tauri build`. The **#35 virtualization on a genuinely huge (~100k-entry) archive** is now also covered — `validate-archive-smoke.ps1` ran 5/5 on the KVM VM (stream + windowed DOM + Select-all-100k + scroll-recycle + selective restore). **Remaining human eyeballing before production:** run the app once on the target machine for a sanity pass (the harness drives a clean VM; nothing replaces a quick real-hardware look).
-
-## Open items
-
-- **✅ FIXED: local/USB repos on Windows (borg drive-letter bug).** The bundled borg.exe (marcpope/borg-windows **1.4.4+win6**) misparsed a drive-letter repo arg (`C:\repo`) as SSH host "C" and hung (this was very likely the true cause of the old "console-less spawn hang" theory — it was a path-parsing bug all along; the borg *engine* itself is fine). **Fixed** in `RepoConfig::location()`: on Windows a local drive-letter path is rewritten to an admin-share UNC path (`C:\repo` → `\\localhost\C$\repo`), which has no drive-letter colon so borg treats it as local. Validated on the KVM VM — `make validate` is now **5/5 green**, including a full UNC round-trip (init → create → cross-cwd extract → byte-verify). **Caveat:** the `X$` admin share needs an admin account (typical for personal Windows). A standard user is now caught by `RepoConfig::local_repo_preflight()` — wired into **all 10** borg-op commands via the `precheck_repo` helper in `commands.rs` (it runs the loopback SMB stat off the async runtime via `spawn_blocking`) — which returns a clear "run as admin, or use an SSH repo" error instead of a cryptic borg failure. Verified on the VM as a standard user (`borgstd`) **3/3**: `\\localhost\C$` is denied, the denial surfaces as `ERROR_ACCESS_DENIED` `0x80070005` → Rust `PermissionDenied` (the exact preflight trigger), and a local init fails fast with stderr, no hang. The proper upstream fix (borg should detect drive-letter local paths) remains a follow-up; filed at marcpope/borg-windows#7. **Shipped: PR #31 (drive-letter fix) + PR #32 (non-admin preflight), both merged.**
-  - **Edge validation** (`tests/smoke-windows/validate-edge.ps1`, `make edge-all`): the **non-admin** half is validated **3/3**. The **multi-drive** half (repo on `D:`, restore to `C:`) is harness-complete but couldn't run here — dockur only provisions a second disk (`DISK2_SIZE`) on a *fresh* install, not when recreating a persisted volume, so `D:` never appeared (admin mode SKIPs it cleanly, Failed:0). Run it on a clean-volume VM (`docker compose down -v` then `make edge-all`) for the literal D:→C: confirmation. Note the cross-drive property is already covered borg-mechanically by `validate.ps1::borg_local_repo_via_unc` (UNC repo + extract from a different cwd — drive-independent).
-  - Plans: `.claude/PRPs/plans/completed/{friendlier-non-admin-preflight,windows-nonadmin-multidrive-validation}.plan.md` (done, archived) and `.claude/PRPs/plans/fix-windows-local-repo-path.plan.md` (the original drive-letter fix). Report: `.claude/PRPs/reports/windows-nonadmin-preflight-and-validation-report.md`. `.claude/PRPs/plans/completed/windows-gui-validation.plan.md` is **DONE** (archived) — implemented + VM-validated in PR #33 (see GUI validation below).
-- **`CREATE_NO_WINDOW` on spawned processes (Windows)** — DONE in `crates/borg-core/src/proc.rs`: `proc::command()` builds a `std::process::Command`, sets `CREATE_NO_WINDOW` under `#[cfg(windows)]`, then converts to `tokio::process::Command`. All borg (`borg.rs::base_command_with`) and ssh (`ssh.rs`) spawns route through it; no-op on non-Windows. Suppresses the cosmetic console-window flash. **Validated on real Windows (PR #33, closes #25):** 0 visible console windows during a 250 MB session-1 backup (a baseline-excluded conhost-window poll + a mid-run screenshot). (It is unrelated to the headless-e2e spawn hang, which has a different root cause.)
-- **GUI validation — MERGED in PR #33 (`901dc80`), VM-validated** — `.claude/PRPs/plans/completed/windows-gui-validation.plan.md` shipped as `tests/smoke-windows/validate-gui.ps1` (+ `make validate-gui`/`gui-all`, README VNC checklist, env-gated `keychain.rs` test) and **ran green on the KVM Windows VM (keychain PASS, scheduled-firing PASS, Failed: 0)** after building `borg-ui.exe` on the VM (`cargo build --release -p borg-ui`; the `../build` frontend dir is embedded by `generate_context!`, so no `tauri build` needed). **Tier A keychain** (item 5) and **Tier B scheduled-firing** (item 3) are now hard-validated on real Windows. **Tier C** was also validated via session-1 desktop screenshots (an `/IT` task running `[System.Drawing] CopyFromScreen`, since a GUI over SSH renders in no desktop): **item 1** — the full UI renders (window "BorgUI — Backup Manager", Dashboard with the sidebar nav + status cards, and the green tray icon) — and **item 2** — `--minimized` shows no window (process alive, window hidden). **Item 4 (console flash) is now validated too:** a real 250 MB scheduled backup in session 1 produced **0 visible new console windows** while borg ran for several seconds (`CREATE_NO_WINDOW` in `proc.rs` works), confirmed by a baseline-excluded conhost-window poll + a mid-run screenshot. **Close-to-tray is also validated** (with the real UI loaded via the Vite dev server): sending `WM_CLOSE` to the window leaves the process alive (`prevent_close`) and hides the window (`hide`) — confirmed by a post-close screenshot showing no window. NOTE: a dev-mode `cargo build` exe (WebView2 stuck on the "localhost refused" error page) instead *exits* on close — an error-page artifact, not a real defect, but another reason Tier C needs a real `tauri build` or the dev server up. **The tray right-click menu (Show/Backup now/Quit) is now validated** (#34) by `validate-tray.ps1` — UIA finds the icon (Win11 overflow), MSAA reads the native `#32768` popup's items (it exposes nothing to UIA), and Show/Quit are invoked by positional click; 3/3 PASS on the KVM VM. **GOTCHA found doing this:** Tier C needs a real `tauri build` (or the Vite dev server running) — a plain `cargo build --release` makes a dev-mode exe whose window shows "localhost refused to connect" (it loads `devUrl` not the embedded frontend); fine for the headless Tier B path. Two harness bugs the VM caught (fixed): keychain must run in **session 1** via an `/IT` task (Credential Manager raises `ERROR_NO_SUCH_LOGON_SESSION` over SSH), and the harness must copy the **whole borg dist** (`borg.exe` + `_internal\`) beside `borg-ui.exe` (PyInstaller onedir; copying only the `.exe` → "Failed to load Python DLL ..._internal\python311.dll").
-- **Product follow-up found by the GUI validation — DONE (PR #33).** A failed scheduled backup recorded `e.to_string()`, but `BorgError::ProcessFailed`'s Display drops `stderr`/`exit_code`, so the real borg error was invisible until `RUST_LOG=debug`. Added `BorgError::detail()` (`error.rs`) — Display + exit code + a trimmed/capped stderr tail — and `scheduled.rs` now records `e.detail()` for create/hook failures (and in the prune/post-backup warning strings). Display stays terse for the GUI. Unit-tested (`error::tests::detail_*`) and **confirmed end-to-end on the KVM Windows VM**: a scheduled backup against an un-initialized repo now records `"borg process failed: borg create failed (exit 2): {...\"message\": \"Repository ... does not exist.\", \"msgid\": \"Repository.DoesNotExist\"}"` in `history.json` — borg's real stderr, where it previously recorded only "borg create failed".
-- **#23 — DONE (PR #35, MERGED `e097f8e`, 2026-06-05).** The archive browser no longer loads the whole listing into one `Vec`/one IPC blob or renders every node. Backend: `BorgClient::list_contents_streaming` (`borg.rs`) reads `borg list --json-lines` stdout line-by-line and emits batches of `LIST_BATCH_SIZE` (5000) via an `on_batch` callback, returning the total — only one batch is ever held (`list_contents` now delegates to it, so the e2e suite covers the streaming path). Tauri `stream_archive_contents` (`commands.rs`) forwards batches over an `ipc::Channel<Vec<ArchiveEntry>>`. Frontend (`ArchiveBrowser.svelte` + `archive-tree.ts`): fixed-height virtual scrolling (only ~visible rows in the DOM), a `Selection` model with incremental per-directory selected-counts (O(1) folder checked/indeterminate instead of re-walking subtrees), and progressive "Loaded N…" feedback; the tree is built once when the stream completes. Restore paths are unchanged (still the selected leaf set). Verified: full e2e against real borg incl. a multi-batch 5100-entry case (`streaming_list_matches_collected_listing`), clippy/fmt/`cargo test --workspace`, `svelte-check` 0/0, frontend build. **Now also eyeballed live in the running GUI on a 100k-entry archive** — `tests/smoke-windows/validate-archive-smoke.ps1` (`make validate-archive-smoke`/`archive-smoke-all`) stages a 100,000-file archive and drives the production `ArchiveBrowser` via UIA: 5/5 PASS (full-tree stream `100000 / 100000 files`, DOM windowed at ~22 rows, Select-all = 100k, scroll recycles dir 20 → 199, byte-correct selective folder restore 500/500). Possible follow-up: cancel `borg list` when the browser closes mid-stream (currently `kill_on_drop` + the 600s timeout bound the worst case; the op is seconds in practice).
-- **VSS — DONE (PR #40 MERGED, squash `1b37538`), VM-validated.** Previously disabled because shadow-copy paths (`\\?\GLOBALROOT\...`) are unrestorable on Windows; the plan's Approach B (NTFS junction) fixes that. The shadow is mounted as a junction **named after the drive letter** in a per-process `%TEMP%` wrapper, and borg runs with the wrapper as `cwd` + `C\<rel>` sources, so stored paths come out `C/Users/...` — identical to a live backup (excludes/browsing/restore unaffected) and fully restorable. Wired into both manual (`commands.rs::create_backup`) and scheduled (`scheduled.rs`) paths; single-volume only, with a live-file fallback for multi-volume / non-admin / non-Windows / any failure. Spike `validate-vss-spike.ps1` 6/6 (the `mklink /J` feasibility), end-to-end `validate-vss.ps1` 4/4 (real `--scheduled-backup`, locked-file capture, `C/` layout, byte-correct restore). Plan: `.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md`. Live-file backup remains the automatic fallback (locked files warn, not fail) when a snapshot can't be taken.
-- TODO.md Phase 3 is **complete** — archive diff, repository compaction, pre/post backup commands, and autostart at login are all done. Autostart (`borg-platform-win::autostart`) shells out to `reg` to manage the `HKCU\...\Run` value `"<exe>" --minimized`; the `--minimized` flag (handled in `lib.rs`) starts BorgUI hidden in the tray. **Fully validated on real Windows:** the `reg` add/query/delete round-trip is green (`validate.ps1::autostart_registry_roundtrip`, PR #29/#32), `--minimized` → hidden-in-tray is confirmed (PR #33 item 2 — process alive, no window), and **the real login cycle now fires the Run key** — `validate-autostart-login.ps1` (PR #39) set the `BorgUI` Run value, `shutdown /r`'d the guest, and after auto-login `borg-ui.exe` auto-started in interactive session 1 with `--minimized`, parented by `explorer` (1/1 PASS, with a boot-time-delta proof that the reboot really happened).
-- **Scheduled backups now run headlessly.** The Task Scheduler entry launches `<exe> --scheduled-backup`; `lib.rs` detects the flag and (instead of showing the GUI) runs `scheduled::run_scheduled_backup` — one backup from the active profile's *schedule* config (its own source paths + excludes), with the profile's pre/post hooks and retention prune, recording the outcome to history and showing a desktop notification, then exiting 0/1. The runner core (`scheduled.rs`) is Tauri-free and tested against real borg via `BORG_TEST_BIN`. **Confirmed on real Windows (PR #33, 2026-06-03):** a registered `/IT` Task Scheduler task launches `borg-ui.exe --scheduled-backup` in session 1, runs a real backup, writes a `history.json` success event, and the archive is listable in the repo (`LastTaskResult=0`). The window-hidden / Task-Scheduler-exit-code surfacing in the live GUI tray still wants a VNC eyeball, but the end-to-end headless backup path is validated.
-
-## Gotchas worth knowing
-
-- **borg prompts hang headless.** Anything that makes borg ask a question (unknown/unencrypted repo, missing/wrong passphrase, init verification) blocks forever with no TTY. The env vars above prevent it; keep them.
-- **borg.exe misparses Windows drive-letter paths as SSH.** `C:\repo` → host "C" → it hangs on `ssh`. `RepoConfig::location()` now rewrites local drive-letter paths to `\\localhost\C$\…` UNC on Windows to avoid this (see the FIXED open item) — but if you ever bypass `location()` and hand borg a raw `C:\…` repo arg, it will hang. Don't assume a local-repo hang is a spawn/console problem; it's this.
-- `borg extract --progress --log-json` emits only `progress_percent` events (never `archive_progress`/`nfiles`), unlike `create`. Don't derive restore success or file counts from `archive_progress` — trust the process exit code.
-- On Windows, `cargo`'s sparse-index network refresh can stall in a constrained VM; build with `CARGO_NET_OFFLINE=true` once deps are cached. A network-stalled `cargo` can become unkillable and hold the package-cache lock — reboot the VM to clear it. (With the registry warm + offline, a current-master `pnpm tauri build --no-bundle` is ~3.5 min.)
-- **`run.sh` tears the VM down on exit unless `KEEP_VM=1`.** The `EXIT` trap runs `docker compose down` for *every* sub-command (even `deploy`/`validate-*`), which stops the container (the `win-storage` volume persists, so it fast-boots back in ~45 s, but you lose the warm VM). Always prefix one-off runs with `KEEP_VM=1` (e.g. `KEEP_VM=1 ./run.sh validate-archive-smoke`) to keep it warm across steps.
+- Enable production Authenticode signing after Azure Trusted Signing account,
+  certificate profile, OIDC, and repository variables/secrets are configured.
+- Run an installed-app updater smoke test against the next published release.
+- Track/upstream Borg-for-Windows drive-letter path parsing so the UNC workaround
+  can eventually be retired.
+- Add metered-network controls or provider-specific SSH onboarding only if user
+  support data shows demand.

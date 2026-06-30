@@ -1,69 +1,51 @@
-# BorgUI Feature Plan
+# BorgUI Roadmap Status
 
-Roadmap derived from a competitive analysis vs Vorta (the established BorgBackup GUI for macOS/Linux). BorgUI's differentiation is Windows + VSS snapshots + native Task Scheduler — these are features Vorta does not offer. The gaps below are what Vorta provides that BorgUI does not yet.
+Last updated: 2026-06-29.
 
-## Current status (2026-06-01)
+The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 
-Phases 1–2 are complete and Phase 3 is mostly done. A production-readiness pass shipped in **#22**:
+- backup destinations: SSH, local folder, USB drive, and network share
+- VSS snapshots for consistent Windows backups of open files, with live-file fallback
+- restore, selective restore, archive browsing, archive diff, and archive-list cancellation
+- repository initialization, encryption/passphrase storage, retention/prune, compact, and delete
+- multiple profiles, profile import/export, custom archive naming, pre/post hooks
+- backup history, SQLite diagnostics/history storage, desktop notifications, tray, and autostart
+- scheduled backups through Windows Task Scheduler, including transient retry and missed-run reporting
+- repository integrity checks, manual full-data verification, and opt-in monthly metadata checks
+- encrypted portable recovery-key export/import
+- consent-based signed updater flow
+- Windows release workflow, unsigned artifacts by default, and signing-ready Azure Trusted Signing path
+- guided SSH public-key onboarding without password collection
 
-- Warning-safe backups — a locked/in-use file (borg exit code 1) is skipped with a warning instead of failing the whole backup.
-- Fixed selective restore (positional literal paths) and the bug where every successful restore was reported as a failure (`borg extract` emits only `progress_percent`, never `archive_progress`).
-- Backup/restore cancellation + timeouts on interactive ops.
-- **Local / USB / network-folder repositories** (no SSH server needed).
-- Self-evident UI: inline help + examples on every Settings section; Settings split into per-section components.
-- Real-borg end-to-end test suite (`crates/borg-core/tests/e2e_backup_restore.rs`).
+## Current release posture
 
-**Open items:** VSS remains intentionally disabled (live-file backup — see `.claude/PRPs/plans/fix-vss-paths-in-archive.plan.md`). **Not yet validated on real Windows** — run one live backup→restore round-trip on the target machine before production use. (Archive-tree virtualization for 100k+ entry archives, #23, is now implemented — streaming backend + virtual-scroll frontend.)
+- `v0.1.0` has been published with MSI and NSIS installers.
+- Later post-v0.1 roadmap work is merged on `master`; cut the next tag to ship it.
+- Installers remain usable unsigned. Authenticode signing is prepared but intentionally disabled until Azure Trusted Signing repository configuration exists.
+- Updater signing is separate from Authenticode signing; keep the updater private key only in GitHub Actions secrets.
 
-## Phase 1 — Make it usable (critical gaps)
+## Explicit follow-up issue candidates
 
-Without these, BorgUI can create backups but not complete the full lifecycle.
+Track new work as GitHub issues instead of reopening the completed roadmap:
 
-- [x] **Restore/extract from archive** — `borg extract` command in `borg.rs`, Tauri command with progress streaming, restore button + destination picker on archives page _(PR #10)_
-- [x] **Encryption / passphrase UI** — set/change passphrase, store in OS credential manager (Windows Credential Manager, macOS Keychain, Secret Service), inject via `BORG_PASSPHRASE` env var on each borg call
-- [x] **Archive deletion** — `borg delete` command, delete button per archive row, confirmation dialog
-- [x] **Pruning with retention rules** — `borg prune` with hourly/daily/weekly/monthly/yearly counts, UI in settings
-- [x] **Repository initialization** — `borg init` with encryption mode selector, "Create new repo" button in settings
+- Enable production Authenticode signing after Azure Trusted Signing account/profile variables and OIDC role assignment are configured.
+- Run and record the installed-app updater smoke test against a published post-v0.1 release.
+- Add metered-network controls only if user feedback shows scheduled backups need them.
+- Consider upstreaming or tracking Borg-for-Windows drive-letter repo parsing so BorgUI can eventually stop using the UNC workaround for local drive paths.
+- Add provider-specific SSH examples only if support requests justify them; the current onboarding is intentionally provider-neutral.
+- Consider FUSE-like mount support only if a credible Windows-native approach emerges; current restore/browse flows are the supported path.
 
-## Phase 2 — Make it trustworthy (high-value gaps)
+## Quality gate for future PRs
 
-These turn BorgUI from a foreground tool into a daemon-like backup app users actually leave running.
+Run the relevant focused tests plus:
 
-- [x] **System tray with background operation** — Tauri tray icon, minimize-to-tray, restore on click, "Backup now" menu item
-- [x] **Desktop notifications** — success/failure toast notifications, configurable in settings
-- [x] **Exclude patterns UI** — backend already supports excludes; add UI on backup + schedule forms with custom + preset patterns (`*.tmp`, `node_modules`, `.git`)
-- [x] **Backup history / event log** — persist event log, display on dashboard with timestamps and outcomes
-- [x] **Multiple profiles** — profile concept (named bundle of repo + schedule + retention), profile selector in nav, profile CRUD in settings, one-time migration from legacy single-config files
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+cd app-tauri && pnpm check && pnpm build
+git diff --check
+```
 
-## Phase 3 — Polish (medium/low-value gaps)
-
-Feature parity with Vorta where it pays off.
-
-- [x] **Archive browsing (tree view)** — `borg list --json-lines` via new `list_archive_contents` command, modal tree UI with collapsible folders, indeterminate-state folder checkboxes, Select all / Clear, "Restore selected" passes paths through to `borg extract` _(#22)_
-- [x] **Archive diff** — `borg diff --json-lines` between two selected archives via new `diff_archives` command; pick a baseline on the Archives page, then a second archive, and a modal lists added/removed/modified paths with byte deltas (metadata-only changes hidden by default)
-- [x] **Pre/post backup commands** — per-profile shell commands run before/after a backup with `$repo_url` / `$archive_name` substitution (borg-core `hooks` module + `set_profile_hooks` command + Settings "Pre / Post Commands" section). A failing pre-command aborts the backup; a failing post-command is surfaced as a warning. Wired into the manual backup path (`create_backup`)
-- [x] **Custom archive naming templates** — per-profile template with `{date}`/`{time}`/`{datetime}`/`{hostname}`/`{profile}`/`{random}` variables, live preview in settings, applied by backup page via `preview_archive_name` command
-- [x] **Autostart at login** — `borg-platform-win::autostart` writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (via `reg`); `get_autostart`/`set_autostart` commands + Settings "Startup" toggle. Registers `"<exe>" --minimized` so BorgUI starts hidden in the tray (handled in `lib.rs`)
-- [x] **Repository compaction** — `borg compact` via new `compact_repo` command; "Compact" button on the Archives page reclaims space left by prune/delete and reports how much was freed (requires borg 1.2+)
-- [x] **Profile import/export** — JSON export via save dialog, import via open dialog, ID collisions auto-resolved on import. Passphrase intentionally excluded (lives in keychain)
-- [x] **No console-window flash on borg spawn** — `borg-core::proc::command()` sets `CREATE_NO_WINDOW` on every borg/ssh spawn (Windows-only; no-op elsewhere). Validated on real Windows: 0 visible console windows during a 250 MB session-1 backup (PR #33, closes #25)
-
-## Not pursuing
-
-These are Vorta features that don't fit BorgUI's Windows niche or aren't worth the effort yet:
-
-- **FUSE mount** — Windows has no FUSE; use `borg extract --list` + tree view instead
-- **WiFi allowlist / metered network detection** — low value vs effort
-- **BorgBase integration** — vendor-specific; users can paste SSH URL manually
-- **In-process scheduler** — Windows Task Scheduler is better; we already use it
-
-## BorgUI advantages over Vorta (keep + promote)
-
-- Windows-native (Vorta doesn't support Windows)
-- VSS snapshots for consistent backup of locked files
-- Native Windows Task Scheduler integration (survives app being closed)
-- Tauri/Svelte = small binary, fast UI vs Python/Qt
-
----
-
-_Source: market research session 2026-05-20. See conversation history for full competitive analysis._
+For release-affecting changes, also run the applicable Windows smoke command from
+`tests/smoke-windows/README.md` and a Release workflow dry run.

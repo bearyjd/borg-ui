@@ -18,7 +18,7 @@ Rust library crates that contain all backend logic. Separated into a portable co
 ### Working In This Directory
 - Each crate has its own `Cargo.toml` — they share workspace dependencies from the root `Cargo.toml`.
 - `borg-core` is platform-agnostic. Never add Windows-specific code there.
-- `borg-platform-win` depends on `borg-core` for error types. It contains stubs for features not yet implemented (VSS).
+- `borg-platform-win` depends on `borg-core` for error types and owns Windows-only integrations such as VSS, Task Scheduler, and autostart.
 
 ### Dependency Direction
 ```
