@@ -55,6 +55,10 @@ jobs:
         working-directory: app-tauri
         run: pnpm install --frozen-lockfile
 
+      - name: Test signing configuration validator
+        shell: pwsh
+        run: ./scripts/test-signing-config.ps1
+
       - name: Validate signing configuration
         if: env.SIGNING_ENABLED == 'true'
         shell: pwsh
@@ -65,15 +69,7 @@ jobs:
           SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
           SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
           SIGNING_PROFILE: ${{ vars.AZURE_CERTIFICATE_PROFILE }}
-        run: |
-          $missing = @()
-          foreach ($name in 'AZURE_CLIENT_ID','AZURE_TENANT_ID','AZURE_SUBSCRIPTION_ID','SIGNING_ENDPOINT','SIGNING_ACCOUNT','SIGNING_PROFILE') {
-            $value = [Environment]::GetEnvironmentVariable($name)
-            if ([string]::IsNullOrWhiteSpace($value)) { $missing += $name }
-          }
-          if ($missing.Count -gt 0) {
-            throw "Code signing was explicitly enabled, but configuration is missing: $($missing -join ', ')"
-          }
+        run: ./scripts/validate-signing-config.ps1 -SigningEnabled $true
 
       # borg.exe (marcpope/borg-windows 1.4.4+win6) is a PyInstaller ONEDIR
       # bundle: borg.exe needs its sibling _internal\ (python311.dll + deps) right

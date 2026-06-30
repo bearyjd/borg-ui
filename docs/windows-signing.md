@@ -15,8 +15,25 @@ grant it the **Artifact Signing Certificate Profile Signer** role, and set:
 
 For a one-off validation, dispatch the Release workflow with
 `enable_signing=true`. Explicitly enabled runs fail before building if any
-configuration is missing. They also fail on Azure login, signing, timestamping,
-or post-signature verification errors.
+configuration is missing or malformed. They also fail on Azure login, signing,
+timestamping, or post-signature verification errors.
+
+Before enabling the repository variable, validate the intended values locally
+without printing secrets:
+
+```powershell
+$env:AZURE_CLIENT_ID = '<application/client GUID>'
+$env:AZURE_TENANT_ID = '<tenant GUID>'
+$env:AZURE_SUBSCRIPTION_ID = '<subscription GUID>'
+$env:SIGNING_ENDPOINT = 'https://<region>.codesigning.azure.net/'
+$env:SIGNING_ACCOUNT = '<artifact-signing-account>'
+$env:SIGNING_PROFILE = '<certificate-profile>'
+.\scripts\validate-signing-config.ps1 -SigningEnabled $true
+```
+
+The validator checks required values, Azure GUID syntax, an absolute HTTPS
+endpoint, and safe account/profile names. It never prints the client, tenant, or
+subscription IDs.
 
 The workflow signs the application executable before bundling, signs both MSI
 and NSIS installers, verifies every Authenticode signature before upload, and

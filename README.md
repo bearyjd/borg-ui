@@ -134,6 +134,8 @@ path the app uses for "Local folder / USB drive" repos.
   Tauri updater private key in `TAURI_SIGNING_PRIVATE_KEY`; the public updater
   key is committed in `tauri.conf.json`. Authenticode uses Azure Trusted Signing
   config documented in [docs/windows-signing.md](docs/windows-signing.md).
+  Run `scripts/validate-signing-config.ps1 -SigningEnabled $true` with the
+  intended environment values before setting `ENABLE_CODE_SIGNING=true`.
 - Recovery files, passphrases, SSH private keys, source listings, and updater
   private keys must never be added to diagnostics, config exports, history, or
   logs.
