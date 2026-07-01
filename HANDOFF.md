@@ -112,10 +112,14 @@ harness details are in `tests/smoke-windows/README.md`.
 
 ## Follow-up issue candidates
 
-- Enable production Authenticode signing after Azure Trusted Signing account,
-  certificate profile, OIDC, and repository variables/secrets are configured.
-- Run an installed-app updater smoke test against the next published release.
-- Track/upstream Borg-for-Windows drive-letter path parsing so the UNC workaround
-  can eventually be retired.
-- Add metered-network controls or provider-specific SSH onboarding only if user
-  support data shows demand.
+The post-v0.2 follow-ups are tracked explicitly:
+
+- `#64` production Authenticode activation after Azure/OIDC configuration.
+- `#65` installed-app updater smoke execution using
+  `tests/smoke-windows/validate-updater.ps1`.
+- `#66` Borg-for-Windows drive-letter path parsing/upstream tracking.
+- `#67` demand-gated provider-specific SSH examples and Windows mount research.
+
+Metered-network controls shipped in PR `#61`; the updater smoke harness shipped
+in PR `#62`; Azure signing configuration validation and its Windows Release dry
+run shipped in PR `#63`.
