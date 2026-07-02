@@ -2,9 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 export interface ScheduleConfig {
   enabled: boolean;
-  source_paths: string[];
   schedule: { type: 'hourly' } | { type: 'daily'; hour: number; minute: number };
-  excludes: string[];
   skip_metered_networks: boolean;
 }
 

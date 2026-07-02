@@ -7,12 +7,20 @@ export interface Profile {
   id: string;
   name: string;
   repo: RepoConfig;
+  backup_selection: BackupSelection;
   schedule: ScheduleConfig | null;
   integrity_schedule: { enabled: boolean } | null;
   retention: RetentionConfig | null;
   archive_template: string | null;
   pre_backup: string | null;
   post_backup: string | null;
+}
+
+export interface BackupSelection {
+  source_paths: string[];
+  excludes: string[];
+  template_id: string | null;
+  template_version: number | null;
 }
 
 export interface ProfilesData {
