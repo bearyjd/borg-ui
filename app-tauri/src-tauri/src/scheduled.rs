@@ -13,6 +13,7 @@
 //! `BORG_TEST_BIN`).
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use chrono::Utc;
@@ -25,6 +26,117 @@ use crate::archive_naming::{self, TemplateContext};
 use crate::history::{self, BackupEvent};
 use crate::keychain;
 use crate::profiles::{self, Profile};
+
+pub async fn run_restore_drill(config_dir: &Path, borg: &BorgClient) -> Result<(), String> {
+    let started = Instant::now();
+    let data = profiles::load(config_dir).await?;
+    let profile = data
+        .active()
+        .ok_or_else(|| "no active profile".to_string())?;
+    if !profile
+        .restore_drill_schedule
+        .as_ref()
+        .is_some_and(|schedule| schedule.enabled)
+    {
+        return Err("restore drill is not enabled".into());
+    }
+    let event_id = format!("restore-drill-{}", Utc::now().timestamp_millis());
+    let run = async {
+        let passphrase = keychain::get_passphrase(&profile.repo.ssh_url())
+            .ok()
+            .flatten();
+        let archive = borg
+            .list_archives(&profile.repo, passphrase.as_deref())
+            .await?
+            .into_iter()
+            .max_by(|left, right| left.start.cmp(&right.start))
+            .ok_or_else(|| borg_core::error::BorgError::InvalidConfig {
+                message: "repository has no archives to drill".into(),
+            })?;
+        let sample = Arc::new(Mutex::new(Vec::new()));
+        let sink = sample.clone();
+        let cancel = CancelToken::new();
+        borg.list_contents_streaming(
+            &profile.repo,
+            &archive.name,
+            passphrase.as_deref(),
+            &cancel,
+            move |entries| {
+                let mut sample = sink.lock().expect("restore drill sample poisoned");
+                let remaining = 10usize.saturating_sub(sample.len());
+                sample.extend(
+                    entries
+                        .into_iter()
+                        .filter(|entry| {
+                            entry.entry_type == "f"
+                                && borg_core::archive::validate_restore_path(&entry.path).is_ok()
+                        })
+                        .take(remaining),
+                );
+            },
+        )
+        .await?;
+        let sample = std::mem::take(
+            &mut *sample
+                .lock()
+                .expect("restore drill sample poisoned after listing"),
+        );
+        if sample.is_empty() {
+            return Err(borg_core::error::BorgError::InvalidConfig {
+                message: "latest archive contains no regular files".into(),
+            });
+        }
+        let temp = tempfile::Builder::new()
+            .prefix(".borgui-restore-drill-")
+            .tempdir_in(config_dir)?;
+        let paths: Vec<_> = sample.iter().map(|entry| entry.path.clone()).collect();
+        borg.extract(
+            &profile.repo,
+            &archive.name,
+            temp.path(),
+            &paths,
+            passphrase.as_deref(),
+            &cancel,
+            |_| {},
+        )
+        .await?;
+        for entry in &sample {
+            let restored = temp.path().join(&entry.path);
+            let metadata = std::fs::metadata(restored).map_err(borg_core::error::BorgError::Io)?;
+            if !metadata.is_file() || metadata.len() != entry.size {
+                return Err(borg_core::error::BorgError::InvalidConfig {
+                    message: "restored sample failed size/readability verification".into(),
+                });
+            }
+            std::fs::File::open(temp.path().join(&entry.path))
+                .map_err(borg_core::error::BorgError::Io)?;
+        }
+        Ok::<u8, borg_core::error::BorgError>(sample.len() as u8)
+    }
+    .await;
+    let (outcome, files_checked, error_message) = match &run {
+        Ok(count) => ("success", *count, None),
+        Err(_) => (
+            "failure",
+            0,
+            Some("restore drill failed; no filenames or temporary paths recorded".into()),
+        ),
+    };
+    history::append_restore_drill(
+        config_dir,
+        history::RestoreDrillEvent {
+            id: event_id,
+            timestamp: Utc::now().to_rfc3339(),
+            profile_id: profile.id.clone(),
+            outcome: outcome.into(),
+            files_checked,
+            duration_seconds: started.elapsed().as_secs(),
+            error_message,
+        },
+    )
+    .await?;
+    run.map(|_| ()).map_err(|error| error.to_string())
+}
 
 /// Outcome of a headless scheduled run. Drives the process exit code and the
 /// notification shown to the user.
@@ -483,6 +595,7 @@ mod tests {
                 skip_metered_networks: false,
             }),
             integrity_schedule: None,
+            restore_drill_schedule: None,
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -541,6 +654,56 @@ mod tests {
         assert_eq!(attempt.attempt, 1);
         assert_eq!(attempt.outcome, "success");
         assert!(!attempt.transient);
+    }
+
+    #[tokio::test]
+    async fn restore_drill_extracts_verifies_and_cleans_up() {
+        let Some(borg) = borg_or_skip() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let repo = local_repo(&tmp.path().join("repo"));
+        let source = tmp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("sample.txt"), b"verified bytes").unwrap();
+        borg.init_repo(&repo, "none", None).await.unwrap();
+        let profile = BackupProfile {
+            name: "drill".into(),
+            source_paths: vec![source],
+            excludes: vec![],
+            compression: Compression::default(),
+            repo: repo.clone(),
+        };
+        borg.create(
+            &profile,
+            "drill-archive",
+            None,
+            None,
+            &CancelToken::new(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+        let mut saved = profile_with_schedule(repo, vec!["unused".into()], false);
+        saved.restore_drill_schedule = Some(profiles::RestoreDrillSchedule { enabled: true });
+        write_profile(&config_dir, saved).await;
+
+        run_restore_drill(&config_dir, &borg).await.unwrap();
+        let event = history::latest_restore_drill(&config_dir, "default")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.outcome, "success");
+        assert_eq!(event.files_checked, 1);
+        assert!(
+            std::fs::read_dir(&config_dir)
+                .unwrap()
+                .flatten()
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("restore-drill"))
+        );
     }
 
     #[tokio::test]

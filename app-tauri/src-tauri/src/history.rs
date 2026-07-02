@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 const MAX_EVENTS: usize = 200;
-const DATABASE_SCHEMA_VERSION: i64 = 3;
+const DATABASE_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupEvent {
@@ -44,6 +44,79 @@ pub struct ScheduledAttempt {
     pub transient: bool,
     #[serde(default)]
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RestoreDrillEvent {
+    pub id: String,
+    pub timestamp: String,
+    pub profile_id: String,
+    pub outcome: String,
+    pub files_checked: u8,
+    pub duration_seconds: u64,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+pub async fn append_restore_drill(
+    config_dir: &Path,
+    event: RestoreDrillEvent,
+) -> Result<(), String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.execute(
+            "INSERT INTO restore_drill_history
+             (id, timestamp, profile_id, outcome, files_checked, duration_seconds, error_message)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                event.id,
+                event.timestamp,
+                event.profile_id,
+                event.outcome,
+                event.files_checked,
+                event.duration_seconds,
+                event.error_message,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+pub async fn latest_restore_drill(
+    config_dir: &Path,
+    profile_id: &str,
+) -> Result<Option<RestoreDrillEvent>, String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    let profile_id = profile_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.query_row(
+            "SELECT id, timestamp, profile_id, outcome, files_checked, duration_seconds, error_message
+             FROM restore_drill_history WHERE profile_id = ?1 ORDER BY sequence DESC LIMIT 1",
+            [profile_id],
+            |row| {
+                Ok(RestoreDrillEvent {
+                    id: row.get(0)?,
+                    timestamp: row.get(1)?,
+                    profile_id: row.get(2)?,
+                    outcome: row.get(3)?,
+                    files_checked: row.get(4)?,
+                    duration_seconds: row.get(5)?,
+                    error_message: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 pub async fn initialize(config_dir: &Path) -> Result<(), String> {
@@ -306,6 +379,16 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
              outcome TEXT NOT NULL,
              transient INTEGER NOT NULL,
              error_message TEXT
+         );
+         CREATE TABLE IF NOT EXISTS restore_drill_history (
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+             id TEXT NOT NULL,
+             timestamp TEXT NOT NULL,
+             profile_id TEXT NOT NULL,
+             outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure', 'cancelled')),
+             files_checked INTEGER NOT NULL,
+             duration_seconds INTEGER NOT NULL,
+             error_message TEXT
          );",
     )
     .map_err(|e| e.to_string())?;
@@ -490,5 +573,44 @@ mod tests {
                 .attempt,
             2
         );
+    }
+
+    #[tokio::test]
+    async fn restore_drill_history_is_typed_and_profile_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        append_restore_drill(
+            dir.path(),
+            RestoreDrillEvent {
+                id: "drill-1".into(),
+                timestamp: "2026-07-01T00:00:00Z".into(),
+                profile_id: "work".into(),
+                outcome: "success".into(),
+                files_checked: 10,
+                duration_seconds: 4,
+                error_message: None,
+            },
+        )
+        .await
+        .unwrap();
+        let event = latest_restore_drill(dir.path(), "work")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.files_checked, 10);
+        assert!(
+            latest_restore_drill(dir.path(), "other")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let conn = open(dir.path()).unwrap();
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM schema_metadata WHERE key = 'database_schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "4");
     }
 }

@@ -18,10 +18,28 @@
   let running = $state(false);
   let result = $state('');
   let monthly = $state(false);
+  let monthlyRestoreDrill = $state(false);
+  let latestDrill = $state<{ timestamp: string; outcome: string; files_checked: number } | null>(null);
 
   async function refresh() {
     latest = await invoke<IntegrityEvent | null>('latest_integrity_check');
     monthly = profilesState.active?.integrity_schedule?.enabled ?? false;
+    monthlyRestoreDrill = profilesState.active?.restore_drill_schedule?.enabled ?? false;
+    latestDrill = await invoke('latest_restore_drill');
+  }
+
+  async function toggleRestoreDrill() {
+    const desired = monthlyRestoreDrill;
+    try {
+      await invoke('set_monthly_restore_drill', { enabled: desired });
+      await profilesState.load();
+      result = desired
+        ? 'Monthly sample restore drill scheduled.'
+        : 'Monthly sample restore drill disabled.';
+    } catch (error) {
+      monthlyRestoreDrill = !desired;
+      result = `Could not update restore drill schedule: ${error}`;
+    }
   }
 
   async function run(verifyData: boolean) {
@@ -100,6 +118,13 @@
     <input type="checkbox" bind:checked={monthly} onchange={toggleMonthly} />
     Run a metadata check monthly
   </label>
+  <label class="monthly">
+    <input type="checkbox" bind:checked={monthlyRestoreDrill} onchange={toggleRestoreDrill} />
+    Restore and verify up to 10 files monthly
+  </label>
+  {#if latestDrill}
+    <p>Latest restore drill: {latestDrill.outcome} · {latestDrill.files_checked} files · {new Date(latestDrill.timestamp).toLocaleString()}</p>
+  {/if}
   {#if result}<p>{result}</p>{/if}
 </fieldset>
 
