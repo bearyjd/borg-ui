@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { open } from '@tauri-apps/plugin-dialog';
+  import { onMount } from 'svelte';
   import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
@@ -35,9 +36,39 @@
 
   const EXCLUDE_PRESETS = ['*.tmp', '*.cache', 'node_modules', '.git', 'target', '__pycache__', '.venv', 'dist', 'build'];
 
+  interface KnownFolder {
+    id: string;
+    label: string;
+    path: string;
+    available: boolean;
+    preselected: boolean;
+  }
+  interface SourceEstimate {
+    path: string;
+    file_count: number;
+    total_bytes: number;
+    access_errors: number;
+    available: boolean;
+  }
+  interface CoverageScan {
+    sources: SourceEstimate[];
+    duplicate_roots: string[];
+    cancelled: boolean;
+    needs_review: boolean;
+  }
+
   let sourcePaths = $state<string[]>([]);
   let excludes = $state<string[]>([]);
   let excludeInput = $state('');
+  let wizardOpen = $state(false);
+  let knownFolders = $state<KnownFolder[]>([]);
+  let standardExcludes = $state<string[]>([]);
+  let scan = $state<CoverageScan | null>(null);
+  let scanning = $state(false);
+  let savingSelection = $state(false);
+  let coverageReviewed = $state(false);
+  let selectionStatus = $state('');
+  let savedSelectionSignature = $state('');
   let isRunning = $state(false);
   let cancelling = $state(false);
   let status = $state('');
@@ -45,6 +76,72 @@
   let cancelled = $state(false);
   let repo = $derived(repoState.config);
   let repoAvailable = $derived(repoState.hasRepo);
+
+  onMount(async () => {
+    try {
+      const [selection, exclusions] = await Promise.all([
+        invoke<{ source_paths: string[]; excludes: string[] }>('load_backup_selection'),
+        invoke<string[]>('standard_backup_excludes'),
+      ]);
+      sourcePaths = [...selection.source_paths];
+      excludes = [...selection.excludes];
+      savedSelectionSignature = JSON.stringify([sourcePaths, excludes]);
+      standardExcludes = exclusions;
+    } catch {
+      // A new installation has no active profile until repository setup.
+    }
+  });
+
+  async function openWizard() {
+    wizardOpen = true;
+    selectionStatus = '';
+    knownFolders = await invoke<KnownFolder[]>('discover_backup_sources');
+    if (sourcePaths.length === 0) {
+      sourcePaths = knownFolders
+        .filter((folder) => folder.preselected && folder.available)
+        .map((folder) => folder.path);
+    }
+  }
+
+  async function scanCoverage() {
+    if (sourcePaths.length === 0) return;
+    scanning = true;
+    scan = null;
+    coverageReviewed = false;
+    try {
+      scan = await invoke<CoverageScan>('scan_backup_sources', { sourcePaths });
+    } finally {
+      scanning = false;
+    }
+  }
+
+  async function cancelCoverageScan() {
+    await invoke('cancel_backup_source_scan');
+  }
+
+  async function saveSelection() {
+    savingSelection = true;
+    selectionStatus = '';
+    try {
+      await invoke('save_backup_selection', {
+        selection: {
+          source_paths: sourcePaths,
+          excludes,
+          template_id: null,
+          template_version: null,
+        },
+        reviewed: coverageReviewed,
+      });
+      await profilesState.load();
+      savedSelectionSignature = JSON.stringify([sourcePaths, excludes]);
+      selectionStatus = 'Protection selection saved for manual and scheduled backups.';
+      wizardOpen = false;
+    } catch (e) {
+      selectionStatus = `Selection not saved: ${e}`;
+    } finally {
+      savingSelection = false;
+    }
+  }
 
   async function cancelBackup() {
     if (!isRunning || cancelling) return;
@@ -99,6 +196,10 @@
       status = 'Please add at least one folder to back up.';
       return;
     }
+    if (savedSelectionSignature !== JSON.stringify([sourcePaths, excludes])) {
+      await saveSelection();
+      if (selectionStatus.startsWith('Selection not saved')) return;
+    }
 
     isRunning = true;
     cancelling = false;
@@ -138,9 +239,7 @@
       archiveName = await invoke<string>('preview_archive_name', { template });
       const result = await invoke<string[]>('create_backup', {
         repo,
-        sourcePaths,
         archiveName,
-        excludes,
         preBackup: profilesState.active?.pre_backup ?? null,
         postBackup: profilesState.active?.post_backup ?? null,
       });
@@ -207,6 +306,100 @@
   {/if}
 
   <div class="backup-form">
+    <div class="coverage-summary">
+      <div>
+        <strong>Protect this PC</strong>
+        <p>Choose folders once. Manual and scheduled backups use this same saved selection.</p>
+      </div>
+      <button class="btn btn-secondary" type="button" onclick={openWizard} disabled={isRunning}>
+        Review coverage
+      </button>
+    </div>
+
+    {#if wizardOpen}
+      <section class="wizard-panel" aria-label="Protect this PC wizard">
+        <h2>Protect this PC</h2>
+        <p>Select each folder explicitly. BorgUI never adds an unavailable or unselected source silently.</p>
+        <div class="known-folders">
+          {#each knownFolders as folder}
+            <label class:unavailable={!folder.available}>
+              <input
+                type="checkbox"
+                checked={sourcePaths.includes(folder.path)}
+                disabled={!folder.available || scanning}
+                onchange={(event) => {
+                  const checked = (event.currentTarget as HTMLInputElement).checked;
+                  sourcePaths = checked
+                    ? [...sourcePaths, folder.path]
+                    : sourcePaths.filter((path) => path !== folder.path);
+                  scan = null;
+                }}
+              />
+              <span>{folder.label}</span>
+              <small>{folder.available ? folder.path : 'Not connected or unavailable'}</small>
+            </label>
+          {/each}
+        </div>
+        <div class="standard-exclusions">
+          <strong>Standard exclusions (review before adding)</strong>
+          {#each standardExcludes as pattern}
+            <label>
+              <input
+                type="checkbox"
+                checked={excludes.includes(pattern)}
+                onchange={(event) => {
+                  const checked = (event.currentTarget as HTMLInputElement).checked;
+                  excludes = checked
+                    ? [...excludes, pattern]
+                    : excludes.filter((item) => item !== pattern);
+                }}
+              />
+              <code>{pattern}</code>
+            </label>
+          {/each}
+        </div>
+        <div class="wizard-actions">
+          <button class="btn btn-secondary" type="button" onclick={scanCoverage} disabled={scanning || sourcePaths.length === 0}>
+            {scanning ? 'Scanning…' : 'Estimate coverage'}
+          </button>
+          {#if scanning}
+            <button class="btn btn-cancel" type="button" onclick={cancelCoverageScan}>Cancel scan</button>
+          {/if}
+        </div>
+        {#if scan}
+          <div class="scan-results">
+            {#each scan.sources as source}
+              <div class:gap={!source.available || source.access_errors > 0}>
+                <code>{source.path}</code>
+                <span>
+                  {source.available
+                    ? `${source.file_count.toLocaleString()} files · ${formatBytes(source.total_bytes)}`
+                    : 'Disconnected or unavailable'}
+                  {source.access_errors > 0 ? ` · ${source.access_errors} access errors` : ''}
+                </span>
+              </div>
+            {/each}
+            {#if scan.duplicate_roots.length > 0}
+              <p class="coverage-gap">Nested or duplicate roots: {scan.duplicate_roots.join(', ')}</p>
+            {/if}
+            {#if scan.needs_review}
+              <label class="review-check">
+                <input type="checkbox" bind:checked={coverageReviewed} />
+                I reviewed these coverage gaps and want to save this selection.
+              </label>
+            {/if}
+          </div>
+        {/if}
+        <div class="wizard-actions">
+          <button class="btn btn-primary" type="button" onclick={saveSelection} disabled={savingSelection || scanning || sourcePaths.length === 0 || !!scan?.needs_review && !coverageReviewed}>
+            {savingSelection ? 'Saving…' : 'Save protection'}
+          </button>
+          <button class="btn btn-secondary" type="button" onclick={() => wizardOpen = false}>Close</button>
+        </div>
+      </section>
+    {/if}
+    {#if selectionStatus}<p class="selection-status">{selectionStatus}</p>{/if}
+
     <div class="form-section">
       <span class="form-label">Source Folders</span>
       <div class="path-list">
@@ -356,6 +549,81 @@
 </div>
 
 <style>
+  .coverage-summary,
+  .wizard-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .coverage-summary {
+    padding: var(--space-4);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+  }
+
+  .coverage-summary p,
+  .wizard-panel p {
+    margin: var(--space-1) 0 0;
+    color: var(--color-text-muted);
+  }
+
+  .wizard-panel {
+    display: grid;
+    gap: var(--space-4);
+    padding: var(--space-5);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface-raised);
+  }
+
+  .wizard-panel h2 {
+    margin: 0;
+  }
+
+  .known-folders,
+  .standard-exclusions,
+  .scan-results {
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .known-folders label,
+  .standard-exclusions label {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: var(--space-2);
+    align-items: center;
+  }
+
+  .known-folders small {
+    grid-column: 2;
+    color: var(--color-text-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .known-folders .unavailable,
+  .scan-results .gap,
+  .coverage-gap {
+    color: var(--color-warning);
+  }
+
+  .scan-results > div {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .review-check {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .selection-status {
+    margin: 0;
+  }
+
   .backup-page {
     max-width: 640px;
   }

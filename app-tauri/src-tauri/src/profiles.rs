@@ -4,7 +4,21 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 3;
+pub const PROFILE_SCHEMA_VERSION: u32 = 4;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupSelection {
+    #[serde(default)]
+    pub source_paths: Vec<String>,
+    #[serde(default)]
+    pub excludes: Vec<String>,
+    #[serde(default)]
+    pub template_id: Option<String>,
+    /// Reserved now so template upgrades in v0.4 do not need another selection
+    /// migration.
+    #[serde(default)]
+    pub template_version: Option<u32>,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IntegritySchedule {
@@ -16,6 +30,8 @@ pub struct Profile {
     pub id: String,
     pub name: String,
     pub repo: RepoConfig,
+    #[serde(default)]
+    pub backup_selection: BackupSelection,
     #[serde(default)]
     pub schedule: Option<ScheduleConfig>,
     #[serde(default)]
@@ -89,7 +105,7 @@ pub async fn load(config_dir: &Path) -> Result<ProfilesData, String> {
     let path = config_dir.join("profiles.json");
     match tokio::fs::read_to_string(&path).await {
         Ok(data) => {
-            let value: serde_json::Value =
+            let mut value: serde_json::Value =
                 serde_json::from_str(&data).map_err(|e| format!("invalid profiles.json: {e}"))?;
             let version = value
                 .get("schema_version")
@@ -99,6 +115,9 @@ pub async fn load(config_dir: &Path) -> Result<ProfilesData, String> {
                 return Err(format!(
                     "profiles.json schema version {version} is newer than supported version {PROFILE_SCHEMA_VERSION}"
                 ));
+            }
+            if version < 4 {
+                migrate_selection_v4(&mut value);
             }
             let mut parsed: ProfilesData =
                 serde_json::from_value(value).map_err(|e| format!("invalid profiles.json: {e}"))?;
@@ -116,6 +135,43 @@ pub async fn load(config_dir: &Path) -> Result<ProfilesData, String> {
             Ok(data)
         }
         Err(e) => Err(e.to_string()),
+    }
+}
+
+fn migrate_selection_v4(value: &mut serde_json::Value) {
+    let Some(profiles) = value
+        .get_mut("profiles")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for profile in profiles {
+        let Some(profile) = profile.as_object_mut() else {
+            continue;
+        };
+        let (source_paths, excludes) = profile
+            .get_mut("schedule")
+            .and_then(serde_json::Value::as_object_mut)
+            .map(|schedule| {
+                (
+                    schedule
+                        .remove("source_paths")
+                        .unwrap_or_else(|| serde_json::json!([])),
+                    schedule
+                        .remove("excludes")
+                        .unwrap_or_else(|| serde_json::json!([])),
+                )
+            })
+            .unwrap_or_else(|| (serde_json::json!([]), serde_json::json!([])));
+        profile.insert(
+            "backup_selection".into(),
+            serde_json::json!({
+                "source_paths": source_paths,
+                "excludes": excludes,
+                "template_id": null,
+                "template_version": null
+            }),
+        );
     }
 }
 
@@ -183,9 +239,36 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         return Ok(ProfilesData::default());
     };
 
-    let schedule = read_json::<ScheduleConfig>(&config_dir.join("schedule.json"))
+    let legacy_schedule = read_json::<serde_json::Value>(&config_dir.join("schedule.json"))
         .await
         .unwrap_or(None);
+    let backup_selection = legacy_schedule
+        .as_ref()
+        .map(|schedule| BackupSelection {
+            source_paths: schedule
+                .get("source_paths")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            excludes: schedule
+                .get("excludes")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            ..BackupSelection::default()
+        })
+        .unwrap_or_default();
+    let schedule = legacy_schedule.and_then(|mut schedule| {
+        schedule.as_object_mut()?.remove("source_paths");
+        schedule.as_object_mut()?.remove("excludes");
+        serde_json::from_value(schedule).ok()
+    });
     let retention = read_json::<RetentionConfig>(&config_dir.join("retention.json"))
         .await
         .unwrap_or(None);
@@ -194,6 +277,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         id: "default".into(),
         name: "Default".into(),
         repo,
+        backup_selection,
         schedule,
         integrity_schedule: None,
         retention,
@@ -263,6 +347,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             repo: sample_repo(),
+            backup_selection: Default::default(),
             schedule: None,
             integrity_schedule: None,
             retention: None,
@@ -379,6 +464,53 @@ mod tests {
         assert_eq!(data.profiles[0].name, "Default");
         assert!(data.profiles[0].schedule.is_none());
         assert!(data.profiles[0].retention.is_none());
+    }
+
+    #[tokio::test]
+    async fn v3_schedule_paths_migrate_to_canonical_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let document = serde_json::json!({
+            "schema_version": 3,
+            "active_id": "default",
+            "profiles": [{
+                "id": "default",
+                "name": "Default",
+                "repo": sample_repo(),
+                "schedule": {
+                    "enabled": true,
+                    "source_paths": ["C:\\Users\\me\\Documents"],
+                    "excludes": ["*.tmp"],
+                    "schedule": {"type": "hourly"},
+                    "skip_metered_networks": false
+                }
+            }]
+        });
+        tokio::fs::write(
+            dir.path().join("profiles.json"),
+            serde_json::to_vec(&document).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let data = load(dir.path()).await.unwrap();
+        let profile = data.active().unwrap();
+        assert_eq!(
+            profile.backup_selection.source_paths,
+            vec!["C:\\Users\\me\\Documents"]
+        );
+        assert_eq!(profile.backup_selection.excludes, vec!["*.tmp"]);
+        let saved: serde_json::Value = serde_json::from_slice(
+            &tokio::fs::read(dir.path().join("profiles.json"))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["schema_version"], 4);
+        assert!(
+            saved["profiles"][0]["schedule"]
+                .get("source_paths")
+                .is_none()
+        );
     }
 
     #[tokio::test]

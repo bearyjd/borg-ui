@@ -259,10 +259,12 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
     if let Err(e) = profile.repo.validate() {
         return RunReport::preflight(e.to_string());
     }
-    if let Err(e) = borg_core::config::validate_source_paths(&schedule.source_paths) {
+    if let Err(e) = borg_core::config::validate_source_paths(&profile.backup_selection.source_paths)
+    {
         return RunReport::preflight(e.to_string());
     }
-    if let Err(e) = borg_core::config::validate_exclude_patterns(&schedule.excludes) {
+    if let Err(e) = borg_core::config::validate_exclude_patterns(&profile.backup_selection.excludes)
+    {
         return RunReport::preflight(e.to_string());
     }
 
@@ -300,7 +302,12 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
         return finish(config_dir, &archive_name, started, Err(e.detail())).await;
     }
 
-    let raw_paths: Vec<PathBuf> = schedule.source_paths.iter().map(PathBuf::from).collect();
+    let raw_paths: Vec<PathBuf> = profile
+        .backup_selection
+        .source_paths
+        .iter()
+        .map(PathBuf::from)
+        .collect();
 
     // Scheduled (unattended) runs benefit from VSS most — files are likely in
     // use. Snapshot the source volume and back up from a junction mount so borg
@@ -312,7 +319,7 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
     let backup_profile = BackupProfile {
         name: profile.name.clone(),
         source_paths: vss.source_paths.clone(),
-        excludes: schedule.excludes.clone(),
+        excludes: profile.backup_selection.excludes.clone(),
         compression: Compression::default(),
         repo: profile.repo.clone(),
     };
@@ -466,11 +473,13 @@ mod tests {
             id: "default".into(),
             name: "Scheduled".into(),
             repo,
+            backup_selection: profiles::BackupSelection {
+                source_paths: sources,
+                ..Default::default()
+            },
             schedule: Some(ScheduleConfig {
                 enabled,
-                source_paths: sources,
                 schedule: Schedule::Hourly,
-                excludes: Vec::new(),
                 skip_metered_networks: false,
             }),
             integrity_schedule: None,

@@ -1,5 +1,6 @@
 mod archive_naming;
 mod commands;
+mod coverage;
 mod diagnostics;
 mod history;
 mod keychain;
@@ -88,6 +89,12 @@ pub fn run() {
             commands::load_retention_config,
             commands::save_retention_config,
             commands::create_backup,
+            commands::discover_backup_sources,
+            commands::scan_backup_sources,
+            commands::cancel_backup_source_scan,
+            commands::load_backup_selection,
+            commands::save_backup_selection,
+            commands::standard_backup_excludes,
             commands::cancel_backup,
             commands::restore_archive,
             commands::cancel_restore,

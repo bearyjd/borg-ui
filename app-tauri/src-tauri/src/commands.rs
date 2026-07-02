@@ -12,6 +12,7 @@ const BACKUP_OP: &str = "backup";
 /// Registry key for the single in-flight restore operation.
 const RESTORE_OP: &str = "restore";
 const CHECK_OP: &str = "integrity-check";
+const COVERAGE_SCAN_OP: &str = "coverage-scan";
 const ARCHIVE_LIST_PREFIX: &str = "archive-list:";
 
 /// Internal name for one-off backups invoked directly from the Backup page.
@@ -382,9 +383,7 @@ pub async fn create_backup(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     repo: RepoConfig,
-    source_paths: Vec<String>,
     archive_name: String,
-    excludes: Option<Vec<String>>,
     pre_backup: Option<String>,
     post_backup: Option<String>,
 ) -> Result<Vec<String>, String> {
@@ -392,9 +391,14 @@ pub async fn create_backup(
     let compression = borg_core::config::Compression::default();
     compression.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
-    borg_core::config::validate_source_paths(&source_paths).map_err(|e| e.to_string())?;
-    let excludes = excludes.unwrap_or_default();
-    borg_core::config::validate_exclude_patterns(&excludes).map_err(|e| e.to_string())?;
+    let data = read_profiles(&app).await?;
+    let selection = data
+        .active()
+        .ok_or_else(|| "no active profile; configure repository first".to_string())?
+        .backup_selection
+        .clone();
+    borg_core::config::validate_source_paths(&selection.source_paths).map_err(|e| e.to_string())?;
+    borg_core::config::validate_exclude_patterns(&selection.excludes).map_err(|e| e.to_string())?;
 
     // Pre/post-backup hooks run the user's own shell commands; `$repo_url` and
     // `$archive_name` expand to already-validated values.
@@ -415,7 +419,11 @@ pub async fn create_backup(
             .map_err(|e| e.to_string())?;
     }
 
-    let raw_paths: Vec<PathBuf> = source_paths.into_iter().map(PathBuf::from).collect();
+    let raw_paths: Vec<PathBuf> = selection
+        .source_paths
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
 
     // Register the cancel slot before taking a snapshot, so a concurrent backup
     // is rejected up front and never leaves a VSS snapshot/junction behind.
@@ -433,7 +441,7 @@ pub async fn create_backup(
     let profile = borg_core::config::BackupProfile {
         name: MANUAL_PROFILE_NAME.into(),
         source_paths: vss.source_paths.clone(),
-        excludes,
+        excludes: selection.excludes,
         compression,
         repo,
     };
@@ -468,6 +476,77 @@ pub async fn create_backup(
     }
 
     Ok(warnings)
+}
+
+#[tauri::command]
+pub async fn discover_backup_sources() -> Result<Vec<crate::coverage::KnownFolder>, String> {
+    tokio::task::spawn_blocking(crate::coverage::discover_known_folders)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn scan_backup_sources(
+    state: State<'_, AppState>,
+    source_paths: Vec<String>,
+) -> Result<crate::coverage::CoverageScan, String> {
+    borg_core::config::validate_source_paths(&source_paths).map_err(|e| e.to_string())?;
+    let cancel =
+        state.try_register_cancel(COVERAGE_SCAN_OP, "a coverage scan is already running")?;
+    let scan_cancel = cancel.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::coverage::scan_sources(source_paths, &scan_cancel)
+    })
+    .await
+    .map_err(|e| e.to_string());
+    state.unregister_cancel(COVERAGE_SCAN_OP);
+    result
+}
+
+#[tauri::command]
+pub fn cancel_backup_source_scan(state: State<'_, AppState>) -> bool {
+    state.signal_cancel(COVERAGE_SCAN_OP)
+}
+
+#[tauri::command]
+pub async fn load_backup_selection(
+    app: tauri::AppHandle,
+) -> Result<profiles::BackupSelection, String> {
+    let data = read_profiles(&app).await?;
+    data.active()
+        .map(|profile| profile.backup_selection.clone())
+        .ok_or_else(|| "no active profile; configure repository first".to_string())
+}
+
+#[tauri::command]
+pub async fn save_backup_selection(
+    app: tauri::AppHandle,
+    selection: profiles::BackupSelection,
+    reviewed: bool,
+) -> Result<(), String> {
+    borg_core::config::validate_source_paths(&selection.source_paths).map_err(|e| e.to_string())?;
+    borg_core::config::validate_exclude_patterns(&selection.excludes).map_err(|e| e.to_string())?;
+    let scan = tokio::task::spawn_blocking({
+        let paths = selection.source_paths.clone();
+        move || crate::coverage::scan_sources(paths, &CancelToken::new())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if scan.needs_review && !reviewed {
+        return Err(
+            "coverage gaps or duplicate roots require explicit review before saving".into(),
+        );
+    }
+    let mut data = read_profiles(&app).await?;
+    data.active_mut()
+        .ok_or_else(|| "no active profile; configure repository first".to_string())?
+        .backup_selection = selection;
+    write_profiles(&app, &data).await
+}
+
+#[tauri::command]
+pub fn standard_backup_excludes() -> Vec<&'static str> {
+    crate::coverage::STANDARD_EXCLUDES.to_vec()
 }
 
 /// Cancel a running backup. Returns true if a backup was in progress.
@@ -661,9 +740,6 @@ pub async fn save_schedule_config(
     config: borg_platform_win::scheduler::ScheduleConfig,
 ) -> Result<(), String> {
     config.schedule.validate().map_err(|e| e.to_string())?;
-    borg_core::config::validate_source_paths(&config.source_paths).map_err(|e| e.to_string())?;
-    borg_core::config::validate_exclude_patterns(&config.excludes).map_err(|e| e.to_string())?;
-
     let mut data = read_profiles(&app).await?;
     let profile = data
         .active_mut()
@@ -822,6 +898,7 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
             id: "default".into(),
             name: "Default".into(),
             repo,
+            backup_selection: Default::default(),
             schedule: None,
             integrity_schedule: None,
             retention: None,
@@ -865,6 +942,7 @@ pub async fn create_profile(
         id: id.clone(),
         name,
         repo,
+        backup_selection: Default::default(),
         schedule: None,
         integrity_schedule: None,
         retention: None,
