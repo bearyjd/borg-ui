@@ -116,10 +116,14 @@ harness details are in `tests/smoke-windows/README.md`.
 The post-v0.2 follow-ups are tracked explicitly:
 
 - `#64` production Authenticode activation after Azure/OIDC configuration.
-- `#65` installed-app updater smoke execution using
-  `tests/smoke-windows/validate-updater.ps1`.
-- `#66` Borg-for-Windows drive-letter path parsing/upstream tracking.
-- `#67` demand-gated provider-specific SSH examples and Windows mount research.
+- `#65` is complete: `validate-updater.ps1` passed an installed 0.1.0 → 0.2.0
+  update with explicit consent (3 passed, 0 failed, 0 skipped).
+- `#66` is complete in PR `#69`: Borg-for-Windows 1.4.4+win7 is pinned and local
+  drive-letter repositories no longer use administrative shares.
+- `#67` found no repository demand for provider-specific SSH instructions and no
+  maintained Borg archive adapter for WinFsp. Open a new evidence-backed issue
+  before changing the provider-neutral onboarding or adding mount dependencies.
+  Browse/selective restore remains the supported archive access path.
 
 Metered-network controls shipped in PR `#61`; the updater smoke harness shipped
 in PR `#62`; Azure signing configuration validation and its Windows Release dry

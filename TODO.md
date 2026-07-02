@@ -1,6 +1,6 @@
 # BorgUI Roadmap Status
 
-Last updated: 2026-06-30.
+Last updated: 2026-07-02.
 
 The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 
@@ -23,16 +23,25 @@ The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 ## Current release posture
 
 - `v0.2.0` is published with MSI, NSIS, updater signatures, and `latest.json`.
-- Post-v0.2 follow-up PRs #61–#63 are merged on `master`.
+- Post-v0.2 follow-up PRs #61–#63 and #69 are merged on `master`.
+- The installed-app updater smoke passed against the updater-capable 0.1.0
+  baseline and published 0.2.0 target (3 passed, 0 failed, 0 skipped).
+- Borg-for-Windows 1.4.4+win7 fixes native drive-letter repositories; BorgUI now
+  passes those paths directly, including for standard users.
 - Installers remain usable unsigned. Authenticode signing is prepared but intentionally disabled until Azure Trusted Signing repository configuration exists.
 - Updater signing is separate from Authenticode signing; keep the updater private key only in GitHub Actions secrets.
 
 ## Tracked follow-up issues
 
 - [#64](https://github.com/bearyjd/borg-ui/issues/64) — enable production Authenticode signing after Azure/OIDC configuration.
-- [#65](https://github.com/bearyjd/borg-ui/issues/65) — run and record the installed-app updater smoke with an updater-capable baseline.
-- [#66](https://github.com/bearyjd/borg-ui/issues/66) — track/upstream Borg-for-Windows drive-letter repository parsing.
-- [#67](https://github.com/bearyjd/borg-ui/issues/67) — gate provider-specific SSH examples and Windows mount research on evidence.
+
+Provider-specific SSH examples and Windows archive mounting were evaluated in
+[#67](https://github.com/bearyjd/borg-ui/issues/67). There is no recorded user
+demand beyond the gate issue itself. Borg-for-Windows does not provide
+`borg mount`; WinFsp is a maintained filesystem framework, not a Borg archive
+adapter. Do not add provider-specific text or a filesystem-driver dependency
+without a new issue containing concrete demand and a maintained, tested design.
+Browse/selective restore remains the supported archive access path.
 
 ## Quality gate for future PRs
 
