@@ -71,7 +71,7 @@ jobs:
           SIGNING_PROFILE: ${{ vars.AZURE_CERTIFICATE_PROFILE }}
         run: ./scripts/validate-signing-config.ps1 -SigningEnabled $true
 
-      # borg.exe (marcpope/borg-windows 1.4.4+win6) is a PyInstaller ONEDIR
+      # borg.exe (marcpope/borg-windows 1.4.4+win7) is a PyInstaller ONEDIR
       # bundle: borg.exe needs its sibling _internal\ (python311.dll + deps) right
       # beside it or it dies at startup. We download the pinned release, verify its
       # SHA-256, and drop the whole dist into src-tauri/binaries/borg/ so the Tauri
@@ -81,9 +81,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $version  = 'v1.4.4-win6'
+          $version  = 'v1.4.4-win7'
           $url      = "https://github.com/marcpope/borg-windows/releases/download/$version/borg-windows.zip"
-          $expected = '0e5f780d749608beed12be1bdca99526a7f95df2cbdcf1fd151b646e97c070d8'
+          $expected = 'c19e37475bad7ddc7db3e8f4f414b8a7824e920067f84d06998d4771bf12ee06'
 
           $zip = Join-Path $env:RUNNER_TEMP 'borg-windows.zip'
           Write-Host "Downloading borg $version ..."

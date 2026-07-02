@@ -15,7 +15,7 @@
 # If the junction step fails, pivot to Approach C (COM IVssBackupComponents::
 # ExposeSnapshot). Either way, no guesswork in the implementation PR.
 #
-# REQUIRES admin (VSS snapshot creation + the C$ admin-share repo rewrite). The
+# REQUIRES admin (VSS snapshot creation). The
 # smoke VM's default user is admin. Every borg call is hard-timeout-wrapped so a
 # hang can never block the run. Cleans up its own snapshot, junction, and files.
 
@@ -92,7 +92,7 @@ if ($existing) {
 } else {
     try {
         $zip = "$env:TEMP\borg-windows.zip"
-        $url = "https://github.com/marcpope/borg-windows/releases/download/v1.4.4-win6/borg-windows.zip"
+        $url = "https://github.com/marcpope/borg-windows/releases/download/v1.4.4-win7/borg-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
         New-Item -ItemType Directory -Force -Path $borgDir | Out-Null
         Expand-Archive -Path $zip -DestinationPath $borgDir -Force
@@ -199,10 +199,9 @@ try {
         # ==========================================================
         # 3. THE PAYOFF: borg run with cwd=junction + a volume-relative source
         #    must store a CLEAN path -- no `?`, no `:`, no GLOBALROOT. This is
-        #    exactly what's broken today (paths come out as
-        #    `?/GLOBALROOT/Device/HarddiskVolumeShadowCopyN/...`).
-        #    Repo uses the C$ admin-share UNC rewrite to dodge the drive-letter
-        #    bug (RepoConfig::location() does this in the app).
+        #    exactly what the VSS path cleanup prevents (paths otherwise contain
+#    `?/GLOBALROOT/Device/HarddiskVolumeShadowCopyN/...`).
+        #    The repository uses the raw absolute drive-letter path.
         # ==========================================================
         Write-TestHeader "vss_borg_clean_paths"
         $archiveOk = $false
@@ -210,17 +209,16 @@ try {
             Skip "vss_borg_clean_paths" "no junction mounted"
         } else {
             try {
-                $uncRepo = "\\localhost\" + $absRepo.Substring(0, 1) + "$" + $absRepo.Substring(2)
-                $r = Invoke-Borg @("init", "--encryption", "none", $uncRepo) 40
-                if ($r.TimedOut) { throw "init hung on UNC repo (admin share unavailable?)" }
+                $r = Invoke-Borg @("init", "--encryption", "none", $absRepo) 40
+                if ($r.TimedOut) { throw "init hung on drive-letter repo" }
                 if (-not (Test-Path $absRepo)) { throw "repo not created (stderr: $($r.Stderr))" }
 
                 # cwd = junction (shadow root); source = volume-relative path.
-                $r = Invoke-Borg @("create", "$uncRepo::a1", $relSeed) 60 $mount
+                $r = Invoke-Borg @("create", "$absRepo::a1", $relSeed) 60 $mount
                 if ($r.TimedOut) { throw "create hung" }
 
                 $listOut = Join-Path $env:TEMP "vss-list.txt"
-                $p = Start-Process -FilePath $script:BorgExe -ArgumentList @("list", "$uncRepo::a1") `
+                $p = Start-Process -FilePath $script:BorgExe -ArgumentList @("list", "$absRepo::a1") `
                     -WindowStyle Hidden -PassThru -RedirectStandardOutput $listOut `
                     -RedirectStandardError (Join-Path $env:TEMP "vss-list-e.txt")
                 if (-not $p.WaitForExit(30000)) { $p.Kill(); throw "list timed out" }
@@ -253,8 +251,7 @@ try {
             Skip "vss_borg_restore" "no clean archive to restore"
         } else {
             try {
-                $uncRepo = "\\localhost\" + $absRepo.Substring(0, 1) + "$" + $absRepo.Substring(2)
-                $r = Invoke-Borg @("extract", "$uncRepo::a1") 60 $outDir
+                $r = Invoke-Borg @("extract", "$absRepo::a1") 60 $outDir
                 if ($r.TimedOut) { throw "extract hung" }
                 $restored = Join-Path $outDir $relSeed
                 if (-not (Test-Path $restored)) { throw "restore wrote no file at $restored (stderr: $($r.Stderr))" }
@@ -281,12 +278,11 @@ try {
                 $fs = [System.IO.File]::Open($seedFile, [System.IO.FileMode]::Open,
                     [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
 
-                $uncRepo = "\\localhost\" + $absRepo.Substring(0, 1) + "$" + $absRepo.Substring(2)
-                $r = Invoke-Borg @("create", "$uncRepo::locked", $relSeed) 60 $mount
+                $r = Invoke-Borg @("create", "$absRepo::locked", $relSeed) 60 $mount
                 if ($r.TimedOut) { throw "create-through-snapshot hung while original was locked" }
 
                 $listOut = Join-Path $env:TEMP "vss-list2.txt"
-                $p = Start-Process -FilePath $script:BorgExe -ArgumentList @("list", "$uncRepo::locked") `
+                $p = Start-Process -FilePath $script:BorgExe -ArgumentList @("list", "$absRepo::locked") `
                     -WindowStyle Hidden -PassThru -RedirectStandardOutput $listOut `
                     -RedirectStandardError (Join-Path $env:TEMP "vss-list2-e.txt")
                 if (-not $p.WaitForExit(30000)) { $p.Kill(); throw "list timed out" }
