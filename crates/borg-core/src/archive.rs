@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::{Component, Path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveEntry {
@@ -7,6 +8,26 @@ pub struct ArchiveEntry {
     pub size: u64,
     #[serde(rename = "type")]
     pub entry_type: String,
+}
+
+pub fn validate_restore_path(path: &str) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("restore path cannot be empty".into());
+    }
+    let bytes = path.as_bytes();
+    let windows_absolute =
+        bytes.get(1) == Some(&b':') || path.starts_with('\\') || path.starts_with('/');
+    if windows_absolute
+        || Path::new(path).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err("restore path must be relative and cannot contain '..'".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -87,6 +108,14 @@ not valid json
             .filter_map(|line| serde_json::from_str::<ArchiveEntry>(line).ok())
             .collect();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn restore_paths_allow_special_names_but_reject_escape() {
+        assert!(validate_restore_path("Photos/été & family (1).jpg").is_ok());
+        assert!(validate_restore_path("../secret").is_err());
+        assert!(validate_restore_path("/absolute").is_err());
+        assert!(validate_restore_path(r"C:\absolute").is_err());
     }
 
     #[test]

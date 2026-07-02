@@ -20,6 +20,7 @@ use tauri::{Manager, WindowEvent};
 /// backup (see `commands::save_schedule_config`).
 const SCHEDULED_BACKUP_FLAG: &str = "--scheduled-backup";
 const SCHEDULED_INTEGRITY_FLAG: &str = "--scheduled-integrity-check";
+const SCHEDULED_RESTORE_DRILL_FLAG: &str = "--scheduled-restore-drill";
 
 /// CLI flag the autostart `Run`-key entry passes so BorgUI starts hidden in the
 /// tray at login instead of popping the window open (see `commands::set_autostart`).
@@ -37,6 +38,7 @@ pub fn run() {
     // rather than showing the GUI.
     let scheduled = std::env::args().any(|a| a == SCHEDULED_BACKUP_FLAG);
     let scheduled_integrity = std::env::args().any(|a| a == SCHEDULED_INTEGRITY_FLAG);
+    let scheduled_restore_drill = std::env::args().any(|a| a == SCHEDULED_RESTORE_DRILL_FLAG);
     let start_minimized = std::env::args().any(|a| a == START_MINIMIZED_FLAG);
     let setup_borg_path = borg_path.clone();
 
@@ -48,7 +50,9 @@ pub fn run() {
         .setup(move |app| {
             let log_dir = app.path().app_log_dir()?;
             logging::initialize(&log_dir).map_err(std::io::Error::other)?;
-            if scheduled_integrity {
+            if scheduled_restore_drill {
+                start_scheduled_restore_drill(app.handle().clone(), setup_borg_path);
+            } else if scheduled_integrity {
                 start_scheduled_integrity_check(app.handle().clone(), setup_borg_path);
             } else if scheduled {
                 start_scheduled_backup(app.handle().clone(), setup_borg_path);
@@ -81,6 +85,9 @@ pub fn run() {
             commands::list_archives,
             commands::stream_archive_contents,
             commands::cancel_archive_listing,
+            commands::search_restore_files,
+            commands::cancel_restore_search,
+            commands::preview_restore_conflicts,
             commands::diff_archives,
             commands::compact_repo,
             commands::init_repo,
@@ -102,6 +109,8 @@ pub fn run() {
             commands::cancel_repository_check,
             commands::latest_integrity_check,
             commands::set_monthly_integrity_check,
+            commands::set_monthly_restore_drill,
+            commands::latest_restore_drill,
             commands::load_repo_config,
             commands::save_repo_config,
             commands::load_schedule_config,
@@ -135,6 +144,31 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn start_scheduled_restore_drill(app: tauri::AppHandle, borg_path: std::path::PathBuf) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    tauri::async_runtime::spawn(async move {
+        let code = match app.path().app_config_dir() {
+            Ok(config_dir) => {
+                let borg = BorgClient::new(borg_path);
+                match scheduled::run_restore_drill(&config_dir, &borg).await {
+                    Ok(()) => 0,
+                    Err(error) => {
+                        tracing::error!("scheduled restore drill failed: {error}");
+                        1
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::error!("scheduled restore drill: cannot resolve config dir: {error}");
+                1
+            }
+        };
+        app.exit(code);
+    });
 }
 
 fn start_scheduled_integrity_check(app: tauri::AppHandle, borg_path: std::path::PathBuf) {
