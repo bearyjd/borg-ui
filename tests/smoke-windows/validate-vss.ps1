@@ -20,7 +20,7 @@
 #     fine -- no tauri build / pnpm needed).
 #   - the task runs /IT /RL HIGHEST: interactive session 1 (so borg spawns with a
 #     window station, avoiding the console-less spawn hang) AND elevated (VSS snapshot
-#     creation needs admin; the C$ admin-share repo rewrite needs admin too).
+#     creation needs admin).
 #   - borgtest logged in at the desktop (the dockur VM auto-logs-in).
 #
 # Mirrors validate-gui.ps1: Pass/Fail/Skip + JSON + exit code; every borg call hard-

@@ -68,7 +68,7 @@ Both bundle BorgBackup (`borg.exe`, BSD-licensed) — no separate borg install i
 - [Node.js](https://nodejs.org/) (20+)
 - [pnpm](https://pnpm.io/)
 - [borg.exe](https://github.com/marcpope/borg-windows/releases) — download `borg-windows.zip`
-  (1.4.4+win6) and extract the **whole** dist (`borg.exe` **and** its sibling
+  (1.4.4+win7) and extract the **whole** dist (`borg.exe` **and** its sibling
   `_internal/` folder) into `app-tauri/src-tauri/binaries/borg/`. borg is a
   PyInstaller onedir bundle; `borg.exe` will not start without `_internal/` beside it.
   The release workflow stages this automatically; it's only needed for local builds.

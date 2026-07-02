@@ -79,7 +79,7 @@ function Find-BorgUi {
 $script:BorgUiExe = Find-BorgUi
 
 # borg-ui.exe resolves borg as <its own dir>\borg.exe (see lib.rs). The bundled
-# borg.exe (1.4.4+win6) is a PyInstaller ONEDIR bundle: it needs its sibling
+# borg.exe (1.4.4+win7) is a PyInstaller ONEDIR bundle: it needs its sibling
 # _internal\ (python311.dll + deps) right next to it, or it dies at startup with
 # "[PYI] Failed to load Python DLL ..._internal\python311.dll" (verified on the
 # VM). So copy the WHOLE borg distribution beside borg-ui.exe, not just the .exe.

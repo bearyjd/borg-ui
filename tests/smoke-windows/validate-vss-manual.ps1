@@ -11,7 +11,7 @@
 # REQUIRES a PRODUCTION tauri-build exe (embedded frontend) at
 #   C:\borgui-test\target\release\borg-ui.exe
 # (a dev-mode `cargo build` exe shows the localhost-error page). The app must run
-# ELEVATED for VSS (snapshot creation + the C$ admin-share repo rewrite need
+# ELEVATED for VSS (snapshot creation needs
 # admin), so this self-relaunches in session 1 with /RL HIGHEST -- the launched
 # app inherits the elevated token.
 #

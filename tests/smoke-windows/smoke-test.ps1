@@ -158,7 +158,7 @@ if ($existing) {
 } else {
     try {
         $zip = "$env:TEMP\borg-windows.zip"
-        $url = "https://github.com/marcpope/borg-windows/releases/download/v1.4.4-win6/borg-windows.zip"
+        $url = "https://github.com/marcpope/borg-windows/releases/download/v1.4.4-win7/borg-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
         New-Item -ItemType Directory -Force -Path $borgDir | Out-Null
         Expand-Archive -Path $zip -DestinationPath $borgDir -Force
