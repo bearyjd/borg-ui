@@ -1,13 +1,14 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { invoke } from '@tauri-apps/api/core';
+  import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { open } from '@tauri-apps/plugin-dialog';
+  import { confirm, open } from '@tauri-apps/plugin-dialog';
   import { repoState, isLocalRepo, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
   import ArchiveBrowser from '$lib/components/ArchiveBrowser.svelte';
   import DiffViewer from '$lib/components/DiffViewer.svelte';
+  import { formatBytes } from '$lib/format';
 
   interface Archive {
     name: string;
@@ -36,6 +37,67 @@
   let restoreProgressMsg = $state('');
   let restoreCancelling = $state(false);
   let restoreWarnings = $state<string[]>([]);
+  interface SearchMatch {
+    archive_name: string;
+    archive_start: string;
+    entry: { path: string; size: number; entry_type: string };
+  }
+  let searchQuery = $state('');
+  let searchMatches = $state<SearchMatch[]>([]);
+  let searchStatus = $state('');
+  let searching = $state(false);
+  let selectedHistoryPath = $state<string | null>(null);
+  let searchGeneration = 0;
+
+  async function searchRestoreFiles() {
+    const query = searchQuery.trim();
+    if (!query || !repoState.config) return;
+    const generation = ++searchGeneration;
+    searching = true;
+    searchMatches = [];
+    selectedHistoryPath = null;
+    searchStatus = 'Searching archives…';
+    const channel = new Channel<{ matches: SearchMatch[]; archives_scanned: number }>();
+    channel.onmessage = (batch) => {
+      if (generation !== searchGeneration) return;
+      searchMatches = [...searchMatches, ...batch.matches];
+      searchStatus = `${searchMatches.length.toLocaleString()} matches · ${batch.archives_scanned} archives searched`;
+    };
+    try {
+      const scanned = await invoke<number>('search_restore_files', {
+        repo: repoState.config,
+        query,
+        requestId: `${Date.now()}-${generation}`,
+        onBatch: channel,
+      });
+      if (generation === searchGeneration) {
+        searchStatus = `${searchMatches.length.toLocaleString()} matches in ${scanned} archives`;
+      }
+    } catch (e) {
+      if (generation === searchGeneration && !String(e).includes('cancelled')) {
+        searchStatus = `Search failed: ${e}`;
+      }
+    } finally {
+      if (generation === searchGeneration) searching = false;
+    }
+  }
+
+  async function cancelRestoreSearch() {
+    searchGeneration += 1;
+    searching = false;
+    searchStatus = 'Search cancelled.';
+    await invoke<boolean>('cancel_restore_search');
+  }
+
+  function showVersionHistory(path: string) {
+    selectedHistoryPath = path;
+  }
+
+  let visibleSearchMatches = $derived(
+    selectedHistoryPath
+      ? searchMatches.filter((match) => match.entry.path === selectedHistoryPath)
+      : searchMatches,
+  );
 
   async function cancelRestore() {
     if (!restoringArchive || restoreCancelling) return;
@@ -180,11 +242,25 @@
     if (repoState.config) loadArchives(repoState.config);
   }
 
-  async function restoreArchive(archiveName: string, paths?: string[]) {
+  async function restoreArchive(archiveName: string, paths?: string[], overwrite = false) {
     if (!repoState.config || restoringArchive) return;
 
     const dest = await open({ directory: true, multiple: false, title: 'Select restore destination' });
     if (!dest) return;
+    if (overwrite) {
+      const conflicts = paths?.length
+        ? await invoke<Array<{ path: string; exists: boolean }>>('preview_restore_conflicts', {
+            destination: dest as string,
+            paths,
+          })
+        : [];
+      const existing = conflicts.filter((conflict) => conflict.exists).length;
+      const accepted = await confirm(
+        `Overwrite mode can replace existing files${existing ? ` (${existing} conflicts detected)` : ''}. Continue?`,
+        { title: 'Explicit overwrite confirmation', kind: 'warning' },
+      );
+      if (!accepted) return;
+    }
 
     restoringArchive = archiveName;
     restoreCancelling = false;
@@ -217,13 +293,14 @@
         }
       });
 
-      const result = await invoke<string[]>('restore_archive', {
+      const result = await invoke<{ warnings: string[]; destination: string }>('restore_archive', {
         repo: repoState.config,
         archiveName,
         destination: dest as string,
         paths: paths && paths.length > 0 ? paths : null,
+        overwrite,
       });
-      restoreWarnings = Array.isArray(result) ? result : [];
+      restoreWarnings = result.warnings;
 
       // borg `extract` reports progress ONLY via `progress_percent` events — it
       // never emits `archive_progress`/`nfiles` (unlike `create`). So
@@ -236,13 +313,13 @@
       const fileCountLabel =
         restoreFileCount > 0 ? ` (${restoreFileCount.toLocaleString()} files)` : '';
       if (restoreWarnings.length > 0) {
-        restoreStatus = `Restore finished with ${restoreWarnings.length} warning${restoreWarnings.length === 1 ? '' : 's'} — files written to ${dest}. See details below.`;
+        restoreStatus = `Restore finished with ${restoreWarnings.length} warning${restoreWarnings.length === 1 ? '' : 's'} — files written to ${result.destination}. See details below.`;
       } else {
-        restoreStatus = `Restore complete — files written to ${dest}${fileCountLabel}.`;
+        restoreStatus = `Restore complete — files written to ${result.destination}${fileCountLabel}.`;
       }
       notificationsState.notify(
         'Restore complete',
-        `Archive "${archiveName}" restored to ${dest}.`,
+        `Archive "${archiveName}" restored to ${result.destination}.`,
       );
       historyState.record({
         id: `${Date.now()}`,
@@ -327,6 +404,46 @@
       {/if}
     </div>
   </header>
+
+  {#if repoAvailable}
+    <section class="restore-center">
+      <div>
+        <h2>Restore Confidence Center</h2>
+        <p>Search filenames across every archive. Search results are streamed and are never saved to history.</p>
+      </div>
+      <form class="search-row" onsubmit={(event) => { event.preventDefault(); searchRestoreFiles(); }}>
+        <input bind:value={searchQuery} placeholder="Search backed-up filenames" disabled={searching} />
+        <button class="btn btn-primary" type="submit" disabled={searching || !searchQuery.trim()}>Search</button>
+        {#if searching}
+          <button class="btn btn-secondary" type="button" onclick={cancelRestoreSearch}>Cancel</button>
+        {/if}
+      </form>
+      {#if searchStatus}<p class="search-status">{searchStatus}</p>{/if}
+      {#if selectedHistoryPath}
+        <div class="history-heading">
+          <strong>Versions of <code>{selectedHistoryPath}</code></strong>
+          <button class="btn btn-secondary" onclick={() => selectedHistoryPath = null}>All matches</button>
+        </div>
+      {/if}
+      {#if visibleSearchMatches.length > 0}
+        <div class="search-results">
+          {#each visibleSearchMatches as match}
+            <div class="search-result">
+              <div>
+                <code>{match.entry.path}</code>
+                <small>{match.archive_start} · {formatBytes(match.entry.size)}</small>
+              </div>
+              <div class="search-actions">
+                <button class="btn btn-secondary" onclick={() => showVersionHistory(match.entry.path)}>Versions</button>
+                <button class="btn btn-restore" onclick={() => restoreArchive(match.archive_name, [match.entry.path])}>Restore safely</button>
+                <button class="btn btn-secondary" onclick={() => restoreArchive(match.archive_name, [match.entry.path], true)}>Overwrite…</button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </section>
+  {/if}
 
   {#if compactStatus}
     <div class="restore-result" class:error={compactStatus.includes('failed')}>
@@ -519,6 +636,71 @@
 </div>
 
 <style>
+  .restore-center {
+    display: grid;
+    gap: var(--space-3);
+    margin-bottom: var(--space-6);
+    padding: var(--space-5);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface-raised);
+  }
+
+  .restore-center h2,
+  .restore-center p {
+    margin: 0;
+  }
+
+  .restore-center p,
+  .search-result small {
+    color: var(--color-text-muted);
+  }
+
+  .search-row,
+  .history-heading,
+  .search-result,
+  .search-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .search-row input {
+    flex: 1;
+    min-width: 0;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg);
+    color: var(--color-text);
+  }
+
+  .history-heading,
+  .search-result {
+    justify-content: space-between;
+  }
+
+  .search-results {
+    display: grid;
+    max-height: 360px;
+    overflow: auto;
+    border-top: 1px solid var(--color-border-subtle);
+  }
+
+  .search-result {
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .search-result > div:first-child {
+    display: grid;
+    min-width: 0;
+  }
+
+  .search-result code {
+    overflow-wrap: anywhere;
+  }
+
   .archives-page {
     max-width: 800px;
   }

@@ -10,6 +10,7 @@ export interface Profile {
   backup_selection: BackupSelection;
   schedule: ScheduleConfig | null;
   integrity_schedule: { enabled: boolean } | null;
+  restore_drill_schedule: { enabled: boolean } | null;
   retention: RetentionConfig | null;
   archive_template: string | null;
   pre_backup: string | null;

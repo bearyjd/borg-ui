@@ -4,7 +4,7 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 4;
+pub const PROFILE_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupSelection {
@@ -25,6 +25,11 @@ pub struct IntegritySchedule {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RestoreDrillSchedule {
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub id: String,
@@ -36,6 +41,8 @@ pub struct Profile {
     pub schedule: Option<ScheduleConfig>,
     #[serde(default)]
     pub integrity_schedule: Option<IntegritySchedule>,
+    #[serde(default)]
+    pub restore_drill_schedule: Option<RestoreDrillSchedule>,
     #[serde(default)]
     pub retention: Option<RetentionConfig>,
     #[serde(default)]
@@ -280,6 +287,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         backup_selection,
         schedule,
         integrity_schedule: None,
+        restore_drill_schedule: None,
         retention,
         archive_template: None,
         pre_backup: None,
@@ -350,6 +358,7 @@ mod tests {
             backup_selection: Default::default(),
             schedule: None,
             integrity_schedule: None,
+            restore_drill_schedule: None,
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -505,7 +514,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(saved["schema_version"], 4);
+        assert_eq!(saved["schema_version"], PROFILE_SCHEMA_VERSION);
         assert!(
             saved["profiles"][0]["schedule"]
                 .get("source_paths")
