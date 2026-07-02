@@ -98,8 +98,9 @@ harness details are in `tests/smoke-windows/README.md`.
   `BORG_PASSPHRASE`, `BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK`,
   `BORG_DISPLAY_PASSPHRASE=no`, `BORG_RELOCATED_REPO_ACCESS_IS_OK=yes`, and
   closed stdin behavior intact.
-- Borg-for-Windows misparses raw drive-letter repository paths (`C:\repo`) as
-  SSH. Use `RepoConfig::location()` so local drive paths are rewritten to UNC.
+- Borg-for-Windows 1.4.4+win7 accepts raw drive-letter repository paths
+  (`C:\repo`) directly. Do not restore the former `\\localhost\C$` rewrite:
+  administrative shares prevent local repositories from working as standard users.
 - VSS stores archive paths through a drive-letter junction so VSS backups remain
   restorable and match live backup path layout.
 - `borg extract --progress --log-json` reports restore progress as

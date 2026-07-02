@@ -263,7 +263,7 @@ these need the actual Tauri binary and/or a real Credential Manager.
     to the VM home (dockur does **not** surface `./shared` inside Windows, so the
     upload is how it gets there). `validate-gui.ps1` also copies the **whole borg
     distribution** (`borg.exe` **and** its `_internal\` folder) next to
-    `borg-ui.exe` automatically — borg 1.4.4+win6 is a PyInstaller onedir bundle
+    `borg-ui.exe` automatically — borg 1.4.4+win7 is a PyInstaller onedir bundle
     that dies with "Failed to load Python DLL `_internal\python311.dll`" if only
     the `.exe` is present. The same applies when packaging the real app (the app
     resolves borg from its own directory; `tauri.conf.json` `resources` is empty,
@@ -346,8 +346,7 @@ installed layout). `validate-installer.ps1`:
    the install dir (the bundling contract — `lib.rs` resolves borg beside the exe,
    and borg dies without `_internal`).
 3. Runs the **installed** `borg.exe` through `--version` + a real
-   init→create→delete→extract→byte-verify round-trip (relative repo path to dodge
-   the drive-letter bug).
+   init→create→delete→extract→byte-verify round-trip.
 4. Silently uninstalls and asserts the app is gone.
 
 Build the installers in CI (the `Release` workflow uploads a `borgui-windows-installers`

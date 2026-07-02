@@ -5,20 +5,12 @@
 #
 #   - reg.exe       HKCU\...\Run round-trip (autostart at login)
 #   - schtasks.exe  task create/query/delete round-trip (scheduled backups)
-#   - borg.exe      backup engine: a relative-path round-trip proves the engine
-#                   works on Windows; an absolute-path probe is a regression test
-#                   for the drive-letter bug described below.
+#   - borg.exe      backup engine: an absolute drive-letter repository completes
+#                   a full backup/restore round-trip.
 #
-# IMPORTANT FINDING (borg-windows drive-letter path bug)
-# ------------------------------------------------------
-# borg 1.4.4+win6 parses an absolute Windows repo path (C:\repo, C:/repo,
-# \\?\C:\repo) as an SSH remote "C:repo" (drive letter -> host "C"), then hangs
-# trying to ssh to host "C". A repo path WITHOUT a drive-letter colon (a relative
-# path) is correctly treated as local. The app's RepoConfig::location() passes a
-# local repo path verbatim, so a local/USB repo like "C:\Backups\repo" hangs.
-# This is almost certainly the real cause behind the "console-less spawn hang"
-# previously attributed to PyInstaller. Tracking test: `borg_absolute_local_path`
-# below FAILS until borg-core formats local Windows paths in a form borg accepts.
+# borg 1.4.4+win7 fixes the former drive-letter parser bug. The regression test
+# below deliberately passes C:\... directly; no administrative-share workaround
+# is allowed.
 #
 # Every borg call is wrapped in a hard timeout (Invoke-Borg) so a hang can never
 # block the run.
@@ -107,7 +99,7 @@ if ($existing) {
 } else {
     try {
         $zip = "$env:TEMP\borg-windows.zip"
-        $url = "https://github.com/marcpope/borg-windows/releases/download/v1.4.4-win6/borg-windows.zip"
+        $url = "https://github.com/marcpope/borg-windows/releases/download/v1.4.4-win7/borg-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
         New-Item -ItemType Directory -Force -Path $borgDir | Out-Null
         Expand-Archive -Path $zip -DestinationPath $borgDir -Force
@@ -157,14 +149,8 @@ function Invoke-Borg {
 function Get-Sha($path) { (Get-FileHash -Algorithm SHA256 -Path $path).Hash }
 
 # ==================================================================
-# 3. borg engine works on Windows: init + create + list with a relative repo
-#    (run from a fixed cwd, which avoids the drive-letter bug). We assert the
-#    archive lists the stored file. Extract is intentionally NOT tested here:
-#    extract must run with cwd = the restore destination, but a relative repo
-#    then resolves against the destination ("Repository ...\dest\repo does not
-#    exist"), and an absolute repo hits the drive-letter hang below. So a full
-#    local round-trip is impossible with this borg build regardless of cwd --
-#    that limitation is captured by `borg_local_absolute_repo`.
+# 3. Basic relative-repository init + create + list check. The next test covers
+#    the full absolute drive-letter backup/restore regression.
 # ==================================================================
 Write-TestHeader "borg_engine_create"
 if (-not $script:BorgExe) {
@@ -202,48 +188,39 @@ if (-not $script:BorgExe) {
 }
 
 # ==================================================================
-# 4. REGRESSION TEST for the drive-letter bug. The app's RepoConfig::location()
-#    rewrites a local Windows repo path (C:\repo) to an admin-share UNC path
-#    (\\localhost\C$\repo) so borg doesn't misparse the drive-letter colon as an
-#    ssh host and hang. This mirrors that conversion and runs a FULL local
-#    backup->restore round-trip (init -> create -> extract -> byte-verify),
-#    including an extract whose cwd differs from the repo's location (the case
-#    that a relative repo can't satisfy). Was a hard hang before the fix.
-#    NOTE: the C$ admin share requires an admin account (the test VM is admin).
+# 4. Regression test for the fixed drive-letter parser. Run a full local
+#    backup->restore round-trip with the raw absolute path, including extract
+#    from a different cwd.
 # ==================================================================
-Write-TestHeader "borg_local_repo_via_unc"
+Write-TestHeader "borg_local_drive_repo"
 if (-not $script:BorgExe) {
-    Fail "borg_local_repo_via_unc" "borg.exe unavailable"
+    Fail "borg_local_drive_repo" "borg.exe unavailable"
 } else {
     try {
-        $absRepo = Join-Path $work "unc_repo"          # e.g. C:\...\unc_repo
-        # Mirror RepoConfig::location(): X:\rest -> \\localhost\X$\rest
-        $uncRepo = "\\localhost\" + $absRepo.Substring(0, 1) + "$" + $absRepo.Substring(2)
+        $absRepo = Join-Path $work "drive_repo"
 
-        $src = Join-Path $work "unc_src"
-        $out = Join-Path $work "unc_out"
+        $src = Join-Path $work "drive_src"
+        $out = Join-Path $work "drive_out"
         New-Item -ItemType Directory -Force -Path $src, $out | Out-Null
-        "unc-roundtrip-payload" | Out-File (Join-Path $src "data.txt") -Encoding ascii -NoNewline
+        "drive-roundtrip-payload" | Out-File (Join-Path $src "data.txt") -Encoding ascii -NoNewline
 
-        $r = Invoke-Borg @("init", "--encryption", "none", $uncRepo) 40
-        if ($r.TimedOut) { throw "init hung on UNC path (admin share unavailable?)" }
-        if (-not (Test-Path $absRepo)) { throw "repo not created via UNC (stderr: $($r.Stderr))" }
+        $r = Invoke-Borg @("init", "--encryption", "none", $absRepo) 40
+        if ($r.TimedOut) { throw "init hung on drive-letter path" }
+        if (-not (Test-Path $absRepo)) { throw "repo not created (stderr: $($r.Stderr))" }
 
-        # create from a fixed cwd; extract from a DIFFERENT cwd. The UNC repo is
-        # absolute/location-independent, so both resolve to the same repo.
-        $r = Invoke-Borg @("create", "$uncRepo::a1", "unc_src") 60 $work
+        $r = Invoke-Borg @("create", "$absRepo::a1", "drive_src") 60 $work
         if ($r.TimedOut) { throw "create hung" }
-        $r = Invoke-Borg @("extract", "$uncRepo::a1") 60 $out
+        $r = Invoke-Borg @("extract", "$absRepo::a1") 60 $out
         if ($r.TimedOut) { throw "extract hung" }
 
-        $restored = Join-Path $out "unc_src\data.txt"
+        $restored = Join-Path $out "drive_src\data.txt"
         if ((Test-Path $restored) -and ((Get-Sha (Join-Path $src "data.txt")) -eq (Get-Sha $restored))) {
-            Pass "borg_local_repo_via_unc" "UNC-rewritten local repo round-trips (init -> create -> cross-cwd extract -> byte-verify) - drive-letter fix works"
+            Pass "borg_local_drive_repo" "raw drive-letter repo round-trips (init -> create -> cross-cwd extract -> byte-verify)"
         } else {
-            Fail "borg_local_repo_via_unc" "restore via UNC repo did not byte-match (restored exists: $(Test-Path $restored))"
+            Fail "borg_local_drive_repo" "restore did not byte-match (restored exists: $(Test-Path $restored))"
         }
     } catch {
-        Fail "borg_local_repo_via_unc" "$_"
+        Fail "borg_local_drive_repo" "$_"
     }
 }
 
