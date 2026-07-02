@@ -418,6 +418,7 @@ dependencies = [
  "borg-core",
  "borg-platform-win",
  "chrono",
+ "dirs",
  "hostname",
  "keyring",
  "regex",

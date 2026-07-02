@@ -217,15 +217,17 @@ fn validate_profile(profile: &Profile) -> Result<(), String> {
         return Err("profile ids and names cannot be empty".into());
     }
     profile.repo.validate().map_err(|e| e.to_string())?;
+    if !profile.backup_selection.source_paths.is_empty() {
+        borg_core::config::validate_source_paths(&profile.backup_selection.source_paths)
+            .map_err(|e| e.to_string())?;
+    }
+    borg_core::config::validate_exclude_patterns(&profile.backup_selection.excludes)
+        .map_err(|e| e.to_string())?;
     if let Some(retention) = &profile.retention {
         retention.validate().map_err(|e| e.to_string())?;
     }
     if let Some(schedule) = &profile.schedule {
         schedule.schedule.validate().map_err(|e| e.to_string())?;
-        borg_core::config::validate_source_paths(&schedule.source_paths)
-            .map_err(|e| e.to_string())?;
-        borg_core::config::validate_exclude_patterns(&schedule.excludes)
-            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -291,6 +293,7 @@ mod tests {
                 repo_path: "/repo".into(),
                 ssh_key_path: Some(PathBuf::from("/secret/id_ed25519")),
             },
+            backup_selection: Default::default(),
             schedule: None,
             integrity_schedule: None,
             retention: None,
@@ -313,6 +316,7 @@ mod tests {
             id: "same".into(),
             name: "One".into(),
             repo,
+            backup_selection: Default::default(),
             schedule: None,
             integrity_schedule: None,
             retention: None,

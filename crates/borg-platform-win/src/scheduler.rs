@@ -121,10 +121,7 @@ pub enum Schedule {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleConfig {
     pub enabled: bool,
-    pub source_paths: Vec<String>,
     pub schedule: Schedule,
-    #[serde(default)]
-    pub excludes: Vec<String>,
     /// When true, unattended scheduled backups skip the run while Windows reports
     /// the active network as metered. Manual backups are unaffected.
     #[serde(default)]
