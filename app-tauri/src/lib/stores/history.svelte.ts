@@ -5,7 +5,7 @@ export interface BackupEvent {
   timestamp: string;
   kind: 'backup' | 'restore';
   archive_name: string;
-  outcome: 'success' | 'failure';
+  outcome: 'success' | 'partial_success' | 'failure';
   duration_seconds: number;
   file_count?: number;
   original_size?: number;
