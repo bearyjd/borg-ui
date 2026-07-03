@@ -529,11 +529,11 @@ pub async fn create_backup(
     compression.validate().map_err(|e| e.to_string())?;
     borg_core::config::validate_archive_name(&archive_name).map_err(|e| e.to_string())?;
     let data = read_profiles(&app).await?;
-    let selection = data
+    let active = data
         .active()
-        .ok_or_else(|| "no active profile; configure repository first".to_string())?
-        .backup_selection
-        .clone();
+        .ok_or_else(|| "no active profile; configure repository first".to_string())?;
+    let selection = active.backup_selection.clone();
+    let resource_policy = active.resource_policy.clone();
     borg_core::config::validate_source_paths(&selection.source_paths).map_err(|e| e.to_string())?;
     borg_core::config::validate_exclude_patterns(&selection.excludes).map_err(|e| e.to_string())?;
 
@@ -565,6 +565,8 @@ pub async fn create_backup(
     // Register the cancel slot before taking a snapshot, so a concurrent backup
     // is rejected up front and never leaves a VSS snapshot/junction behind.
     let cancel = state.try_register_cancel(BACKUP_OP, "a backup is already running")?;
+    let _sleep_guard =
+        borg_platform_win::resource::SleepGuard::acquire(resource_policy.prevent_sleep)?;
 
     // VSS (Windows, admin, single-volume): snapshot the source volume and back
     // up from a read-only junction mount so borg stores clean, restorable paths
@@ -581,6 +583,7 @@ pub async fn create_backup(
         excludes: selection.excludes,
         compression,
         repo,
+        upload_limit_kib: resource_policy.upload_limit_kib,
     };
 
     let result = state
@@ -684,6 +687,87 @@ pub async fn save_backup_selection(
 #[tauri::command]
 pub fn standard_backup_excludes() -> Vec<&'static str> {
     crate::coverage::STANDARD_EXCLUDES.to_vec()
+}
+
+#[tauri::command]
+pub async fn load_resource_policy(
+    app: tauri::AppHandle,
+) -> Result<profiles::ResourcePolicy, String> {
+    read_profiles(&app)
+        .await?
+        .active()
+        .map(|profile| profile.resource_policy.clone())
+        .ok_or_else(|| "no active profile".into())
+}
+
+#[tauri::command]
+pub async fn save_resource_policy(
+    app: tauri::AppHandle,
+    policy: profiles::ResourcePolicy,
+    autostart_consent: bool,
+) -> Result<(), String> {
+    if policy.upload_limit_kib == Some(0) {
+        return Err("upload limit must be greater than zero or left unlimited".into());
+    }
+    if policy
+        .allowed_wifi_names
+        .iter()
+        .any(|name| name.trim().is_empty())
+    {
+        return Err("allowed Wi-Fi names cannot be empty".into());
+    }
+    if policy.removable_destination_trigger
+        && !borg_platform_win::autostart::is_enabled(borg_platform_win::autostart::AUTOSTART_VALUE)
+            .await
+    {
+        if !autostart_consent {
+            return Err(
+                "removable destination triggers require consent to start BorgUI at login".into(),
+            );
+        }
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        borg_platform_win::autostart::enable(
+            borg_platform_win::autostart::AUTOSTART_VALUE,
+            &exe.to_string_lossy(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+    let mut data = read_profiles(&app).await?;
+    let profile = data
+        .active_mut()
+        .ok_or_else(|| "no active profile".to_string())?;
+    profile.resource_policy = policy.clone();
+    let schedule = profile.schedule.clone();
+    write_profiles(&app, &data).await?;
+    if let Some(schedule) = schedule.filter(|schedule| schedule.enabled) {
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        borg_platform_win::scheduler::schedule_backup(
+            "BorgUI-Backup",
+            &exe.to_string_lossy(),
+            "--scheduled-backup",
+            &schedule.schedule,
+            policy.wake_for_backup,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_global_snooze(
+    app: tauri::AppHandle,
+    choice: String,
+) -> Result<crate::snooze::SnoozeState, String> {
+    crate::snooze::save(&config_dir(&app).await?, &choice).await
+}
+
+#[tauri::command]
+pub async fn get_global_snooze(
+    app: tauri::AppHandle,
+) -> Result<Option<crate::snooze::SnoozeState>, String> {
+    crate::snooze::load(&config_dir(&app).await?).await
 }
 
 /// Cancel a running backup. Returns true if a backup was in progress.
@@ -937,6 +1021,7 @@ pub async fn save_schedule_config(
         .active_mut()
         .ok_or_else(|| "no active profile; configure repository first".to_string())?;
     profile.schedule = Some(config.clone());
+    let wake_to_run = profile.resource_policy.wake_for_backup;
     write_profiles(&app, &data).await?;
 
     if config.enabled {
@@ -948,6 +1033,7 @@ pub async fn save_schedule_config(
             &exe_str,
             args,
             &config.schedule,
+            wake_to_run,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -1094,6 +1180,7 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
             schedule: None,
             integrity_schedule: None,
             restore_drill_schedule: None,
+            resource_policy: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -1139,6 +1226,7 @@ pub async fn create_profile(
         schedule: None,
         integrity_schedule: None,
         restore_drill_schedule: None,
+        resource_policy: Default::default(),
         retention: None,
         archive_template: None,
         pre_backup: None,

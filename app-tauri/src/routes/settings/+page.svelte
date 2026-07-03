@@ -11,6 +11,7 @@
   import NotificationsSection from '$lib/components/settings/NotificationsSection.svelte';
   import StartupSection from '$lib/components/settings/StartupSection.svelte';
   import ScheduleSection from '$lib/components/settings/ScheduleSection.svelte';
+  import ResourcePolicySection from '$lib/components/settings/ResourcePolicySection.svelte';
   import RetentionSection from '$lib/components/settings/RetentionSection.svelte';
   import DiagnosticsSection from '$lib/components/settings/DiagnosticsSection.svelte';
   import IntegritySection from '$lib/components/settings/IntegritySection.svelte';
@@ -762,6 +763,7 @@
   <NotificationsSection />
 
   <ScheduleSection />
+  {#if profilesState.active}<ResourcePolicySection />{/if}
 
   {#if profilesState.active}
     <IntegritySection />

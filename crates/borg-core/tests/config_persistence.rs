@@ -57,6 +57,7 @@ fn backup_profile_roundtrip_to_file() {
             repo_path: "/volume1/borg/workstation".into(),
             ssh_key_path: None,
         },
+        upload_limit_kib: None,
     };
 
     let json = serde_json::to_string_pretty(&profile).unwrap();
@@ -92,6 +93,7 @@ fn app_config_roundtrip_to_file() {
                     repo_path: "/repo/docs".into(),
                     ssh_key_path: None,
                 },
+                upload_limit_kib: None,
             },
             BackupProfile {
                 name: "photos".into(),
@@ -105,6 +107,7 @@ fn app_config_roundtrip_to_file() {
                     repo_path: "/repo/photos".into(),
                     ssh_key_path: None,
                 },
+                upload_limit_kib: None,
             },
         ],
         borg_binary_path: PathBuf::from("C:\\Program Files\\borg\\borg.exe"),

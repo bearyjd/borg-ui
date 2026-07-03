@@ -104,6 +104,8 @@ pub struct BackupProfile {
     pub excludes: Vec<String>,
     pub compression: Compression,
     pub repo: RepoConfig,
+    #[serde(default)]
+    pub upload_limit_kib: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,6 +324,7 @@ mod tests {
                 repo_path: "/repo".into(),
                 ssh_key_path: None,
             },
+            upload_limit_kib: None,
         };
         let json = serde_json::to_string(&profile).unwrap();
         let deserialized: BackupProfile = serde_json::from_str(&json).unwrap();

@@ -406,6 +406,7 @@ impl BorgClient {
         for exclude in &profile.excludes {
             cmd.args(["--exclude", exclude]);
         }
+        cmd.args(upload_rate_args(profile));
 
         cmd.arg(&archive);
         for path in &profile.source_paths {
@@ -776,6 +777,17 @@ impl BorgClient {
     }
 }
 
+fn upload_rate_args(profile: &BackupProfile) -> Vec<String> {
+    if profile.repo.is_local() {
+        return Vec::new();
+    }
+    profile
+        .upload_limit_kib
+        .filter(|limit| *limit > 0)
+        .map(|limit| vec!["--upload-ratelimit".into(), limit.to_string()])
+        .unwrap_or_default()
+}
+
 /// One changed path from `borg diff`. A path may carry several underlying
 /// change records (content plus ctime/mtime/mode); they are collapsed into a
 /// single [`DiffStatus`] with byte deltas where borg reports them.
@@ -879,6 +891,26 @@ mod tests {
             repo_path: "/data/repo".into(),
             ssh_key_path: None,
         }
+    }
+
+    #[test]
+    fn upload_rate_limit_is_only_passed_for_ssh() {
+        let mut profile = BackupProfile {
+            name: "test".into(),
+            source_paths: vec![],
+            excludes: vec![],
+            compression: crate::config::Compression::default(),
+            repo: test_repo(),
+            upload_limit_kib: Some(512),
+        };
+        assert_eq!(
+            upload_rate_args(&profile),
+            vec!["--upload-ratelimit", "512"]
+        );
+        profile.repo.ssh_host.clear();
+        profile.repo.ssh_user.clear();
+        profile.repo.repo_path = "D:\\repo".into();
+        assert!(upload_rate_args(&profile).is_empty());
     }
 
     #[test]
