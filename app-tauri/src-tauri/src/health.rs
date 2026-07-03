@@ -48,6 +48,7 @@ pub struct HealthInputs<'a> {
     pub drill: Option<&'a RestoreDrillEvent>,
     pub primary_attempt: Option<&'a DestinationAttempt>,
     pub secondary_attempt: Option<&'a DestinationAttempt>,
+    pub passphrase_available: bool,
     pub now: DateTime<Utc>,
 }
 
@@ -80,7 +81,8 @@ pub fn aggregate(inputs: HealthInputs<'_>) -> ProtectionHealth {
         );
     let integrity_status = status(inputs.integrity.map(|event| event.outcome.as_str()));
     let restore_drill_status = status(inputs.drill.map(|event| event.outcome.as_str()));
-    let recovery_key_ready = inputs.profile.hardening.recovery_key_exported;
+    let recovery_key_ready = !inputs.profile.recovery.encrypted_repository
+        || (inputs.profile.hardening.recovery_key_exported && inputs.passphrase_available);
     let secondary_status = inputs.profile.secondary_repo.as_ref().map(|_| {
         match inputs.secondary_attempt {
             Some(attempt) if attempt.outcome == "success" => {
@@ -226,6 +228,7 @@ mod tests {
             reporting: Default::default(),
             placeholder_policy: Default::default(),
             storage_warnings: Default::default(),
+            recovery: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -247,6 +250,7 @@ mod tests {
             drill: None,
             primary_attempt: None,
             secondary_attempt: None,
+            passphrase_available: true,
             now: Utc::now(),
         });
         assert_eq!(health.severity, HealthSeverity::Red);
@@ -297,6 +301,7 @@ mod tests {
             drill: Some(&drill),
             primary_attempt: None,
             secondary_attempt: None,
+            passphrase_available: true,
             now,
         });
         assert_eq!(health.severity, HealthSeverity::Green);

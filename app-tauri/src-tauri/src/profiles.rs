@@ -4,7 +4,13 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 10;
+pub const PROFILE_SCHEMA_VERSION: u32 = 11;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryPolicy {
+    #[serde(default)]
+    pub encrypted_repository: bool,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupSelection {
@@ -225,6 +231,8 @@ pub struct Profile {
     pub placeholder_policy: PlaceholderPolicy,
     #[serde(default)]
     pub storage_warnings: StorageWarningThresholds,
+    #[serde(default)]
+    pub recovery: RecoveryPolicy,
     #[serde(default)]
     pub retention: Option<RetentionConfig>,
     #[serde(default)]
@@ -476,6 +484,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         reporting: ReportPreferences::default(),
         placeholder_policy: PlaceholderPolicy::default(),
         storage_warnings: StorageWarningThresholds::default(),
+        recovery: RecoveryPolicy::default(),
         retention,
         archive_template: None,
         pre_backup: None,
@@ -553,6 +562,7 @@ mod tests {
             reporting: ReportPreferences::default(),
             placeholder_policy: PlaceholderPolicy::default(),
             storage_warnings: StorageWarningThresholds::default(),
+            recovery: RecoveryPolicy::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,

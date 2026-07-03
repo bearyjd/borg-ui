@@ -198,6 +198,65 @@ pub struct DestinationAttempt {
     pub error_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReadinessEvent {
+    pub timestamp: String,
+    pub profile_id: String,
+    pub kind: String,
+    pub outcome: String,
+}
+
+pub async fn append_readiness_event(
+    config_dir: &Path,
+    event: ReadinessEvent,
+) -> Result<(), String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.execute(
+            "INSERT INTO readiness_events (timestamp, profile_id, kind, outcome)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![event.timestamp, event.profile_id, event.kind, event.outcome],
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub async fn latest_readiness_event(
+    config_dir: &Path,
+    profile_id: &str,
+    kind: &str,
+) -> Result<Option<ReadinessEvent>, String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    let profile_id = profile_id.to_owned();
+    let kind = kind.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.query_row(
+            "SELECT timestamp, profile_id, kind, outcome FROM readiness_events
+             WHERE profile_id = ?1 AND kind = ?2 ORDER BY sequence DESC LIMIT 1",
+            params![profile_id, kind],
+            |row| {
+                Ok(ReadinessEvent {
+                    timestamp: row.get(0)?,
+                    profile_id: row.get(1)?,
+                    kind: row.get(2)?,
+                    outcome: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 pub async fn append_destination_attempt(
     config_dir: &Path,
     attempt: DestinationAttempt,
@@ -716,6 +775,13 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
              stored_size INTEGER,
              duration_seconds INTEGER NOT NULL,
              transfer_rate REAL NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS readiness_events (
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+             timestamp TEXT NOT NULL,
+             profile_id TEXT NOT NULL,
+             kind TEXT NOT NULL CHECK(kind IN ('passphrase', 'key_export')),
+             outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure'))
          );",
     )
     .map_err(|e| e.to_string())?;
@@ -854,6 +920,38 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn readiness_events_store_only_typed_outcomes() {
+        let dir = tempfile::tempdir().unwrap();
+        let event = ReadinessEvent {
+            timestamp: "2026-07-03T00:00:00Z".into(),
+            profile_id: "work".into(),
+            kind: "key_export".into(),
+            outcome: "success".into(),
+        };
+        append_readiness_event(dir.path(), event.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            latest_readiness_event(dir.path(), "work", "key_export")
+                .await
+                .unwrap(),
+            Some(event)
+        );
+        let columns: Vec<String> = {
+            let conn = open(dir.path()).unwrap();
+            let mut statement = conn.prepare("PRAGMA table_info(readiness_events)").unwrap();
+            statement
+                .query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert!(!columns.iter().any(|column| {
+            column.contains("path") || column.contains("passphrase") || column.contains("location")
+        }));
     }
 
     #[test]
