@@ -37,6 +37,39 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  rust-windows:
+    name: Rust (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # tauri-build's build script reads the Windows-only tauri.windows.conf.json
+      # overlay, which declares the bundled-borg resource dir. Real borg is only
+      # needed to package an installer (Release workflow); for a compile/lint
+      # check a placeholder satisfies the build script's resource-path check.
+      - name: Create placeholder borg resource
+        shell: pwsh
+        run: |
+          $dir = "app-tauri/src-tauri/binaries/borg"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          New-Item -ItemType File -Force -Path "$dir/borg.exe" | Out-Null
+
+      # Compiles and lints the cfg(windows) code that the Linux job never
+      # builds (VSS, scheduler, power/WLAN, removable, cloud placeholders,
+      # atomic replace). Catches Windows-only breaks at PR time instead of
+      # at release time. --all-targets also compiles the cfg(windows) tests.
+      - name: Clippy (Windows)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
