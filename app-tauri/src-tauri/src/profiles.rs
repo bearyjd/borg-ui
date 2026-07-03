@@ -4,7 +4,7 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 7;
+pub const PROFILE_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupSelection {
@@ -77,6 +77,73 @@ pub struct HardeningPosture {
     pub server_maintenance_documented: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpTlsMode {
+    StartTls,
+    ImplicitTls,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReportPreferences {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub webhook_enabled: bool,
+    #[serde(default)]
+    pub smtp_enabled: bool,
+    #[serde(default)]
+    pub smtp_host: String,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    #[serde(default = "default_smtp_mode")]
+    pub smtp_tls_mode: SmtpTlsMode,
+    #[serde(default)]
+    pub smtp_username: String,
+    #[serde(default)]
+    pub email_from: String,
+    #[serde(default)]
+    pub email_to: String,
+    #[serde(default)]
+    pub daily_digest: bool,
+    #[serde(default = "default_stale_hours")]
+    pub stale_after_hours: u32,
+    #[serde(default = "default_failure_threshold")]
+    pub failure_threshold: u32,
+}
+
+const fn default_smtp_port() -> u16 {
+    587
+}
+fn default_smtp_mode() -> SmtpTlsMode {
+    SmtpTlsMode::StartTls
+}
+const fn default_stale_hours() -> u32 {
+    48
+}
+const fn default_failure_threshold() -> u32 {
+    1
+}
+
+impl Default for ReportPreferences {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            webhook_enabled: false,
+            smtp_enabled: false,
+            smtp_host: String::new(),
+            smtp_port: default_smtp_port(),
+            smtp_tls_mode: default_smtp_mode(),
+            smtp_username: String::new(),
+            email_from: String::new(),
+            email_to: String::new(),
+            daily_digest: false,
+            stale_after_hours: default_stale_hours(),
+            failure_threshold: default_failure_threshold(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub id: String,
@@ -94,6 +161,8 @@ pub struct Profile {
     pub resource_policy: ResourcePolicy,
     #[serde(default)]
     pub hardening: HardeningPosture,
+    #[serde(default)]
+    pub reporting: ReportPreferences,
     #[serde(default)]
     pub retention: Option<RetentionConfig>,
     #[serde(default)]
@@ -341,6 +410,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         restore_drill_schedule: None,
         resource_policy: ResourcePolicy::default(),
         hardening: HardeningPosture::default(),
+        reporting: ReportPreferences::default(),
         retention,
         archive_template: None,
         pre_backup: None,
@@ -414,6 +484,7 @@ mod tests {
             restore_drill_schedule: None,
             resource_policy: ResourcePolicy::default(),
             hardening: HardeningPosture::default(),
+            reporting: ReportPreferences::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,

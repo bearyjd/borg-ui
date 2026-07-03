@@ -674,6 +674,7 @@ mod tests {
             restore_drill_schedule: None,
             resource_policy: Default::default(),
             hardening: Default::default(),
+            reporting: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
