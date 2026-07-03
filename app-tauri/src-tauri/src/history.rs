@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 const MAX_EVENTS: usize = 200;
-pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 5;
+pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupEvent {
@@ -70,6 +70,79 @@ pub struct DeliveryEvent {
     pub transient: bool,
     #[serde(default)]
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DestinationAttempt {
+    pub run_id: String,
+    pub profile_id: String,
+    pub destination: String,
+    pub timestamp: String,
+    pub outcome: String,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+pub async fn append_destination_attempt(
+    config_dir: &Path,
+    attempt: DestinationAttempt,
+) -> Result<(), String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.execute(
+            "INSERT INTO destination_attempts
+             (run_id, profile_id, destination, timestamp, outcome, error_message)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                attempt.run_id,
+                attempt.profile_id,
+                attempt.destination,
+                attempt.timestamp,
+                attempt.outcome,
+                attempt.error_message,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub async fn latest_destination_attempt(
+    config_dir: &Path,
+    profile_id: &str,
+    destination: &str,
+) -> Result<Option<DestinationAttempt>, String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    let profile_id = profile_id.to_owned();
+    let destination = destination.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.query_row(
+            "SELECT run_id, profile_id, destination, timestamp, outcome, error_message
+             FROM destination_attempts WHERE profile_id = ?1 AND destination = ?2
+             ORDER BY sequence DESC LIMIT 1",
+            params![profile_id, destination],
+            |row| {
+                Ok(DestinationAttempt {
+                    run_id: row.get(0)?,
+                    profile_id: row.get(1)?,
+                    destination: row.get(2)?,
+                    timestamp: row.get(3)?,
+                    outcome: row.get(4)?,
+                    error_message: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 pub async fn append_delivery(config_dir: &Path, event: DeliveryEvent) -> Result<(), String> {
@@ -483,6 +556,15 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
              attempt INTEGER NOT NULL,
              transient INTEGER NOT NULL,
              error_message TEXT
+         );
+         CREATE TABLE IF NOT EXISTS destination_attempts (
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+             run_id TEXT NOT NULL,
+             profile_id TEXT NOT NULL,
+             destination TEXT NOT NULL CHECK(destination IN ('primary', 'secondary')),
+             timestamp TEXT NOT NULL,
+             outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure', 'cancelled', 'skipped')),
+             error_message TEXT
          );",
     )
     .map_err(|e| e.to_string())?;
@@ -744,6 +826,42 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn destination_attempts_remain_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        for (destination, outcome) in [("primary", "success"), ("secondary", "failure")] {
+            append_destination_attempt(
+                dir.path(),
+                DestinationAttempt {
+                    run_id: "run".into(),
+                    profile_id: "work".into(),
+                    destination: destination.into(),
+                    timestamp: "2026-07-02T00:00:00Z".into(),
+                    outcome: outcome.into(),
+                    error_message: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            latest_destination_attempt(dir.path(), "work", "primary")
+                .await
+                .unwrap()
+                .unwrap()
+                .outcome,
+            "success"
+        );
+        assert_eq!(
+            latest_destination_attempt(dir.path(), "work", "secondary")
+                .await
+                .unwrap()
+                .unwrap()
+                .outcome,
+            "failure"
         );
     }
 }
