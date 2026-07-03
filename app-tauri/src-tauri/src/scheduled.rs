@@ -817,6 +817,7 @@ mod tests {
             reporting: Default::default(),
             placeholder_policy: Default::default(),
             storage_warnings: Default::default(),
+            recovery: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
