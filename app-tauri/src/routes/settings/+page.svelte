@@ -16,6 +16,7 @@
   import ReportingSection from '$lib/components/settings/ReportingSection.svelte';
   import SecondaryRepositorySection from '$lib/components/settings/SecondaryRepositorySection.svelte';
   import PlaceholderPolicySection from '$lib/components/settings/PlaceholderPolicySection.svelte';
+  import StorageWarningSection from '$lib/components/settings/StorageWarningSection.svelte';
   import RetentionSection from '$lib/components/settings/RetentionSection.svelte';
   import DiagnosticsSection from '$lib/components/settings/DiagnosticsSection.svelte';
   import IntegritySection from '$lib/components/settings/IntegritySection.svelte';
@@ -769,7 +770,10 @@
 
   <ScheduleSection />
   {#if profilesState.active}<ResourcePolicySection />{/if}
-  {#if profilesState.active}<PlaceholderPolicySection />{/if}
+  {#if profilesState.active}
+    <PlaceholderPolicySection />
+    <StorageWarningSection />
+  {/if}
   {#if profilesState.active}<HardeningSection />{/if}
   {#if profilesState.active}<ReportingSection />{/if}
 

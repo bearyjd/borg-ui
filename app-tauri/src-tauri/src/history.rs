@@ -4,7 +4,122 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 const MAX_EVENTS: usize = 200;
-pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 6;
+pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 7;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RepositoryMetric {
+    pub timestamp: String,
+    pub profile_id: String,
+    pub destination: String,
+    pub original_size: u64,
+    pub compressed_size: u64,
+    pub deduplicated_size: u64,
+    pub stored_size: Option<u64>,
+    pub duration_seconds: u64,
+    pub transfer_rate: f64,
+}
+
+pub async fn append_repository_metric(
+    config_dir: &Path,
+    metric: RepositoryMetric,
+) -> Result<(), String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.execute(
+            "INSERT INTO repository_metrics
+             (timestamp, profile_id, destination, original_size, compressed_size,
+              deduplicated_size, stored_size, duration_seconds, transfer_rate)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                metric.timestamp,
+                metric.profile_id,
+                metric.destination,
+                metric.original_size,
+                metric.compressed_size,
+                metric.deduplicated_size,
+                metric.stored_size,
+                metric.duration_seconds,
+                metric.transfer_rate,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub async fn repository_metrics(
+    config_dir: &Path,
+    profile_id: &str,
+    destination: &str,
+) -> Result<Vec<RepositoryMetric>, String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    let profile_id = profile_id.to_owned();
+    let destination = destination.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        let mut statement = conn
+            .prepare(
+                "SELECT timestamp, profile_id, destination, original_size, compressed_size,
+                        deduplicated_size, stored_size, duration_seconds, transfer_rate
+                 FROM repository_metrics
+                 WHERE profile_id = ?1 AND destination = ?2
+                 ORDER BY sequence ASC LIMIT 365",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![profile_id, destination], |row| {
+                Ok(RepositoryMetric {
+                    timestamp: row.get(0)?,
+                    profile_id: row.get(1)?,
+                    destination: row.get(2)?,
+                    original_size: row.get(3)?,
+                    compressed_size: row.get(4)?,
+                    deduplicated_size: row.get(5)?,
+                    stored_size: row.get(6)?,
+                    duration_seconds: row.get(7)?,
+                    transfer_rate: row.get(8)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub async fn update_latest_stored_size(
+    config_dir: &Path,
+    profile_id: &str,
+    destination: &str,
+    stored_size: u64,
+) -> Result<(), String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    let profile_id = profile_id.to_owned();
+    let destination = destination.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.execute(
+            "UPDATE repository_metrics SET stored_size = ?1
+             WHERE sequence = (
+                SELECT sequence FROM repository_metrics
+                WHERE profile_id = ?2 AND destination = ?3
+                ORDER BY sequence DESC LIMIT 1
+             )",
+            params![stored_size, profile_id, destination],
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupEvent {
@@ -497,6 +612,30 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
     let conn = Connection::open(database_path(config_dir)).map_err(|e| e.to_string())?;
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
+    let has_metadata: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_metadata')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if has_metadata {
+        let version: Option<String> = conn
+            .query_row(
+                "SELECT value FROM schema_metadata WHERE key = 'database_schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if version
+            .as_deref()
+            .and_then(|value| value.parse::<i64>().ok())
+            .is_some_and(|version| version > DATABASE_SCHEMA_VERSION)
+        {
+            return Err("database schema is newer than this BorgUI version".into());
+        }
+    }
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -565,6 +704,18 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
              timestamp TEXT NOT NULL,
              outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure', 'cancelled', 'skipped')),
              error_message TEXT
+         );
+         CREATE TABLE IF NOT EXISTS repository_metrics (
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+             timestamp TEXT NOT NULL,
+             profile_id TEXT NOT NULL,
+             destination TEXT NOT NULL CHECK(destination IN ('primary', 'secondary')),
+             original_size INTEGER NOT NULL,
+             compressed_size INTEGER NOT NULL,
+             deduplicated_size INTEGER NOT NULL,
+             stored_size INTEGER,
+             duration_seconds INTEGER NOT NULL,
+             transfer_rate REAL NOT NULL
          );",
     )
     .map_err(|e| e.to_string())?;
@@ -672,6 +823,59 @@ mod tests {
         assert_eq!(events.len(), MAX_EVENTS);
         assert_eq!(events.first().unwrap().id, "id-5");
         assert_eq!(events.last().unwrap().id, "id-204");
+    }
+
+    #[tokio::test]
+    async fn repository_metrics_are_aggregate_and_profile_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        let metric = RepositoryMetric {
+            timestamp: "2026-07-03T00:00:00Z".into(),
+            profile_id: "work".into(),
+            destination: "primary".into(),
+            original_size: 1_000,
+            compressed_size: 700,
+            deduplicated_size: 100,
+            stored_size: None,
+            duration_seconds: 2,
+            transfer_rate: 50.0,
+        };
+        append_repository_metric(dir.path(), metric.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            repository_metrics(dir.path(), "work", "primary")
+                .await
+                .unwrap(),
+            vec![metric]
+        );
+        assert!(
+            repository_metrics(dir.path(), "personal", "primary")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rejects_future_database_without_overwriting_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(database_path(dir.path())).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_metadata (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);
+             INSERT INTO schema_metadata VALUES ('database_schema_version', '999');",
+        )
+        .unwrap();
+        drop(conn);
+        assert!(open(dir.path()).is_err());
+        let conn = Connection::open(database_path(dir.path())).unwrap();
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM schema_metadata WHERE key = 'database_schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "999");
     }
 
     #[tokio::test]
