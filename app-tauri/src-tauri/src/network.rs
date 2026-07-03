@@ -19,12 +19,23 @@ impl NetworkCost {
     }
 }
 
+// These NLM_CONNECTION_COST flags and the flag-based classifier back the
+// non-Windows probe (which simulates a cost value via an env var) and the
+// shared unit tests. The Windows probe reads the WinRT ConnectionCost object
+// directly (see active_connection_cost_impl below) and never uses them, so they
+// are excluded from the Windows product build to keep it dead-code clean.
+#[cfg(any(test, not(windows)))]
 const CONNECTION_COST_FIXED: u32 = 0x0000_0002;
+#[cfg(any(test, not(windows)))]
 const CONNECTION_COST_VARIABLE: u32 = 0x0000_0004;
+#[cfg(any(test, not(windows)))]
 const CONNECTION_COST_OVERDATALIMIT: u32 = 0x0001_0000;
+#[cfg(any(test, not(windows)))]
 const CONNECTION_COST_ROAMING: u32 = 0x0004_0000;
+#[cfg(any(test, not(windows)))]
 const CONNECTION_COST_APPROACHINGDATALIMIT: u32 = 0x0008_0000;
 
+#[cfg(any(test, not(windows)))]
 pub fn classify_connection_cost(flags: u32) -> NetworkCost {
     let metered = CONNECTION_COST_FIXED
         | CONNECTION_COST_VARIABLE
