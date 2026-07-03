@@ -56,6 +56,16 @@
     cancelled: boolean;
     needs_review: boolean;
   }
+  interface ProfileTemplate {
+    id: string;
+    version: number;
+    name: string;
+    explanation: string;
+    source_paths: string[];
+    unavailable_folders: string[];
+    excludes: string[];
+    suggested_schedule: string;
+  }
 
   let sourcePaths = $state<string[]>([]);
   let excludes = $state<string[]>([]);
@@ -69,6 +79,9 @@
   let coverageReviewed = $state(false);
   let selectionStatus = $state('');
   let savedSelectionSignature = $state('');
+  let templates = $state<ProfileTemplate[]>([]);
+  let selectedTemplate = $state<ProfileTemplate | null>(null);
+  let appliedTemplateId = $state<string | null>(null);
   let isRunning = $state(false);
   let cancelling = $state(false);
   let status = $state('');
@@ -80,14 +93,17 @@
 
   onMount(async () => {
     try {
-      const [selection, exclusions] = await Promise.all([
-        invoke<{ source_paths: string[]; excludes: string[] }>('load_backup_selection'),
+      const [selection, exclusions, builtins] = await Promise.all([
+        invoke<{ source_paths: string[]; excludes: string[]; template_id: string | null }>('load_backup_selection'),
         invoke<string[]>('standard_backup_excludes'),
+        invoke<ProfileTemplate[]>('list_profile_templates'),
       ]);
       sourcePaths = [...selection.source_paths];
       excludes = [...selection.excludes];
       savedSelectionSignature = JSON.stringify([sourcePaths, excludes]);
       standardExcludes = exclusions;
+      templates = builtins;
+      appliedTemplateId = selection.template_id;
     } catch {
       // A new installation has no active profile until repository setup.
     }
@@ -102,6 +118,31 @@
         .filter((folder) => folder.preselected && folder.available)
         .map((folder) => folder.path);
     }
+  }
+
+  async function applyTemplate() {
+    if (!selectedTemplate) return;
+    const selection = await invoke<{
+      source_paths: string[];
+      excludes: string[];
+      template_id: string;
+    }>('apply_profile_template', {
+      templateId: selectedTemplate.id,
+      reviewed: true,
+    });
+    sourcePaths = [...selection.source_paths];
+    excludes = [...selection.excludes];
+    appliedTemplateId = selection.template_id;
+    scan = null;
+    await profilesState.load();
+    selectionStatus = `${selectedTemplate.name} applied. Review and customize the explicit selection at any time.`;
+  }
+
+  async function detachTemplate() {
+    await invoke('detach_profile_template');
+    appliedTemplateId = null;
+    await profilesState.load();
+    selectionStatus = 'Template detached; sources and exclusions were retained.';
   }
 
   async function scanCoverage() {
@@ -335,6 +376,39 @@
       <section class="wizard-panel" aria-label="Protect this PC wizard">
         <h2>Protect this PC</h2>
         <p>Select each folder explicitly. BorgUI never adds an unavailable or unselected source silently.</p>
+        <div class="templates">
+          <strong>Built-in templates</strong>
+          <div class="template-grid">
+            {#each templates as template}
+              <button
+                type="button"
+                class:selected={selectedTemplate?.id === template.id}
+                onclick={() => selectedTemplate = template}
+              >
+                <strong>{template.name}</strong>
+                <span>{template.explanation}</span>
+              </button>
+            {/each}
+          </div>
+          {#if selectedTemplate}
+            <div class="template-review">
+              <p><strong>Sources:</strong> {selectedTemplate.source_paths.join(', ') || 'No folders available'}</p>
+              <p><strong>Exclusions:</strong> {selectedTemplate.excludes.join(', ')}</p>
+              <p><strong>Suggested schedule:</strong> {selectedTemplate.suggested_schedule}</p>
+              {#if selectedTemplate.unavailable_folders.length}
+                <p class="coverage-gap">Unavailable folders: {selectedTemplate.unavailable_folders.join(', ')}</p>
+              {/if}
+              <button class="btn btn-secondary" type="button" onclick={applyTemplate} disabled={!selectedTemplate.source_paths.length}>
+                Apply reviewed template
+              </button>
+            </div>
+          {/if}
+          {#if appliedTemplateId}
+            <button class="btn btn-secondary" type="button" onclick={detachTemplate}>
+              Detach from template
+            </button>
+          {/if}
+        </div>
         <div class="known-folders">
           {#each knownFolders as folder}
             <label class:unavailable={!folder.available}>
@@ -614,10 +688,38 @@
   }
 
   .known-folders,
+  .templates,
   .standard-exclusions,
   .scan-results {
     display: grid;
     gap: var(--space-2);
+  }
+
+  .template-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: var(--space-2);
+  }
+
+  .template-grid button {
+    display: grid;
+    gap: var(--space-1);
+    padding: var(--space-3);
+    text-align: left;
+    color: inherit;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+  }
+
+  .template-grid button.selected {
+    border-color: var(--color-accent);
+  }
+
+  .template-grid span,
+  .template-review {
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
   }
 
   .known-folders label,
