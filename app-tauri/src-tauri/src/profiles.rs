@@ -4,7 +4,7 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 9;
+pub const PROFILE_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupSelection {
@@ -112,6 +112,38 @@ pub struct ReportPreferences {
     pub failure_threshold: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaceholderMode {
+    WarnAndSkip,
+    Fail,
+    Materialize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlaceholderPolicy {
+    #[serde(default = "default_placeholder_mode")]
+    pub mode: PlaceholderMode,
+    #[serde(default = "default_free_space_reserve")]
+    pub minimum_free_space_reserve: u64,
+}
+
+fn default_placeholder_mode() -> PlaceholderMode {
+    PlaceholderMode::WarnAndSkip
+}
+const fn default_free_space_reserve() -> u64 {
+    10 * 1024 * 1024 * 1024
+}
+
+impl Default for PlaceholderPolicy {
+    fn default() -> Self {
+        Self {
+            mode: default_placeholder_mode(),
+            minimum_free_space_reserve: default_free_space_reserve(),
+        }
+    }
+}
+
 const fn default_smtp_port() -> u16 {
     587
 }
@@ -165,6 +197,8 @@ pub struct Profile {
     pub hardening: HardeningPosture,
     #[serde(default)]
     pub reporting: ReportPreferences,
+    #[serde(default)]
+    pub placeholder_policy: PlaceholderPolicy,
     #[serde(default)]
     pub retention: Option<RetentionConfig>,
     #[serde(default)]
@@ -414,6 +448,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         resource_policy: ResourcePolicy::default(),
         hardening: HardeningPosture::default(),
         reporting: ReportPreferences::default(),
+        placeholder_policy: PlaceholderPolicy::default(),
         retention,
         archive_template: None,
         pre_backup: None,
@@ -489,6 +524,7 @@ mod tests {
             resource_policy: ResourcePolicy::default(),
             hardening: HardeningPosture::default(),
             reporting: ReportPreferences::default(),
+            placeholder_policy: PlaceholderPolicy::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,

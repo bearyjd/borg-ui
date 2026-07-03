@@ -8,6 +8,7 @@ mod history;
 mod keychain;
 mod logging;
 mod network;
+mod placeholders;
 mod profiles;
 mod recovery;
 mod redaction;
@@ -117,6 +118,8 @@ pub fn run() {
             commands::save_backup_selection,
             commands::standard_backup_excludes,
             commands::load_resource_policy,
+            commands::load_placeholder_policy,
+            commands::save_placeholder_policy,
             commands::save_resource_policy,
             commands::set_global_snooze,
             commands::get_global_snooze,
