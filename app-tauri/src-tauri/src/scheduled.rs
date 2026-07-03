@@ -570,7 +570,10 @@ async fn run_automatic_backup(
             upload_limit_kib: profile.resource_policy.upload_limit_kib,
         };
         let mut create_result = None;
+        let metric_totals = Arc::new(Mutex::new(crate::forecast::MetricTotals::default()));
+        let destination_started = Instant::now();
         for attempt in 1_u8..=3 {
+            let progress_metrics = Arc::clone(&metric_totals);
             let result = borg
                 .create(
                     &backup_profile,
@@ -578,7 +581,11 @@ async fn run_automatic_backup(
                     vss.cwd.as_deref(),
                     pass.as_deref(),
                     &cancel,
-                    |_| {},
+                    move |event| {
+                        if let Ok(mut totals) = progress_metrics.lock() {
+                            totals.observe(&event);
+                        }
+                    },
                 )
                 .await;
             record_attempt(config_dir, &run_id, &profile.id, attempt, &result).await;
@@ -591,6 +598,13 @@ async fn run_automatic_backup(
         }
         match create_result.expect("retry loop always runs") {
             Ok(outcome) => {
+                let totals = metric_totals.lock().map(|value| *value).unwrap_or_default();
+                let metric = totals.into_metric(
+                    profile.id.clone(),
+                    destination_name.into(),
+                    destination_started.elapsed().as_secs(),
+                );
+                let _ = history::append_repository_metric(config_dir, metric).await;
                 successes += 1;
                 warnings.extend(outcome.warnings);
                 record_destination(
@@ -802,6 +816,7 @@ mod tests {
             hardening: Default::default(),
             reporting: Default::default(),
             placeholder_policy: Default::default(),
+            storage_warnings: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,

@@ -144,6 +144,30 @@ impl Default for PlaceholderPolicy {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageWarningThresholds {
+    #[serde(default = "default_free_space_warning")]
+    pub minimum_free_space_bytes: u64,
+    #[serde(default = "default_capacity_warning_days")]
+    pub capacity_warning_days: u32,
+}
+
+const fn default_free_space_warning() -> u64 {
+    20 * 1024 * 1024 * 1024
+}
+const fn default_capacity_warning_days() -> u32 {
+    30
+}
+
+impl Default for StorageWarningThresholds {
+    fn default() -> Self {
+        Self {
+            minimum_free_space_bytes: default_free_space_warning(),
+            capacity_warning_days: default_capacity_warning_days(),
+        }
+    }
+}
+
 const fn default_smtp_port() -> u16 {
     587
 }
@@ -199,6 +223,8 @@ pub struct Profile {
     pub reporting: ReportPreferences,
     #[serde(default)]
     pub placeholder_policy: PlaceholderPolicy,
+    #[serde(default)]
+    pub storage_warnings: StorageWarningThresholds,
     #[serde(default)]
     pub retention: Option<RetentionConfig>,
     #[serde(default)]
@@ -449,6 +475,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         hardening: HardeningPosture::default(),
         reporting: ReportPreferences::default(),
         placeholder_policy: PlaceholderPolicy::default(),
+        storage_warnings: StorageWarningThresholds::default(),
         retention,
         archive_template: None,
         pre_backup: None,
@@ -525,6 +552,7 @@ mod tests {
             hardening: HardeningPosture::default(),
             reporting: ReportPreferences::default(),
             placeholder_policy: PlaceholderPolicy::default(),
+            storage_warnings: StorageWarningThresholds::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,

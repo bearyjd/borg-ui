@@ -28,6 +28,17 @@
     secondary_status: string | null;
     actions: Array<{ label: string; href: string }>;
   } | null>(null);
+  let storageForecast = $state<{
+    observations: number;
+    deduplication_savings_percent: number | null;
+    recent_growth_bytes: number | null;
+    throughput_bytes_per_second: number | null;
+    estimated_next_duration_seconds: number | null;
+    projected_capacity_date: string | null;
+    local_free_space: number | null;
+    remote_quota: number | null;
+    status: string;
+  } | null>(null);
 
   let repoHost = $derived(repoState.config ? describeRepo(repoState.config) : '');
   let hasRepo = $derived(repoState.hasRepo);
@@ -103,6 +114,11 @@
     } catch (e) {
       console.warn('Failed to aggregate protection health:', e);
     }
+    try {
+      storageForecast = await invoke('storage_forecast', { destination: 'primary' });
+    } catch (e) {
+      console.warn('Failed to load storage forecast:', e);
+    }
   });
 </script>
 
@@ -137,6 +153,29 @@
   {/if}
 
   <div class="status-grid">
+    <div class="status-card">
+      <div class="card-label">Storage forecast</div>
+      {#if storageForecast}
+        {#if storageForecast.status === 'insufficient_history'}
+          <div class="card-value dimmed">Insufficient history</div>
+          <div class="card-detail">{storageForecast.observations} of 7 observations</div>
+        {:else}
+          <div class="card-value">
+            {storageForecast.deduplication_savings_percent?.toFixed(1) ?? '—'}% saved
+          </div>
+          <div class="card-detail">
+            {storageForecast.throughput_bytes_per_second
+              ? `${formatBytes(storageForecast.throughput_bytes_per_second)}/s`
+              : 'Throughput unknown'}
+            ·
+            {storageForecast.projected_capacity_date
+              ? `capacity ${new Date(storageForecast.projected_capacity_date).toLocaleDateString()}`
+              : 'capacity unknown'}
+          </div>
+        {/if}
+      {/if}
+    </div>
+
     <div class="status-card">
       <div class="card-label">Borg Engine</div>
       <div class="card-value" class:error={!!borgError}>

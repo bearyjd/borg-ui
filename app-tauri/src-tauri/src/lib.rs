@@ -2,6 +2,7 @@ mod archive_naming;
 mod commands;
 mod coverage;
 mod diagnostics;
+mod forecast;
 mod hardening;
 mod health;
 mod history;
@@ -93,6 +94,8 @@ pub fn run() {
             commands::validate_ssh_key,
             commands::generate_ssh_key,
             commands::get_repo_info,
+            commands::storage_forecast,
+            commands::save_storage_warnings,
             commands::list_archives,
             commands::stream_archive_contents,
             commands::cancel_archive_listing,
