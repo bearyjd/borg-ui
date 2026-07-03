@@ -18,6 +18,7 @@ mod removable;
 mod reporting;
 mod scheduled;
 mod snooze;
+mod templates;
 mod tray;
 
 use borg_core::borg::BorgClient;
@@ -122,6 +123,9 @@ pub fn run() {
             commands::load_backup_selection,
             commands::save_backup_selection,
             commands::standard_backup_excludes,
+            commands::list_profile_templates,
+            commands::apply_profile_template,
+            commands::detach_profile_template,
             commands::load_resource_policy,
             commands::load_placeholder_policy,
             commands::save_placeholder_policy,
