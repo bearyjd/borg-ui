@@ -3,6 +3,7 @@ mod commands;
 mod coverage;
 mod diagnostics;
 mod hardening;
+mod health;
 mod history;
 mod keychain;
 mod logging;
@@ -11,6 +12,7 @@ mod profiles;
 mod recovery;
 mod redaction;
 mod removable;
+mod reporting;
 mod scheduled;
 mod snooze;
 mod tray;
@@ -24,6 +26,7 @@ use tauri::{Manager, WindowEvent};
 const SCHEDULED_BACKUP_FLAG: &str = "--scheduled-backup";
 const SCHEDULED_INTEGRITY_FLAG: &str = "--scheduled-integrity-check";
 const SCHEDULED_RESTORE_DRILL_FLAG: &str = "--scheduled-restore-drill";
+const SCHEDULED_HEALTH_REPORT_FLAG: &str = "--scheduled-health-report";
 
 /// CLI flag the autostart `Run`-key entry passes so BorgUI starts hidden in the
 /// tray at login instead of popping the window open (see `commands::set_autostart`).
@@ -42,6 +45,7 @@ pub fn run() {
     let scheduled = std::env::args().any(|a| a == SCHEDULED_BACKUP_FLAG);
     let scheduled_integrity = std::env::args().any(|a| a == SCHEDULED_INTEGRITY_FLAG);
     let scheduled_restore_drill = std::env::args().any(|a| a == SCHEDULED_RESTORE_DRILL_FLAG);
+    let scheduled_health_report = std::env::args().any(|a| a == SCHEDULED_HEALTH_REPORT_FLAG);
     let start_minimized = std::env::args().any(|a| a == START_MINIMIZED_FLAG);
     let setup_borg_path = borg_path.clone();
 
@@ -53,7 +57,9 @@ pub fn run() {
         .setup(move |app| {
             let log_dir = app.path().app_log_dir()?;
             logging::initialize(&log_dir).map_err(std::io::Error::other)?;
-            if scheduled_restore_drill {
+            if scheduled_health_report {
+                start_scheduled_health_report(app.handle().clone());
+            } else if scheduled_restore_drill {
                 start_scheduled_restore_drill(app.handle().clone(), setup_borg_path.clone());
             } else if scheduled_integrity {
                 start_scheduled_integrity_check(app.handle().clone(), setup_borg_path.clone());
@@ -97,6 +103,7 @@ pub fn run() {
             commands::generate_append_only_instructions,
             commands::save_hardening_posture,
             commands::hardening_checklist,
+            commands::protection_health,
             commands::init_repo,
             commands::delete_archive,
             commands::prune_repo,
@@ -113,6 +120,9 @@ pub fn run() {
             commands::save_resource_policy,
             commands::set_global_snooze,
             commands::get_global_snooze,
+            commands::reporting_secret_status,
+            commands::save_reporting_settings,
+            commands::send_test_report,
             commands::cancel_backup,
             commands::restore_archive,
             commands::cancel_restore,
@@ -256,9 +266,36 @@ fn start_scheduled_backup(app: tauri::AppHandle, borg_path: std::path::PathBuf) 
 
         let borg = BorgClient::new(borg_path);
         let report = scheduled::run_scheduled_backup(&config_dir, &borg).await;
+        if let Ok(data) = profiles::load(&config_dir).await
+            && let Some(profile) = data.active()
+        {
+            reporting::report_backup_outcome(&config_dir, profile, &report).await;
+        }
         notify_scheduled_result(&app, &report);
 
         let code = if report.succeeded() { 0 } else { 1 };
+        app.exit(code);
+    });
+}
+
+fn start_scheduled_health_report(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    tauri::async_runtime::spawn(async move {
+        let code = match app.path().app_config_dir() {
+            Ok(config_dir) => match reporting::run_daily(&config_dir).await {
+                Ok(()) => 0,
+                Err(error) => {
+                    tracing::error!("scheduled health report failed: {error}");
+                    1
+                }
+            },
+            Err(error) => {
+                tracing::error!("scheduled health report: cannot resolve config dir: {error}");
+                1
+            }
+        };
         app.exit(code);
     });
 }

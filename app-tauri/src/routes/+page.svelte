@@ -13,10 +13,19 @@
     mode: string;
     outcome: string;
   } | null>(null);
-  let scheduledStatus = $state<{
-    missed: boolean;
-    task_registered: boolean;
-    last_attempt: { timestamp: string; outcome: string; attempt: number } | null;
+  let protectionHealth = $state<{
+    severity: 'green' | 'amber' | 'red';
+    summary: string;
+    last_success: string | null;
+    next_run: string | null;
+    missed_runs: number;
+    unavailable_sources: number;
+    repository_reachable: boolean;
+    integrity_status: string;
+    restore_drill_status: string;
+    recovery_key_ready: boolean;
+    destination_state: string;
+    actions: Array<{ label: string; href: string }>;
   } | null>(null);
 
   let repoHost = $derived(repoState.config ? describeRepo(repoState.config) : '');
@@ -89,9 +98,9 @@
       console.warn('Failed to load integrity status:', e);
     }
     try {
-      scheduledStatus = await invoke('scheduled_backup_status');
+      protectionHealth = await invoke('protection_health');
     } catch (e) {
-      console.warn('Failed to load scheduled backup status:', e);
+      console.warn('Failed to aggregate protection health:', e);
     }
   });
 </script>
@@ -102,13 +111,27 @@
     <p class="subtitle">Backup status overview</p>
   </header>
 
-  {#if scheduledStatus?.missed}
-    <div class="schedule-warning">
-      A scheduled backup appears to have been missed. The last attempt was
-      {scheduledStatus.last_attempt ? formatRelative(scheduledStatus.last_attempt.timestamp) : 'not recorded'}.
-      {#if !scheduledStatus.task_registered} Windows Task Scheduler does not report the BorgUI backup task as registered.{/if}
-      Review the schedule in <a href="/settings">Settings</a>.
-    </div>
+  {#if protectionHealth}
+    <section class="protection-health" class:amber={protectionHealth.severity === 'amber'} class:red={protectionHealth.severity === 'red'}>
+      <div class="health-heading">
+        <span class="health-dot" aria-hidden="true"></span>
+        <div>
+          <h2>{protectionHealth.summary}</h2>
+          <p>
+            Destination {protectionHealth.destination_state} ·
+            {protectionHealth.unavailable_sources} unavailable sources ·
+            {protectionHealth.missed_runs} missed runs
+          </p>
+        </div>
+      </div>
+      {#if protectionHealth.actions.length > 0}
+        <div class="health-actions">
+          {#each protectionHealth.actions as action}
+            <a href={action.href}>{action.label} →</a>
+          {/each}
+        </div>
+      {/if}
+    </section>
   {/if}
 
   <div class="status-grid">
@@ -256,13 +279,25 @@
     margin-bottom: var(--space-8);
   }
 
-  .schedule-warning {
-    border: 1px solid var(--color-warning);
-    border-radius: var(--radius-md);
-    padding: var(--space-3);
-    margin-bottom: var(--space-4);
-    color: var(--color-text-muted);
+  .protection-health {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-4);
+    margin-bottom: var(--space-5);
+    padding: var(--space-5);
+    border: 1px solid var(--color-success);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--color-success) 10%, transparent);
   }
+  .protection-health.amber { border-color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 10%, transparent); }
+  .protection-health.red { border-color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 10%, transparent); }
+  .health-heading, .health-actions { display: flex; gap: var(--space-3); }
+  .health-dot { width: 14px; height: 14px; margin-top: var(--space-1); border-radius: 50%; background: var(--color-success); }
+  .amber .health-dot { background: var(--color-warning); }
+  .red .health-dot { background: var(--color-danger); }
+  .health-heading h2, .health-heading p { margin: 0; }
+  .health-heading p { color: var(--color-text-muted); font-size: var(--text-sm); }
+  .health-actions { flex-direction: column; align-items: flex-end; font-size: var(--text-sm); }
 
   .page-header h1 {
     font-size: var(--text-3xl);

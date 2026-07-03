@@ -617,6 +617,57 @@ pub async fn hardening_checklist(app: tauri::AppHandle) -> Result<Vec<HardeningC
 }
 
 #[tauri::command]
+pub async fn protection_health(
+    app: tauri::AppHandle,
+) -> Result<crate::health::ProtectionHealth, String> {
+    let data = read_profiles(&app).await?;
+    let profile = data
+        .active()
+        .cloned()
+        .ok_or_else(|| "no active profile".to_string())?;
+    let dir = config_dir(&app).await?;
+    let events = history::load(&dir).await?;
+    let scheduled = history::latest_scheduled_attempt(&dir, &profile.id).await?;
+    let integrity = history::latest_integrity(&dir, &profile.id).await?;
+    let drill = history::latest_restore_drill(&dir, &profile.id).await?;
+    let unavailable_sources = tokio::task::spawn_blocking({
+        let paths = profile.backup_selection.source_paths.clone();
+        move || {
+            paths
+                .iter()
+                .filter(|path| !PathBuf::from(path).is_dir())
+                .count() as u32
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let repository_reachable = if profile.repo.is_local() {
+        PathBuf::from(&profile.repo.repo_path).is_dir()
+    } else {
+        precheck_repo(&profile.repo).await.is_ok()
+    };
+    let grace_seconds = match profile.schedule.as_ref().map(|schedule| &schedule.schedule) {
+        Some(borg_platform_win::scheduler::Schedule::Hourly) => 90 * 60,
+        Some(borg_platform_win::scheduler::Schedule::Daily { .. }) => 36 * 60 * 60,
+        None => u64::MAX,
+    };
+    let missed = scheduled.as_ref().is_some_and(|attempt| {
+        crate::scheduled::is_missed(&attempt.timestamp, grace_seconds, chrono::Utc::now())
+    });
+    Ok(crate::health::aggregate(crate::health::HealthInputs {
+        profile: &profile,
+        events: &events,
+        scheduled: scheduled.as_ref(),
+        missed,
+        unavailable_sources,
+        repository_reachable,
+        integrity: integrity.as_ref(),
+        drill: drill.as_ref(),
+        now: chrono::Utc::now(),
+    }))
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_backup(
     app: tauri::AppHandle,
@@ -870,6 +921,112 @@ pub async fn get_global_snooze(
     app: tauri::AppHandle,
 ) -> Result<Option<crate::snooze::SnoozeState>, String> {
     crate::snooze::load(&config_dir(&app).await?).await
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReportingSecretStatus {
+    pub webhook_configured: bool,
+    pub smtp_password_configured: bool,
+}
+
+#[tauri::command]
+pub async fn reporting_secret_status(
+    app: tauri::AppHandle,
+) -> Result<ReportingSecretStatus, String> {
+    let data = read_profiles(&app).await?;
+    let id = &data
+        .active()
+        .ok_or_else(|| "no active profile".to_string())?
+        .id;
+    Ok(ReportingSecretStatus {
+        webhook_configured: keychain::has_passphrase(&crate::reporting::webhook_account(id))?,
+        smtp_password_configured: keychain::has_passphrase(&crate::reporting::smtp_account(id))?,
+    })
+}
+
+#[tauri::command]
+pub async fn save_reporting_settings(
+    app: tauri::AppHandle,
+    settings: profiles::ReportPreferences,
+    webhook_url: Option<String>,
+    smtp_password: Option<String>,
+) -> Result<(), String> {
+    let mut data = read_profiles(&app).await?;
+    let profile = data
+        .active_mut()
+        .ok_or_else(|| "no active profile".to_string())?;
+    profile.reporting = settings.clone();
+    crate::reporting::validate_preferences(profile)?;
+    if let Some(url) = webhook_url {
+        if url.is_empty() {
+            keychain::clear_passphrase(&crate::reporting::webhook_account(&profile.id))?;
+        } else if !url.starts_with("https://") || url.contains(['\r', '\n', '\0']) {
+            return Err("webhook URL must be a valid HTTPS URL".into());
+        } else {
+            keychain::set_passphrase(&crate::reporting::webhook_account(&profile.id), &url)?;
+        }
+    }
+    if let Some(password) = smtp_password {
+        if password.is_empty() {
+            keychain::clear_passphrase(&crate::reporting::smtp_account(&profile.id))?;
+        } else {
+            keychain::set_passphrase(&crate::reporting::smtp_account(&profile.id), &password)?;
+        }
+    }
+    if settings.webhook_enabled
+        && !keychain::has_passphrase(&crate::reporting::webhook_account(&profile.id))?
+    {
+        return Err("configure the HTTPS webhook URL before enabling webhooks".into());
+    }
+    if settings.smtp_enabled
+        && !keychain::has_passphrase(&crate::reporting::smtp_account(&profile.id))?
+    {
+        return Err("configure the SMTP password before enabling email".into());
+    }
+    let profile_id = profile.id.clone();
+    write_profiles(&app, &data).await?;
+    const TASK: &str = "BorgUI-Daily-Health-Report";
+    if settings.enabled && settings.daily_digest {
+        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+        borg_platform_win::scheduler::schedule_backup(
+            TASK,
+            &exe.to_string_lossy(),
+            "--scheduled-health-report",
+            &borg_platform_win::scheduler::Schedule::Daily { hour: 9, minute: 0 },
+            false,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    } else {
+        let _ = borg_platform_win::scheduler::unschedule_backup(TASK).await;
+    }
+    tracing::debug!(profile_id, "reporting settings updated");
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn send_test_report(app: tauri::AppHandle) -> Result<(), String> {
+    let data = read_profiles(&app).await?;
+    let profile = data
+        .active()
+        .cloned()
+        .ok_or_else(|| "no active profile".to_string())?;
+    if !profile.reporting.enabled {
+        return Err("enable outbound reporting before sending a test".into());
+    }
+    crate::reporting::validate_preferences(&profile)?;
+    let dir = config_dir(&app).await?;
+    crate::reporting::deliver(
+        &dir,
+        &profile,
+        "digest",
+        "green",
+        "BorgUI test report delivered successfully.",
+        None,
+        1,
+        None,
+    )
+    .await
 }
 
 /// Cancel a running backup. Returns true if a backup was in progress.
@@ -1284,6 +1441,7 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
             restore_drill_schedule: None,
             resource_policy: Default::default(),
             hardening: Default::default(),
+            reporting: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -1331,6 +1489,7 @@ pub async fn create_profile(
         restore_drill_schedule: None,
         resource_policy: Default::default(),
         hardening: Default::default(),
+        reporting: Default::default(),
         retention: None,
         archive_template: None,
         pre_backup: None,

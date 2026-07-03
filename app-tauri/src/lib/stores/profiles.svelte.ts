@@ -13,10 +13,26 @@ export interface Profile {
   restore_drill_schedule: { enabled: boolean } | null;
   resource_policy: ResourcePolicy;
   hardening: HardeningPosture;
+  reporting: ReportPreferences;
   retention: RetentionConfig | null;
   archive_template: string | null;
   pre_backup: string | null;
   post_backup: string | null;
+}
+
+export interface ReportPreferences {
+  enabled: boolean;
+  webhook_enabled: boolean;
+  smtp_enabled: boolean;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_tls_mode: 'start_tls' | 'implicit_tls';
+  smtp_username: string;
+  email_from: string;
+  email_to: string;
+  daily_digest: boolean;
+  stale_after_hours: number;
+  failure_threshold: number;
 }
 
 export interface HardeningPosture {
