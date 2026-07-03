@@ -236,6 +236,13 @@ fn validate_profile(profile: &Profile) -> Result<(), String> {
         schedule.schedule.validate().map_err(|e| e.to_string())?;
     }
     crate::reporting::validate_preferences(profile)?;
+    if matches!(
+        profile.placeholder_policy.mode,
+        crate::profiles::PlaceholderMode::Materialize
+    ) && profile.placeholder_policy.minimum_free_space_reserve == 0
+    {
+        return Err("materialization requires a non-zero free-space reserve".into());
+    }
     Ok(())
 }
 
@@ -308,6 +315,7 @@ mod tests {
             resource_policy: Default::default(),
             hardening: Default::default(),
             reporting: Default::default(),
+            placeholder_policy: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -336,6 +344,7 @@ mod tests {
             resource_policy: Default::default(),
             hardening: Default::default(),
             reporting: Default::default(),
+            placeholder_policy: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,

@@ -15,10 +15,16 @@ export interface Profile {
   resource_policy: ResourcePolicy;
   hardening: HardeningPosture;
   reporting: ReportPreferences;
+  placeholder_policy: PlaceholderPolicy;
   retention: RetentionConfig | null;
   archive_template: string | null;
   pre_backup: string | null;
   post_backup: string | null;
+}
+
+export interface PlaceholderPolicy {
+  mode: 'warn_and_skip' | 'fail' | 'materialize';
+  minimum_free_space_reserve: number;
 }
 
 export interface ReportPreferences {

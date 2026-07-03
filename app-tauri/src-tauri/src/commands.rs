@@ -690,7 +690,7 @@ pub async fn create_backup(
     let active = data
         .active()
         .ok_or_else(|| "no active profile; configure repository first".to_string())?;
-    let selection = active.backup_selection.clone();
+    let mut selection = active.backup_selection.clone();
     let resource_policy = active.resource_policy.clone();
     let profile_id = active.id.clone();
     let retention = active.retention.clone();
@@ -738,6 +738,9 @@ pub async fn create_backup(
     let cancel = state.try_register_cancel(BACKUP_OP, "a backup is already running")?;
     let _sleep_guard =
         borg_platform_win::resource::SleepGuard::acquire(resource_policy.prevent_sleep)?;
+    let placeholder_plan =
+        crate::placeholders::prepare(&raw_paths, &active.placeholder_policy, &cancel).await?;
+    selection.excludes.extend(placeholder_plan.exclusions);
 
     // VSS (Windows, admin, single-volume): snapshot the source volume and back
     // up from a read-only junction mount so borg stores clean, restorable paths
@@ -749,7 +752,14 @@ pub async fn create_backup(
     let run_id = format!("manual-{}", chrono::Utc::now().timestamp_millis());
     let dir = config_dir(&app).await?;
     let mut attempts = Vec::new();
-    let mut warnings = Vec::new();
+    let mut warnings = if placeholder_plan.count > 0 {
+        vec![format!(
+            "{} cloud placeholders were handled according to policy",
+            placeholder_plan.count
+        )]
+    } else {
+        Vec::new()
+    };
     let mut cancelled = false;
     for (index, (destination_name, destination)) in destinations.iter().enumerate() {
         if cancel.is_cancelled() {
@@ -1007,6 +1017,34 @@ pub async fn load_resource_policy(
         .active()
         .map(|profile| profile.resource_policy.clone())
         .ok_or_else(|| "no active profile".into())
+}
+
+#[tauri::command]
+pub async fn load_placeholder_policy(
+    app: tauri::AppHandle,
+) -> Result<profiles::PlaceholderPolicy, String> {
+    read_profiles(&app)
+        .await?
+        .active()
+        .map(|profile| profile.placeholder_policy.clone())
+        .ok_or_else(|| "no active profile".into())
+}
+
+#[tauri::command]
+pub async fn save_placeholder_policy(
+    app: tauri::AppHandle,
+    policy: profiles::PlaceholderPolicy,
+) -> Result<(), String> {
+    if matches!(policy.mode, profiles::PlaceholderMode::Materialize)
+        && policy.minimum_free_space_reserve == 0
+    {
+        return Err("materialization requires a non-zero free-space reserve".into());
+    }
+    let mut data = read_profiles(&app).await?;
+    data.active_mut()
+        .ok_or_else(|| "no active profile".to_string())?
+        .placeholder_policy = policy;
+    write_profiles(&app, &data).await
 }
 
 #[tauri::command]
@@ -1599,6 +1637,7 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
             resource_policy: Default::default(),
             hardening: Default::default(),
             reporting: Default::default(),
+            placeholder_policy: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -1673,6 +1712,7 @@ pub async fn create_profile(
         resource_policy: Default::default(),
         hardening: Default::default(),
         reporting: Default::default(),
+        placeholder_policy: Default::default(),
         retention: None,
         archive_template: None,
         pre_backup: None,

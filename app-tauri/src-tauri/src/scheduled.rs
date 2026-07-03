@@ -520,6 +520,21 @@ async fn run_automatic_backup(
             return finish(config_dir, &archive_name, started, Err(error)).await;
         }
     };
+    let cancel = CancelToken::new();
+    let placeholder_plan = match crate::placeholders::prepare(
+        &raw_paths,
+        &profile.placeholder_policy,
+        &cancel,
+    )
+    .await
+    {
+        Ok(plan) => plan,
+        Err(error) => {
+            return finish(config_dir, &archive_name, started, Err(error)).await;
+        }
+    };
+    let mut effective_excludes = profile.backup_selection.excludes.clone();
+    effective_excludes.extend(placeholder_plan.exclusions);
 
     // Scheduled (unattended) runs benefit from VSS most — files are likely in
     // use. Snapshot the source volume and back up from a junction mount so borg
@@ -528,14 +543,20 @@ async fn run_automatic_backup(
     // crates/borg-platform-win/src/vss.rs.
     let vss = borg_platform_win::vss::prepare_snapshot(&raw_paths).await;
 
-    let cancel = CancelToken::new();
     let run_id = Utc::now().timestamp_millis().to_string();
     let mut destinations = vec![("primary", profile.repo.clone())];
     if let Some(secondary) = profile.secondary_repo.clone() {
         destinations.push(("secondary", secondary));
     }
     let has_secondary = destinations.len() > 1;
-    let mut warnings = Vec::new();
+    let mut warnings = if placeholder_plan.count > 0 {
+        vec![format!(
+            "{} cloud placeholders were handled according to policy",
+            placeholder_plan.count
+        )]
+    } else {
+        Vec::new()
+    };
     let mut successes = 0_u8;
     let mut failures = 0_u8;
     for (destination_name, destination) in destinations {
@@ -543,7 +564,7 @@ async fn run_automatic_backup(
         let backup_profile = BackupProfile {
             name: profile.name.clone(),
             source_paths: vss.source_paths.clone(),
-            excludes: profile.backup_selection.excludes.clone(),
+            excludes: effective_excludes.clone(),
             compression: Compression::default(),
             repo: destination.clone(),
             upload_limit_kib: profile.resource_policy.upload_limit_kib,
@@ -780,6 +801,7 @@ mod tests {
             resource_policy: Default::default(),
             hardening: Default::default(),
             reporting: Default::default(),
+            placeholder_policy: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,

@@ -224,6 +224,7 @@ mod tests {
                 ..Default::default()
             },
             reporting: Default::default(),
+            placeholder_policy: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
