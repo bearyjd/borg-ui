@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { onMount } from 'svelte';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import FieldHelp from '$lib/components/FieldHelp.svelte';
 
@@ -10,6 +11,20 @@
   let importConfirmed = $state(false);
   let busy = $state(false);
   let result = $state('');
+  let readiness = $state<{
+    ready: boolean;
+    steps: Array<{ id: string; label: string; complete: boolean; required: boolean }>;
+  } | null>(null);
+
+  async function loadReadiness() {
+    try {
+      readiness = await invoke('recovery_readiness');
+    } catch {
+      readiness = null;
+    }
+  }
+
+  onMount(loadReadiness);
 
   async function exportKey() {
     if (!exportPassphrase) {
@@ -35,6 +50,7 @@
       exportPassphrase = '';
       exportConfirm = '';
       result = 'Encrypted recovery key exported. Store the file and passphrase separately.';
+      await loadReadiness();
     } catch (error) {
       result = `Recovery-key export failed: ${error}`;
     } finally {
@@ -72,7 +88,19 @@
 </script>
 
 <fieldset class="form-group">
-  <legend>Encrypted recovery key</legend>
+  <legend>Recovery readiness</legend>
+  {#if readiness}
+    <div class:ready={readiness.ready} class="readiness">
+      <strong>{readiness.ready ? 'Recovery ready' : 'Recovery setup needs attention'}</strong>
+      <ul>
+        {#each readiness.steps as step}
+          <li class:complete={step.complete}>
+            {step.complete ? '✓' : '○'} {step.label}{step.required ? '' : ' (not required)'}
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
   <FieldHelp text="A recovery key can restore access if Borg's local key is lost. The export is encrypted with a separate passphrase using age/scrypt. BorgUI never includes it in profiles, configuration exports, logs, history, or support bundles." />
   <div class="warning">
     Anyone with this file and its passphrase may gain access to your encrypted repository.
@@ -112,4 +140,9 @@
   input[type='password'] { width: min(100%, 420px); }
   .confirm { display: flex; gap: var(--space-2); align-items: flex-start; font-size: var(--text-sm); color: var(--color-text-muted); }
   code, p { font-size: var(--text-sm); overflow-wrap: anywhere; color: var(--color-text-muted); }
+  .readiness { border: 1px solid var(--color-warning); border-radius: var(--radius-md); padding: var(--space-3); margin-bottom: var(--space-3); }
+  .readiness.ready { border-color: var(--color-success); }
+  .readiness ul { margin: var(--space-2) 0 0; padding-left: var(--space-5); }
+  .readiness li { color: var(--color-text-muted); }
+  .readiness li.complete { color: var(--color-success); }
 </style>

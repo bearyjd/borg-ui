@@ -514,6 +514,7 @@ pub async fn prune_repo(
 
 #[tauri::command]
 pub async fn init_repo(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     repo: RepoConfig,
     encryption: String,
@@ -539,7 +540,57 @@ pub async fn init_repo(
         keychain::set_passphrase(&repo.ssh_url(), pass)?;
     }
 
+    let mut data = read_profiles(&app).await?;
+    if let Some(profile) = data
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.repo.location() == repo.location())
+    {
+        profile.recovery.encrypted_repository = needs_pass;
+        let profile_id = profile.id.clone();
+        write_profiles(&app, &data).await?;
+        if needs_pass {
+            let dir = config_dir(&app).await?;
+            history::append_readiness_event(
+                &dir,
+                history::ReadinessEvent {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    profile_id,
+                    kind: "passphrase".into(),
+                    outcome: "success".into(),
+                },
+            )
+            .await?;
+        }
+    }
+
     Ok(())
+}
+
+#[tauri::command]
+pub async fn recovery_readiness(
+    app: tauri::AppHandle,
+) -> Result<crate::readiness::RecoveryReadiness, String> {
+    let data = read_profiles(&app).await?;
+    let profile = data
+        .active()
+        .ok_or_else(|| "no active profile".to_string())?;
+    let dir = config_dir(&app).await?;
+    let key_export = history::latest_readiness_event(&dir, &profile.id, "key_export").await?;
+    let integrity = history::latest_integrity(&dir, &profile.id).await?;
+    let drill = history::latest_restore_drill(&dir, &profile.id).await?;
+    let passphrase_available = keychain::get_passphrase(&profile.repo.ssh_url())
+        .ok()
+        .flatten()
+        .is_some();
+    Ok(crate::readiness::evaluate(
+        profile.recovery.encrypted_repository,
+        passphrase_available,
+        key_export.as_ref(),
+        integrity.as_ref(),
+        drill.as_ref(),
+        chrono::Utc::now(),
+    ))
 }
 
 #[tauri::command]
@@ -744,6 +795,10 @@ pub async fn protection_health(
         drill: drill.as_ref(),
         primary_attempt: primary_attempt.as_ref(),
         secondary_attempt: secondary_attempt.as_ref(),
+        passphrase_available: keychain::get_passphrase(&profile.repo.ssh_url())
+            .ok()
+            .flatten()
+            .is_some(),
         now: chrono::Utc::now(),
     }))
 }
@@ -1728,6 +1783,7 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
             reporting: Default::default(),
             placeholder_policy: Default::default(),
             storage_warnings: Default::default(),
+            recovery: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -1804,6 +1860,7 @@ pub async fn create_profile(
         reporting: Default::default(),
         placeholder_policy: Default::default(),
         storage_warnings: Default::default(),
+        recovery: Default::default(),
         retention: None,
         archive_template: None,
         pre_backup: None,
@@ -2056,6 +2113,16 @@ pub async fn export_recovery_key(
     tokio::task::spawn_blocking(move || crate::recovery::write_exclusive(&destination, &encoded))
         .await
         .map_err(|error| error.to_string())??;
+    history::append_readiness_event(
+        &dir,
+        history::ReadinessEvent {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            profile_id: profile.id.clone(),
+            kind: "key_export".into(),
+            outcome: "success".into(),
+        },
+    )
+    .await?;
     let mut data = read_profiles(&app).await?;
     data.active_mut()
         .ok_or_else(|| "active profile disappeared".to_string())?

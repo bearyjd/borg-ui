@@ -17,6 +17,7 @@ export interface Profile {
   reporting: ReportPreferences;
   placeholder_policy: PlaceholderPolicy;
   storage_warnings: StorageWarningThresholds;
+  recovery: RecoveryPolicy;
   retention: RetentionConfig | null;
   archive_template: string | null;
   pre_backup: string | null;
@@ -31,6 +32,10 @@ export interface PlaceholderPolicy {
 export interface StorageWarningThresholds {
   minimum_free_space_bytes: number;
   capacity_warning_days: number;
+}
+
+export interface RecoveryPolicy {
+  encrypted_repository: boolean;
 }
 
 export interface ReportPreferences {

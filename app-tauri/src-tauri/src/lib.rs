@@ -11,6 +11,7 @@ mod logging;
 mod network;
 mod placeholders;
 mod profiles;
+mod readiness;
 mod recovery;
 mod redaction;
 mod removable;
@@ -109,6 +110,7 @@ pub fn run() {
             commands::hardening_checklist,
             commands::protection_health,
             commands::init_repo,
+            commands::recovery_readiness,
             commands::delete_archive,
             commands::prune_repo,
             commands::load_retention_config,
