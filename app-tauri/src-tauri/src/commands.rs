@@ -1153,6 +1153,43 @@ pub fn standard_backup_excludes() -> Vec<&'static str> {
 }
 
 #[tauri::command]
+pub fn list_profile_templates() -> Vec<crate::templates::ResolvedTemplate> {
+    crate::templates::list()
+}
+
+#[tauri::command]
+pub async fn apply_profile_template(
+    app: tauri::AppHandle,
+    template_id: String,
+    reviewed: bool,
+) -> Result<profiles::BackupSelection, String> {
+    if !reviewed {
+        return Err("review the template sources and exclusions before applying".into());
+    }
+    let selection = crate::templates::apply(&template_id)?;
+    borg_core::config::validate_source_paths(&selection.source_paths).map_err(|e| e.to_string())?;
+    borg_core::config::validate_exclude_patterns(&selection.excludes).map_err(|e| e.to_string())?;
+    let mut data = read_profiles(&app).await?;
+    data.active_mut()
+        .ok_or_else(|| "no active profile".to_string())?
+        .backup_selection = selection.clone();
+    write_profiles(&app, &data).await?;
+    Ok(selection)
+}
+
+#[tauri::command]
+pub async fn detach_profile_template(app: tauri::AppHandle) -> Result<(), String> {
+    let mut data = read_profiles(&app).await?;
+    let selection = &mut data
+        .active_mut()
+        .ok_or_else(|| "no active profile".to_string())?
+        .backup_selection;
+    selection.template_id = None;
+    selection.template_version = None;
+    write_profiles(&app, &data).await
+}
+
+#[tauri::command]
 pub async fn load_resource_policy(
     app: tauri::AppHandle,
 ) -> Result<profiles::ResourcePolicy, String> {
