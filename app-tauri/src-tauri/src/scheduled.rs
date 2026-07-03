@@ -149,6 +149,8 @@ pub struct RunReport {
     pub error: Option<String>,
     /// Set when the scheduled run intentionally did no backup work.
     pub skipped_reason: Option<String>,
+    pub destination_successes: u8,
+    pub destination_failures: u8,
 }
 
 impl RunReport {
@@ -165,6 +167,8 @@ impl RunReport {
             warnings: Vec::new(),
             error: Some(error),
             skipped_reason: None,
+            destination_successes: 0,
+            destination_failures: 0,
         }
     }
 
@@ -174,6 +178,8 @@ impl RunReport {
             warnings: Vec::new(),
             error: None,
             skipped_reason: Some(reason),
+            destination_successes: 0,
+            destination_failures: 0,
         }
     }
 }
@@ -345,9 +351,19 @@ async fn finish(
     started: Instant,
     result: Result<Vec<String>, String>,
 ) -> RunReport {
+    finish_as(config_dir, archive_name, started, result, None).await
+}
+
+async fn finish_as(
+    config_dir: &Path,
+    archive_name: &str,
+    started: Instant,
+    result: Result<Vec<String>, String>,
+    success_outcome: Option<&str>,
+) -> RunReport {
     let duration_seconds = started.elapsed().as_secs();
     let (outcome, warnings, error) = match result {
-        Ok(warnings) => ("success", warnings, None),
+        Ok(warnings) => (success_outcome.unwrap_or("success"), warnings, None),
         Err(e) => ("failure", Vec::new(), Some(e)),
     };
 
@@ -370,6 +386,8 @@ async fn finish(
         warnings,
         error,
         skipped_reason: None,
+        destination_successes: 0,
+        destination_failures: 0,
     }
 }
 
@@ -410,6 +428,14 @@ async fn run_automatic_backup(
     // Validate inputs the same way the manual backup path does.
     if let Err(e) = profile.repo.validate() {
         return RunReport::preflight(e.to_string());
+    }
+    if let Some(secondary) = &profile.secondary_repo {
+        if let Err(error) = secondary.validate() {
+            return RunReport::preflight(error.to_string());
+        }
+        if secondary.location() == profile.repo.location() {
+            return RunReport::preflight("secondary repository must differ from primary".into());
+        }
     }
     if let Err(e) = borg_core::config::validate_source_paths(&profile.backup_selection.source_paths)
     {
@@ -466,7 +492,6 @@ async fn run_automatic_backup(
         return RunReport::preflight(format!("invalid archive name '{archive_name}': {e}"));
     }
 
-    let pass = lookup_passphrase(&profile.repo);
     let repo_url = profile.repo.location();
     let hook_ctx = HookContext {
         repo_url: &repo_url,
@@ -503,63 +528,142 @@ async fn run_automatic_backup(
     // crates/borg-platform-win/src/vss.rs.
     let vss = borg_platform_win::vss::prepare_snapshot(&raw_paths).await;
 
-    let backup_profile = BackupProfile {
-        name: profile.name.clone(),
-        source_paths: vss.source_paths.clone(),
-        excludes: profile.backup_selection.excludes.clone(),
-        compression: Compression::default(),
-        repo: profile.repo.clone(),
-        upload_limit_kib: profile.resource_policy.upload_limit_kib,
-    };
     let cancel = CancelToken::new();
     let run_id = Utc::now().timestamp_millis().to_string();
-    let mut create_result = None;
-    for attempt in 1_u8..=3 {
-        let result = borg
-            .create(
-                &backup_profile,
-                &archive_name,
-                vss.cwd.as_deref(),
-                pass.as_deref(),
-                &cancel,
-                |_| {},
-            )
-            .await;
-        record_attempt(config_dir, &run_id, &profile.id, attempt, &result).await;
-        let retry = result.as_ref().err().is_some_and(is_transient) && attempt < 3;
-        create_result = Some(result);
-        if !retry {
-            break;
-        }
-        retry_delay(usize::from(attempt - 1)).await;
+    let mut destinations = vec![("primary", profile.repo.clone())];
+    if let Some(secondary) = profile.secondary_repo.clone() {
+        destinations.push(("secondary", secondary));
     }
-    let create_result = create_result.expect("retry loop always runs");
+    let has_secondary = destinations.len() > 1;
+    let mut warnings = Vec::new();
+    let mut successes = 0_u8;
+    let mut failures = 0_u8;
+    for (destination_name, destination) in destinations {
+        let pass = lookup_passphrase(&destination);
+        let backup_profile = BackupProfile {
+            name: profile.name.clone(),
+            source_paths: vss.source_paths.clone(),
+            excludes: profile.backup_selection.excludes.clone(),
+            compression: Compression::default(),
+            repo: destination.clone(),
+            upload_limit_kib: profile.resource_policy.upload_limit_kib,
+        };
+        let mut create_result = None;
+        for attempt in 1_u8..=3 {
+            let result = borg
+                .create(
+                    &backup_profile,
+                    &archive_name,
+                    vss.cwd.as_deref(),
+                    pass.as_deref(),
+                    &cancel,
+                    |_| {},
+                )
+                .await;
+            record_attempt(config_dir, &run_id, &profile.id, attempt, &result).await;
+            let retry = result.as_ref().err().is_some_and(is_transient) && attempt < 3;
+            create_result = Some(result);
+            if !retry {
+                break;
+            }
+            retry_delay(usize::from(attempt - 1)).await;
+        }
+        match create_result.expect("retry loop always runs") {
+            Ok(outcome) => {
+                successes += 1;
+                warnings.extend(outcome.warnings);
+                record_destination(
+                    config_dir,
+                    &run_id,
+                    &profile.id,
+                    destination_name,
+                    "success",
+                )
+                .await;
+                if let Some(retention) = profile.retention.as_ref()
+                    && retention.validate().is_ok()
+                {
+                    match borg.prune(&destination, retention, pass.as_deref()).await {
+                        Ok(outcome) => warnings.extend(outcome.warnings),
+                        Err(_) => warnings.push(format!(
+                            "retention failed for the {destination_name} destination"
+                        )),
+                    }
+                }
+            }
+            Err(borg_core::error::BorgError::Cancelled) => {
+                record_destination(
+                    config_dir,
+                    &run_id,
+                    &profile.id,
+                    destination_name,
+                    "cancelled",
+                )
+                .await;
+                if destination_name == "primary" && has_secondary {
+                    record_destination(config_dir, &run_id, &profile.id, "secondary", "skipped")
+                        .await;
+                }
+                failures += 1;
+                break;
+            }
+            Err(_) => {
+                failures += 1;
+                record_destination(
+                    config_dir,
+                    &run_id,
+                    &profile.id,
+                    destination_name,
+                    "failure",
+                )
+                .await;
+                warnings.push(format!("{destination_name} destination backup failed"));
+            }
+        }
+    }
     // Release the snapshot + junction regardless of how the backup ended.
     vss.release().await;
-    let mut warnings = match create_result {
-        Ok(outcome) => outcome.warnings,
-        Err(e) => return finish(config_dir, &archive_name, started, Err(e.detail())).await,
-    };
 
     // The backup succeeded; a failing post-backup hook is only a warning.
-    if let Some(cmd) = nonempty(&profile.post_backup)
+    if successes > 0
+        && let Some(cmd) = nonempty(&profile.post_backup)
         && let Err(e) = borg_core::hooks::run("post-backup", cmd, &hook_ctx).await
     {
         warnings.push(format!("post-backup command failed: {}", e.detail()));
     }
 
-    // Apply the retention policy, if any. Prune failures are warnings — the
-    // backup itself is already safely stored.
-    if let Some(retention) = profile.retention.clone()
-        && retention.validate().is_ok()
-    {
-        match borg.prune(&profile.repo, &retention, pass.as_deref()).await {
-            Ok(outcome) => warnings.extend(outcome.warnings),
-            Err(e) => warnings.push(format!("prune failed: {}", e.detail())),
-        }
-    }
+    let result = if successes > 0 {
+        Ok(warnings)
+    } else {
+        Err("all backup destinations failed".into())
+    };
+    let success_outcome = (successes > 0 && failures > 0).then_some("partial_success");
+    let mut report = finish_as(config_dir, &archive_name, started, result, success_outcome).await;
+    report.destination_successes = successes;
+    report.destination_failures = failures;
+    report
+}
 
-    finish(config_dir, &archive_name, started, Ok(warnings)).await
+async fn record_destination(
+    config_dir: &Path,
+    run_id: &str,
+    profile_id: &str,
+    destination: &str,
+    outcome: &str,
+) {
+    let _ = history::append_destination_attempt(
+        config_dir,
+        history::DestinationAttempt {
+            run_id: run_id.into(),
+            profile_id: profile_id.into(),
+            destination: destination.into(),
+            timestamp: Utc::now().to_rfc3339(),
+            outcome: outcome.into(),
+            error_message: (outcome == "failure")
+                .then(|| "destination backup failed; details omitted".into()),
+        },
+    )
+    .await;
 }
 
 /// Run the opt-in monthly metadata-only repository check for the active profile.
@@ -661,6 +765,7 @@ mod tests {
             id: "default".into(),
             name: "Scheduled".into(),
             repo,
+            secondary_repo: None,
             backup_selection: profiles::BackupSelection {
                 source_paths: sources,
                 ..Default::default()
@@ -784,6 +889,31 @@ mod tests {
                     .to_string_lossy()
                     .contains("restore-drill"))
         );
+    }
+
+    #[tokio::test]
+    async fn secondary_destination_uses_same_archive_name() {
+        let Some(borg) = borg_or_skip() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let source = tmp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("same.txt"), b"one snapshot").unwrap();
+        let primary = local_repo(&tmp.path().join("primary"));
+        let secondary = local_repo(&tmp.path().join("secondary"));
+        borg.init_repo(&primary, "none", None).await.unwrap();
+        borg.init_repo(&secondary, "none", None).await.unwrap();
+        let mut profile =
+            profile_with_schedule(primary.clone(), vec![source.to_string_lossy().into()], true);
+        profile.secondary_repo = Some(secondary.clone());
+        write_profile(&config_dir, profile).await;
+
+        let report = run_scheduled_backup(&config_dir, &borg).await;
+        assert!(report.succeeded());
+        assert_eq!(report.destination_successes, 2);
+        let primary_name = &borg.list_archives(&primary, None).await.unwrap()[0].name;
+        let secondary_name = &borg.list_archives(&secondary, None).await.unwrap()[0].name;
+        assert_eq!(primary_name, secondary_name);
     }
 
     #[tokio::test]

@@ -630,6 +630,9 @@ pub async fn protection_health(
     let scheduled = history::latest_scheduled_attempt(&dir, &profile.id).await?;
     let integrity = history::latest_integrity(&dir, &profile.id).await?;
     let drill = history::latest_restore_drill(&dir, &profile.id).await?;
+    let primary_attempt = history::latest_destination_attempt(&dir, &profile.id, "primary").await?;
+    let secondary_attempt =
+        history::latest_destination_attempt(&dir, &profile.id, "secondary").await?;
     let unavailable_sources = tokio::task::spawn_blocking({
         let paths = profile.backup_selection.source_paths.clone();
         move || {
@@ -663,6 +666,8 @@ pub async fn protection_health(
         repository_reachable,
         integrity: integrity.as_ref(),
         drill: drill.as_ref(),
+        primary_attempt: primary_attempt.as_ref(),
+        secondary_attempt: secondary_attempt.as_ref(),
         now: chrono::Utc::now(),
     }))
 }
@@ -676,7 +681,7 @@ pub async fn create_backup(
     archive_name: String,
     pre_backup: Option<String>,
     post_backup: Option<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<LogicalBackupResult, String> {
     precheck_repo(&repo).await?;
     let compression = borg_core::config::Compression::default();
     compression.validate().map_err(|e| e.to_string())?;
@@ -687,6 +692,19 @@ pub async fn create_backup(
         .ok_or_else(|| "no active profile; configure repository first".to_string())?;
     let selection = active.backup_selection.clone();
     let resource_policy = active.resource_policy.clone();
+    let profile_id = active.id.clone();
+    let retention = active.retention.clone();
+    if repo.location() != active.repo.location() {
+        return Err("active primary repository changed; reload the backup page".into());
+    }
+    let mut destinations = vec![("primary", repo.clone())];
+    if let Some(secondary) = active.secondary_repo.clone() {
+        if secondary.location() == repo.location() {
+            return Err("secondary repository must differ from primary".into());
+        }
+        secondary.validate().map_err(|error| error.to_string())?;
+        destinations.push(("secondary", secondary));
+    }
     borg_core::config::validate_source_paths(&selection.source_paths).map_err(|e| e.to_string())?;
     borg_core::config::validate_exclude_patterns(&selection.excludes).map_err(|e| e.to_string())?;
 
@@ -728,47 +746,185 @@ pub async fn create_backup(
     // Windows. See crates/borg-platform-win/src/vss.rs.
     let vss = borg_platform_win::vss::prepare_snapshot(&raw_paths).await;
 
-    let pass = lookup_passphrase(&repo);
-
-    let profile = borg_core::config::BackupProfile {
-        name: MANUAL_PROFILE_NAME.into(),
-        source_paths: vss.source_paths.clone(),
-        excludes: selection.excludes,
-        compression,
-        repo,
-        upload_limit_kib: resource_policy.upload_limit_kib,
-    };
-
-    let result = state
-        .borg
-        .create(
-            &profile,
-            &archive_name,
-            vss.cwd.as_deref(),
-            pass.as_deref(),
-            &cancel,
-            move |event| {
-                let _ = app.emit("backup-progress", &event);
-            },
-        )
-        .await;
+    let run_id = format!("manual-{}", chrono::Utc::now().timestamp_millis());
+    let dir = config_dir(&app).await?;
+    let mut attempts = Vec::new();
+    let mut warnings = Vec::new();
+    let mut cancelled = false;
+    for (index, (destination_name, destination)) in destinations.iter().enumerate() {
+        if cancel.is_cancelled() {
+            cancelled = true;
+            for (remaining_name, _) in destinations.iter().skip(index) {
+                record_destination_attempt(&dir, &run_id, &profile_id, remaining_name, "skipped")
+                    .await;
+                attempts.push(DestinationAttemptResult {
+                    destination: (*remaining_name).into(),
+                    outcome: "skipped".into(),
+                    warnings: Vec::new(),
+                });
+            }
+            break;
+        }
+        if index > 0 && precheck_repo(destination).await.is_err() {
+            record_destination_attempt(&dir, &run_id, &profile_id, destination_name, "failure")
+                .await;
+            attempts.push(DestinationAttemptResult {
+                destination: (*destination_name).into(),
+                outcome: "failure".into(),
+                warnings: Vec::new(),
+            });
+            continue;
+        }
+        let pass = lookup_passphrase(destination);
+        let backup_profile = borg_core::config::BackupProfile {
+            name: MANUAL_PROFILE_NAME.into(),
+            source_paths: vss.source_paths.clone(),
+            excludes: selection.excludes.clone(),
+            compression: compression.clone(),
+            repo: destination.clone(),
+            upload_limit_kib: resource_policy.upload_limit_kib,
+        };
+        let progress_app = app.clone();
+        let result = state
+            .borg
+            .create(
+                &backup_profile,
+                &archive_name,
+                vss.cwd.as_deref(),
+                pass.as_deref(),
+                &cancel,
+                move |event| {
+                    let _ = progress_app.emit("backup-progress", &event);
+                },
+            )
+            .await;
+        match result {
+            Ok(outcome) => {
+                let mut destination_warnings = outcome.warnings;
+                if let Some(retention) = &retention {
+                    match state
+                        .borg
+                        .prune(destination, retention, pass.as_deref())
+                        .await
+                    {
+                        Ok(outcome) => destination_warnings.extend(outcome.warnings),
+                        Err(_) => destination_warnings
+                            .push("retention failed for this destination".into()),
+                    }
+                }
+                record_destination_attempt(&dir, &run_id, &profile_id, destination_name, "success")
+                    .await;
+                warnings.extend(destination_warnings.clone());
+                attempts.push(DestinationAttemptResult {
+                    destination: (*destination_name).into(),
+                    outcome: "success".into(),
+                    warnings: destination_warnings,
+                });
+            }
+            Err(borg_core::error::BorgError::Cancelled) => {
+                cancelled = true;
+                record_destination_attempt(
+                    &dir,
+                    &run_id,
+                    &profile_id,
+                    destination_name,
+                    "cancelled",
+                )
+                .await;
+                attempts.push(DestinationAttemptResult {
+                    destination: (*destination_name).into(),
+                    outcome: "cancelled".into(),
+                    warnings: Vec::new(),
+                });
+            }
+            Err(_) => {
+                record_destination_attempt(&dir, &run_id, &profile_id, destination_name, "failure")
+                    .await;
+                attempts.push(DestinationAttemptResult {
+                    destination: (*destination_name).into(),
+                    outcome: "failure".into(),
+                    warnings: Vec::new(),
+                });
+            }
+        }
+    }
     state.unregister_cancel(BACKUP_OP);
     // Release the snapshot + junction regardless of how the backup ended.
     vss.release().await;
 
-    let mut warnings = result
-        .map(|outcome| outcome.warnings)
-        .map_err(|e| e.to_string())?;
+    if cancelled {
+        return Err("operation cancelled".into());
+    }
+    let successes = attempts
+        .iter()
+        .filter(|attempt| attempt.outcome == "success")
+        .count();
+    let outcome = logical_backup_outcome(&attempts);
 
     // The backup itself succeeded; a failing post-backup hook is reported as a
     // warning rather than turning the whole backup into a failure.
-    if let Some(cmd) = post_backup.as_deref()
+    if successes > 0
+        && let Some(cmd) = post_backup.as_deref()
         && let Err(e) = borg_core::hooks::run("post-backup", cmd, &hook_ctx).await
     {
         warnings.push(format!("post-backup command failed: {e}"));
     }
 
-    Ok(warnings)
+    Ok(LogicalBackupResult {
+        outcome: outcome.into(),
+        warnings,
+        attempts,
+    })
+}
+
+fn logical_backup_outcome(attempts: &[DestinationAttemptResult]) -> &'static str {
+    let successes = attempts
+        .iter()
+        .filter(|attempt| attempt.outcome == "success")
+        .count();
+    if successes == attempts.len() {
+        "success"
+    } else if successes > 0 {
+        "partial_success"
+    } else {
+        "failure"
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DestinationAttemptResult {
+    pub destination: String,
+    pub outcome: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LogicalBackupResult {
+    pub outcome: String,
+    pub warnings: Vec<String>,
+    pub attempts: Vec<DestinationAttemptResult>,
+}
+
+async fn record_destination_attempt(
+    config_dir: &std::path::Path,
+    run_id: &str,
+    profile_id: &str,
+    destination: &str,
+    outcome: &str,
+) {
+    let _ = history::append_destination_attempt(
+        config_dir,
+        history::DestinationAttempt {
+            run_id: run_id.into(),
+            profile_id: profile_id.into(),
+            destination: destination.into(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            outcome: outcome.into(),
+            error_message: (outcome == "failure")
+                .then(|| "destination backup failed; details omitted".into()),
+        },
+    )
+    .await;
 }
 
 #[tauri::command]
@@ -1435,6 +1591,7 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
             id: "default".into(),
             name: "Default".into(),
             repo,
+            secondary_repo: None,
             backup_selection: Default::default(),
             schedule: None,
             integrity_schedule: None,
@@ -1450,6 +1607,31 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
         data.active_id = Some(profile.id.clone());
         data.profiles.push(profile);
     }
+    write_profiles(&app, &data).await
+}
+
+#[tauri::command]
+pub async fn save_secondary_repository(
+    app: tauri::AppHandle,
+    repo: Option<RepoConfig>,
+    passphrase: Option<String>,
+) -> Result<(), String> {
+    let mut data = read_profiles(&app).await?;
+    let profile = data
+        .active_mut()
+        .ok_or_else(|| "no active profile".to_string())?;
+    if let Some(repo) = &repo {
+        repo.validate().map_err(|error| error.to_string())?;
+        if repo.location() == profile.repo.location() {
+            return Err("secondary repository must differ from primary".into());
+        }
+        if let Some(passphrase) = passphrase.as_deref().filter(|value| !value.is_empty()) {
+            keychain::set_passphrase(&repo.ssh_url(), passphrase)?;
+        }
+    } else if let Some(previous) = &profile.secondary_repo {
+        keychain::clear_passphrase(&previous.ssh_url())?;
+    }
+    profile.secondary_repo = repo;
     write_profiles(&app, &data).await
 }
 
@@ -1483,6 +1665,7 @@ pub async fn create_profile(
         id: id.clone(),
         name,
         repo,
+        secondary_repo: None,
         backup_selection: Default::default(),
         schedule: None,
         integrity_schedule: None,
@@ -1808,5 +1991,28 @@ mod tests {
         assert!(state.cancel_prefix(RESTORE_SEARCH_PREFIX));
         assert!(old_search.is_cancelled());
         assert!(!backup.is_cancelled());
+    }
+
+    #[test]
+    fn logical_backup_result_distinguishes_partial_failure() {
+        let attempt = |destination: &str, outcome: &str| DestinationAttemptResult {
+            destination: destination.into(),
+            outcome: outcome.into(),
+            warnings: Vec::new(),
+        };
+        assert_eq!(
+            logical_backup_outcome(&[
+                attempt("primary", "success"),
+                attempt("secondary", "failure")
+            ]),
+            "partial_success"
+        );
+        assert_eq!(
+            logical_backup_outcome(&[
+                attempt("primary", "failure"),
+                attempt("secondary", "failure")
+            ]),
+            "failure"
+        );
     }
 }

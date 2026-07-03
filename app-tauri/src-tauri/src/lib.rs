@@ -134,6 +134,7 @@ pub fn run() {
             commands::latest_restore_drill,
             commands::load_repo_config,
             commands::save_repo_config,
+            commands::save_secondary_repository,
             commands::load_schedule_config,
             commands::save_schedule_config,
             commands::scheduled_backup_status,
@@ -305,7 +306,12 @@ fn notify_scheduled_result(app: &tauri::AppHandle, report: &scheduled::RunReport
     use tauri_plugin_notification::NotificationExt;
 
     let archive = report.archive_name.as_deref().unwrap_or("backup");
-    let (title, body) = if let Some(reason) = &report.skipped_reason {
+    let (title, body) = if report.destination_successes > 0 && report.destination_failures > 0 {
+        (
+            "Scheduled backup partially succeeded".to_string(),
+            "One destination succeeded and another failed.".to_string(),
+        )
+    } else if let Some(reason) = &report.skipped_reason {
         ("Scheduled backup skipped".to_string(), reason.clone())
     } else if let Some(error) = &report.error {
         // `error` is the verbose `BorgError::detail()` (full stderr tail) that the

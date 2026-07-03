@@ -1,7 +1,9 @@
 use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::history::{BackupEvent, IntegrityEvent, RestoreDrillEvent, ScheduledAttempt};
+use crate::history::{
+    BackupEvent, DestinationAttempt, IntegrityEvent, RestoreDrillEvent, ScheduledAttempt,
+};
 use crate::profiles::Profile;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,6 +27,7 @@ pub struct ProtectionHealth {
     pub restore_drill_status: String,
     pub recovery_key_ready: bool,
     pub destination_state: String,
+    pub secondary_status: Option<String>,
     pub actions: Vec<HealthAction>,
 }
 
@@ -43,6 +46,8 @@ pub struct HealthInputs<'a> {
     pub repository_reachable: bool,
     pub integrity: Option<&'a IntegrityEvent>,
     pub drill: Option<&'a RestoreDrillEvent>,
+    pub primary_attempt: Option<&'a DestinationAttempt>,
+    pub secondary_attempt: Option<&'a DestinationAttempt>,
     pub now: DateTime<Utc>,
 }
 
@@ -76,6 +81,23 @@ pub fn aggregate(inputs: HealthInputs<'_>) -> ProtectionHealth {
     let integrity_status = status(inputs.integrity.map(|event| event.outcome.as_str()));
     let restore_drill_status = status(inputs.drill.map(|event| event.outcome.as_str()));
     let recovery_key_ready = inputs.profile.hardening.recovery_key_exported;
+    let secondary_status = inputs.profile.secondary_repo.as_ref().map(|_| {
+        match inputs.secondary_attempt {
+            Some(attempt) if attempt.outcome == "success" => {
+                if inputs
+                    .primary_attempt
+                    .is_some_and(|primary| primary.run_id != attempt.run_id)
+                {
+                    "lagging"
+                } else {
+                    "current"
+                }
+            }
+            Some(_) => "failed",
+            None => "not_run",
+        }
+        .to_string()
+    });
 
     let red = !inputs.repository_reachable
         || inputs.unavailable_sources > 0
@@ -87,6 +109,10 @@ pub fn aggregate(inputs: HealthInputs<'_>) -> ProtectionHealth {
             || integrity_status != "success"
             || restore_drill_status != "success"
             || !recovery_key_ready);
+    let amber = amber
+        || secondary_status
+            .as_deref()
+            .is_some_and(|status| status != "current");
     let severity = if red {
         HealthSeverity::Red
     } else if amber {
@@ -130,6 +156,7 @@ pub fn aggregate(inputs: HealthInputs<'_>) -> ProtectionHealth {
         } else {
             "unavailable".into()
         },
+        secondary_status,
         actions,
     }
 }
@@ -186,6 +213,7 @@ mod tests {
                 repo_path: "/repo".into(),
                 ssh_key_path: None,
             },
+            secondary_repo: None,
             backup_selection: crate::profiles::BackupSelection::default(),
             schedule: None,
             integrity_schedule: None,
@@ -215,6 +243,8 @@ mod tests {
             repository_reachable: false,
             integrity: None,
             drill: None,
+            primary_attempt: None,
+            secondary_attempt: None,
             now: Utc::now(),
         });
         assert_eq!(health.severity, HealthSeverity::Red);
@@ -263,6 +293,8 @@ mod tests {
             repository_reachable: true,
             integrity: Some(&integrity),
             drill: Some(&drill),
+            primary_attempt: None,
+            secondary_attempt: None,
             now,
         });
         assert_eq!(health.severity, HealthSeverity::Green);

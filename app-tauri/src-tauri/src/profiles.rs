@@ -4,7 +4,7 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 8;
+pub const PROFILE_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupSelection {
@@ -149,6 +149,8 @@ pub struct Profile {
     pub id: String,
     pub name: String,
     pub repo: RepoConfig,
+    #[serde(default)]
+    pub secondary_repo: Option<RepoConfig>,
     #[serde(default)]
     pub backup_selection: BackupSelection,
     #[serde(default)]
@@ -404,6 +406,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         id: "default".into(),
         name: "Default".into(),
         repo,
+        secondary_repo: None,
         backup_selection,
         schedule,
         integrity_schedule: None,
@@ -478,6 +481,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             repo: sample_repo(),
+            secondary_repo: None,
             backup_selection: Default::default(),
             schedule: None,
             integrity_schedule: None,

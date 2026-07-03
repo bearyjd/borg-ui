@@ -25,6 +25,7 @@
     restore_drill_status: string;
     recovery_key_ready: boolean;
     destination_state: string;
+    secondary_status: string | null;
     actions: Array<{ label: string; href: string }>;
   } | null>(null);
 
@@ -121,6 +122,7 @@
             Destination {protectionHealth.destination_state} ·
             {protectionHealth.unavailable_sources} unavailable sources ·
             {protectionHealth.missed_runs} missed runs
+            {protectionHealth.secondary_status ? ` · secondary ${protectionHealth.secondary_status}` : ''}
           </p>
         </div>
       </div>
