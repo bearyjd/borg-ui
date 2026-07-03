@@ -7,6 +7,7 @@ export interface Profile {
   id: string;
   name: string;
   repo: RepoConfig;
+  secondary_repo: RepoConfig | null;
   backup_selection: BackupSelection;
   schedule: ScheduleConfig | null;
   integrity_schedule: { enabled: boolean } | null;

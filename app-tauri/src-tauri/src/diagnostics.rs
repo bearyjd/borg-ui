@@ -217,6 +217,12 @@ fn validate_profile(profile: &Profile) -> Result<(), String> {
         return Err("profile ids and names cannot be empty".into());
     }
     profile.repo.validate().map_err(|e| e.to_string())?;
+    if let Some(secondary) = &profile.secondary_repo {
+        secondary.validate().map_err(|e| e.to_string())?;
+        if secondary.location() == profile.repo.location() {
+            return Err("secondary repository must differ from primary".into());
+        }
+    }
     if !profile.backup_selection.source_paths.is_empty() {
         borg_core::config::validate_source_paths(&profile.backup_selection.source_paths)
             .map_err(|e| e.to_string())?;
@@ -294,6 +300,7 @@ mod tests {
                 repo_path: "/repo".into(),
                 ssh_key_path: Some(PathBuf::from("/secret/id_ed25519")),
             },
+            secondary_repo: None,
             backup_selection: Default::default(),
             schedule: None,
             integrity_schedule: None,
@@ -321,6 +328,7 @@ mod tests {
             id: "same".into(),
             name: "One".into(),
             repo,
+            secondary_repo: None,
             backup_selection: Default::default(),
             schedule: None,
             integrity_schedule: None,

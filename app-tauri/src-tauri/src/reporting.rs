@@ -266,7 +266,7 @@ pub async fn report_backup_outcome(
     if report.skipped_reason.is_some() {
         return;
     }
-    if report.error.is_some() {
+    if report.error.is_some() || report.destination_failures > 0 {
         let _ = deliver(
             config_dir,
             profile,
@@ -289,7 +289,7 @@ pub async fn report_backup_outcome(
                 .rev()
                 .filter(|event| event.kind == "backup")
                 .nth(1)
-                .map(|event| event.outcome == "failure")
+                .map(|event| event.outcome != "success")
         })
         .unwrap_or(false);
     if previous_failed {

@@ -73,6 +73,7 @@
   let cancelling = $state(false);
   let status = $state('');
   let warnings = $state<string[]>([]);
+  let destinationAttempts = $state<Array<{ destination: string; outcome: string }>>([]);
   let cancelled = $state(false);
   let repo = $derived(repoState.config);
   let repoAvailable = $derived(repoState.hasRepo);
@@ -205,6 +206,7 @@
     cancelling = false;
     cancelled = false;
     warnings = [];
+    destinationAttempts = [];
     status = 'Starting backup...';
     resetProgress();
 
@@ -237,21 +239,34 @@
 
       const template = profilesState.active?.archive_template ?? '';
       archiveName = await invoke<string>('preview_archive_name', { template });
-      const result = await invoke<string[]>('create_backup', {
+      const result = await invoke<{
+        outcome: 'success' | 'partial_success' | 'failure';
+        warnings: string[];
+        attempts: Array<{ destination: string; outcome: string; warnings: string[] }>;
+      }>('create_backup', {
         repo,
         archiveName,
         preBackup: profilesState.active?.pre_backup ?? null,
         postBackup: profilesState.active?.post_backup ?? null,
       });
-      warnings = Array.isArray(result) ? result : [];
+      warnings = result.warnings;
+      destinationAttempts = result.attempts;
       // A resolved promise means the archive was created. A non-empty list
       // just means some files were skipped (locked/in-use) — still a success.
-      status = warnings.length > 0
+      status = result.outcome === 'partial_success'
+        ? 'Backup partially succeeded. Review the destination results below.'
+        : result.outcome === 'failure'
+          ? 'Backup failed for every destination.'
+          : warnings.length > 0
         ? `Backup completed with ${warnings.length} warning${warnings.length === 1 ? '' : 's'}.`
         : 'Backup completed successfully!';
       notificationsState.notify(
-        'Backup complete',
-        warnings.length > 0
+        result.outcome === 'failure' ? 'Backup failed' : result.outcome === 'partial_success' ? 'Backup partially complete' : 'Backup complete',
+        result.outcome === 'partial_success'
+          ? 'One destination succeeded and another failed.'
+          : result.outcome === 'failure'
+            ? 'No destination completed successfully.'
+            : warnings.length > 0
           ? `${fileCount.toLocaleString()} files archived (${warnings.length} skipped).`
           : `${fileCount.toLocaleString()} files archived.`,
       );
@@ -260,7 +275,7 @@
         timestamp: new Date().toISOString(),
         kind: 'backup',
         archive_name: archiveName,
-        outcome: 'success',
+        outcome: result.outcome,
         duration_seconds: Math.round((Date.now() - startMs) / 1000),
         file_count: fileCount || undefined,
         original_size: originalSize || undefined,
@@ -534,6 +549,13 @@
         </details>
       </div>
     {/if}
+    {#if destinationAttempts.length > 1 && !isRunning}
+      <div class="destination-results">
+        {#each destinationAttempts as attempt}
+          <span class:success={attempt.outcome === 'success'}>{attempt.destination}: {attempt.outcome.replace('_', ' ')}</span>
+        {/each}
+      </div>
+    {/if}
 
     {#if status}
       <div
@@ -549,6 +571,15 @@
 </div>
 
 <style>
+  .destination-results {
+    display: flex;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    color: var(--color-danger);
+  }
+  .destination-results .success { color: var(--color-success); }
   .coverage-summary,
   .wizard-actions {
     display: flex;

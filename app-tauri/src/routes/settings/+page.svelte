@@ -14,6 +14,7 @@
   import ResourcePolicySection from '$lib/components/settings/ResourcePolicySection.svelte';
   import HardeningSection from '$lib/components/settings/HardeningSection.svelte';
   import ReportingSection from '$lib/components/settings/ReportingSection.svelte';
+  import SecondaryRepositorySection from '$lib/components/settings/SecondaryRepositorySection.svelte';
   import RetentionSection from '$lib/components/settings/RetentionSection.svelte';
   import DiagnosticsSection from '$lib/components/settings/DiagnosticsSection.svelte';
   import IntegritySection from '$lib/components/settings/IntegritySection.svelte';
@@ -761,6 +762,7 @@
   </form>
 
   <RetentionSection getRepo={buildRepoConfig} {repoConfigured} />
+  {#if profilesState.active}<SecondaryRepositorySection />{/if}
 
   <NotificationsSection />
 
