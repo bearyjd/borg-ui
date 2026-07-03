@@ -374,7 +374,14 @@ mod tests {
 
     #[tokio::test]
     async fn generate_key_fails_on_invalid_path() {
-        let result = generate_key(Path::new("/nonexistent/dir/key"), false).await;
+        // Use a regular file as a parent directory: writing a key under a
+        // path whose component is a file fails on every platform. A hardcoded
+        // "/nonexistent/dir" is unwritable on Linux but creatable on Windows
+        // CI (writable drive root), so it is not a portable "invalid path".
+        let dir = tempfile::tempdir().unwrap();
+        let file_as_dir = dir.path().join("not-a-dir");
+        tokio::fs::write(&file_as_dir, b"x").await.unwrap();
+        let result = generate_key(&file_as_dir.join("key"), false).await;
         assert!(result.is_err());
     }
 
