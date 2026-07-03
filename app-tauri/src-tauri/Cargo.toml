@@ -38,6 +38,9 @@ dirs = "6"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_WindowsProgramming",
+] }
 
 [dev-dependencies]

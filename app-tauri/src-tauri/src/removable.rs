@@ -20,7 +20,8 @@ pub fn removable_destination_present(path: &Path) -> bool {
 #[cfg(windows)]
 fn removable_destination_present_impl(path: &Path) -> bool {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{DRIVE_REMOVABLE, GetDriveTypeW};
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows_sys::Win32::System::WindowsProgramming::DRIVE_REMOVABLE;
 
     let Some(prefix) = path.components().next() else {
         return false;
@@ -31,8 +32,8 @@ fn removable_destination_present_impl(path: &Path) -> bool {
         .chain(std::iter::once(0))
         .collect();
     // SAFETY: root is a NUL-terminated UTF-16 buffer.
-    unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOVABLE }
-    &&path.exists()
+    let drive_type = unsafe { GetDriveTypeW(root.as_ptr()) };
+    drive_type == DRIVE_REMOVABLE && path.exists()
 }
 
 #[cfg(not(windows))]
