@@ -4,7 +4,7 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 6;
+pub const PROFILE_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupSelection {
@@ -63,6 +63,20 @@ impl Default for ResourcePolicy {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HardeningPosture {
+    #[serde(default)]
+    pub append_only_declared: bool,
+    #[serde(default)]
+    pub restricted_ssh_declared: bool,
+    #[serde(default)]
+    pub encrypted_repository_declared: bool,
+    #[serde(default)]
+    pub recovery_key_exported: bool,
+    #[serde(default)]
+    pub server_maintenance_documented: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub id: String,
@@ -78,6 +92,8 @@ pub struct Profile {
     pub restore_drill_schedule: Option<RestoreDrillSchedule>,
     #[serde(default)]
     pub resource_policy: ResourcePolicy,
+    #[serde(default)]
+    pub hardening: HardeningPosture,
     #[serde(default)]
     pub retention: Option<RetentionConfig>,
     #[serde(default)]
@@ -324,6 +340,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         integrity_schedule: None,
         restore_drill_schedule: None,
         resource_policy: ResourcePolicy::default(),
+        hardening: HardeningPosture::default(),
         retention,
         archive_template: None,
         pre_backup: None,
@@ -396,6 +413,7 @@ mod tests {
             integrity_schedule: None,
             restore_drill_schedule: None,
             resource_policy: ResourcePolicy::default(),
+            hardening: HardeningPosture::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,

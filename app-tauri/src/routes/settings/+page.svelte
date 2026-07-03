@@ -12,6 +12,7 @@
   import StartupSection from '$lib/components/settings/StartupSection.svelte';
   import ScheduleSection from '$lib/components/settings/ScheduleSection.svelte';
   import ResourcePolicySection from '$lib/components/settings/ResourcePolicySection.svelte';
+  import HardeningSection from '$lib/components/settings/HardeningSection.svelte';
   import RetentionSection from '$lib/components/settings/RetentionSection.svelte';
   import DiagnosticsSection from '$lib/components/settings/DiagnosticsSection.svelte';
   import IntegritySection from '$lib/components/settings/IntegritySection.svelte';
@@ -764,6 +765,7 @@
 
   <ScheduleSection />
   {#if profilesState.active}<ResourcePolicySection />{/if}
+  {#if profilesState.active}<HardeningSection />{/if}
 
   {#if profilesState.active}
     <IntegritySection />

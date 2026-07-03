@@ -6,6 +6,7 @@
   import { repoState, isLocalRepo, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
+  import { profilesState } from '$lib/stores/profiles.svelte';
   import ArchiveBrowser from '$lib/components/ArchiveBrowser.svelte';
   import DiffViewer from '$lib/components/DiffViewer.svelte';
   import { formatBytes } from '$lib/format';
@@ -37,6 +38,7 @@
   let restoreProgressMsg = $state('');
   let restoreCancelling = $state(false);
   let restoreWarnings = $state<string[]>([]);
+  let appendOnly = $derived(profilesState.active?.hardening.append_only_declared ?? false);
   interface SearchMatch {
     archive_name: string;
     archive_start: string;
@@ -392,10 +394,10 @@
           <button
             class="btn btn-secondary"
             onclick={compactRepo}
-            disabled={busy || loading}
+            disabled={busy || loading || appendOnly}
             title="Reclaim disk space left behind by deleted or pruned archives"
           >
-            {compacting ? 'Compacting...' : 'Compact'}
+            {appendOnly ? 'Compact requires server maintenance' : compacting ? 'Compacting...' : 'Compact'}
           </button>
           <button class="btn btn-secondary" onclick={refresh} disabled={busy || loading}>
             {loading ? 'Loading...' : 'Refresh'}
@@ -625,7 +627,11 @@
         aria-labelledby="delete-title"
       >
         <h2 id="delete-title">Delete archive?</h2>
-        <p>This will permanently delete <code>{confirmDeleteArchive}</code>. This cannot be undone.</p>
+        <p>
+          {appendOnly ? 'This logically deletes' : 'This will permanently delete'}
+          <code>{confirmDeleteArchive}</code>.
+          {appendOnly ? 'Physical data remains until trusted server-side maintenance compacts the repository.' : 'This cannot be undone.'}
+        </p>
         <div class="modal-actions">
           <button bind:this={cancelBtn} class="btn btn-secondary" onclick={() => confirmDeleteArchive = null}>Cancel</button>
           <button class="btn btn-delete-confirm" onclick={confirmDelete}>Delete</button>
