@@ -1,130 +1,143 @@
-# Handoff
+# BorgUI handoff
 
-Last updated: 2026-06-29.
+Last updated: 2026-07-03.
 
 ## Current state
 
-`master` is at `2cb5963` (`feat: cancel archive listing streams`, PR #59) before
-this documentation PR. The v0.1 release exists, and the post-v0.1 roadmap items
-through archive-list cancellation are merged:
+The v0.3–v0.4 feature baseline ends at `5451a6c`. PRs
+[#71](https://github.com/bearyjd/borg-ui/pull/71) through
+[#80](https://github.com/bearyjd/borg-ui/pull/80) were implemented sequentially,
+passed CI, and were squash-merged. There is no feature branch or PR in flight.
 
-- repository integrity checks and opt-in monthly metadata check
-- encrypted recovery-key export/import
-- consent-based Tauri updater with signed updater artifacts and `latest.json`
-- Windows release pipeline prepared for Azure Trusted Signing, disabled by default
-- scheduled-backup retry/missed-run reporting
-- guided SSH public-key onboarding
-- archive listing cancellation
+The repository still reports application version `0.2.0`. No v0.3/v0.4 tag or
+release was created. Treat versioning, installed upgrade validation, and release
+publication as the next phase rather than assuming these merges are released.
 
-No implementation PR is in flight. Remaining roadmap work is documentation only.
+## Delivered roadmap
+
+| PR | Merge | Feature |
+|---|---|---|
+| #71 | `27680a1` | Backup coverage wizard and canonical backup selection |
+| #72 | `d279f9a` | Restore search/version preview and sample-restore drills |
+| #73 | `b3c2a27` | Resource-aware scheduling, snooze, wake, Wi-Fi, battery, and removable triggers |
+| #74 | `d844207` | Append-only repository hardening workflow |
+| #75 | `1aca493` | Unified protection health and opt-in reporting |
+| #76 | `a740947` | Primary/secondary destinations under one logical backup |
+| #77 | `754a757` | Windows cloud-placeholder detection and hydration policy |
+| #78 | `e40470c` | Aggregate storage/performance metrics and forecasting |
+| #79 | `118aae6` | Recovery-readiness workflow |
+| #80 | `5451a6c` | Versioned built-in profile templates |
+
+## Schema endpoints
+
+- Profile schema: **v11**, in `app-tauri/src-tauri/src/profiles.rs`.
+- SQLite schema: **v7**, in `app-tauri/src-tauri/src/history.rs`.
+- Older profile data migrates to the current schema.
+- Future profile and SQLite versions are rejected without overwriting them.
+- `BackupSelection` already carries `template_id` and `template_version`.
+
+When changing either schema, preserve atomic migration behavior and future-version
+rejection. Do not reuse old version numbers.
 
 ## Architecture map
 
-- `crates/borg-core`: portable Borg CLI wrapper, config validation, SSH helpers,
-  archive/diff parsing, cancellation, updater-independent core logic.
-- `crates/borg-platform-win`: Windows VSS, Task Scheduler, autostart, and
-  Windows-specific command wrappers.
-- `app-tauri/src-tauri`: Tauri IPC commands, profiles, SQLite history,
-  diagnostics import/export, recovery-key handling, keychain, scheduled runners,
-  updater plumbing, tray/window lifecycle.
-- `app-tauri/src`: Svelte 5 UI, stores, Settings sections, archive browser,
-  backup/restore flows, update/recovery/integrity/schedule UI.
+- `crates/borg-core`: portable Borg CLI wrapper, cancellation, validation,
+  progress parsing, archive operations, and SSH helpers.
+- `crates/borg-platform-win`: VSS, Task Scheduler, autostart, power/WLAN APIs,
+  cloud-file detection/hydration, and other Windows integrations.
+- `app-tauri/src-tauri`: Tauri IPC, profiles, SQLite history, scheduling,
+  reporting, recovery, health, forecasting, templates, and backup orchestration.
+- `app-tauri/src`: Svelte 5 UI and stores.
+- `tests/smoke-windows`: KVM/Windows installer, updater, GUI, VSS, scheduler, and
+  archive smoke harness.
 
-## Data and secret handling
+## Security and privacy invariants
 
-- History is SQLite-backed. User-facing backup/restore events, integrity events,
-  and scheduled-attempt diagnostics are separate record types.
-- Profile schema rejects future versions unless explicitly overwritten.
-- Diagnostics/config exports intentionally exclude passphrases, SSH private key
-  paths/material, recovery payloads, source file listings, and updater private
-  keys.
-- Recovery-key exports are portable JSON files containing age/scrypt-encrypted
-  Borg key material. Store the file and recovery passphrase separately.
-- Updater signing and Windows Authenticode signing are separate trust systems.
-  Keep only the updater private key in `TAURI_SIGNING_PRIVATE_KEY`; the public
-  updater key is committed in Tauri config.
+Keep these outside logs, diagnostics, history/config exports, and report payloads:
 
-## Release operations
+- repository and SMTP passphrases
+- webhook secrets
+- SSH private keys and recovery payloads
+- source listings and archive filenames
+- temporary restore paths
 
-1. Confirm local quality gate:
+Repository metrics are aggregate-only. Restore-search results are streamed and
+not persisted. Readiness events store typed outcomes and timestamps, not recovery
+file locations or passphrases. Credential Manager remains the authority for
+repository passphrases, secondary credentials, webhook URLs, and SMTP passwords.
 
-   ```bash
-   cargo test --workspace
-   cargo clippy --workspace --all-targets -- -D warnings
-   cargo fmt --all -- --check
-   cd app-tauri && pnpm check && pnpm build
-   git diff --check
-   ```
+## Verification completed
 
-2. Cut a tag:
-
-   ```bash
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
-   ```
-
-3. The Release workflow stages the pinned Borg-for-Windows bundle, builds MSI and
-   NSIS installers, signs Tauri updater artifacts, writes `latest.json`, uploads
-   artifacts, and creates a draft GitHub Release.
-4. Review the draft release assets and notes, then publish manually.
-5. For a dry run, dispatch the Release workflow manually; it uploads artifacts but
-   does not publish a release.
-
-Authenticode signing remains disabled until Azure Trusted Signing is configured.
-See `docs/windows-signing.md`. If signing is explicitly enabled without required
-secrets/variables or if signing/verification fails, the release workflow fails.
-
-## Windows smoke commands
-
-Run from a host with the KVM Windows harness when the change affects the named
-surface:
+Every feature PR passed:
 
 ```bash
-cd tests/smoke-windows
-make validate-installer
-make validate-vss
-make validate-vss-manual
-make validate-archive-smoke
-make validate-gui-flows
-make validate-autostart-login
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+cd app-tauri && pnpm check && pnpm build
+git diff --check
 ```
 
-Use Release workflow dry runs for installer/updater/signing changes. The smoke
-harness details are in `tests/smoke-windows/README.md`.
+The last merged feature gate included 145 `borg-core` tests, 58
+`borg-platform-win` tests, and 85 app-backend tests. GitHub Frontend and Rust CI
+were green for PR #80. Relevant real-Borg tests passed where supported by the
+local test fixture.
+
+## Remaining release gate
+
+The Windows harness exists but no VM was running at handoff time. `make status`
+showed no active container. Installer/updater baselines were also not supplied.
+Therefore the following release-level work is still required:
+
+1. Build signed-updater-capable v0.3/v0.4 installers through Release workflow dry
+   runs.
+2. Validate a production-shaped v0.2 → v0.3 → v0.4 profile and SQLite upgrade.
+3. Run Windows smoke coverage for:
+   - installer and installed-app updater
+   - scheduler, wake, battery/Wi-Fi, removable destination, and USB behavior
+   - VSS manual/scheduled backup and restore drills
+   - local plus SSH secondary destinations
+   - OneDrive Files On-Demand placeholders
+   - reporting delivery fixtures
+   - recovery on a clean Windows VM
+   - all five templates through backup/restore
+4. Fix any smoke findings through normal reviewed PRs.
+5. Bump application/package versions, create release notes, tag, and publish only
+   after the installed upgrade gate is green.
+
+Useful entry points:
+
+```bash
+make -C tests/smoke-windows vm
+make -C tests/smoke-windows ssh
+make -C tests/smoke-windows validate
+make -C tests/smoke-windows validate-vss
+make -C tests/smoke-windows validate-vss-manual
+make -C tests/smoke-windows validate-gui-flows
+make -C tests/smoke-windows validate-installer
+make -C tests/smoke-windows validate-updater
+```
+
+Read `tests/smoke-windows/README.md` before provisioning. Some targets require a
+production Tauri executable, installer directory, or `BASELINE_INSTALLER`.
 
 ## Operational gotchas
 
-- Borg prompts must remain disabled in GUI/headless paths. Keep
-  `BORG_PASSPHRASE`, `BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK`,
-  `BORG_DISPLAY_PASSPHRASE=no`, `BORG_RELOCATED_REPO_ACCESS_IS_OK=yes`, and
-  closed stdin behavior intact.
-- Borg-for-Windows 1.4.4+win7 accepts raw drive-letter repository paths
-  (`C:\repo`) directly. Do not restore the former `\\localhost\C$` rewrite:
-  administrative shares prevent local repositories from working as standard users.
-- VSS stores archive paths through a drive-letter junction so VSS backups remain
-  restorable and match live backup path layout.
-- `borg extract --progress --log-json` reports restore progress as
-  `progress_percent`, not `archive_progress`; do not infer restore success from
-  file-count events.
-- Archive listing streams are cancellable by request id. Browser close, Escape,
-  archive replacement, component teardown, and closed IPC channels should remain
-  neutral UI states rather than failures.
-- Windows PowerShell smoke scripts should stay ASCII-only for PS 5.1.
+- Keep Borg prompts disabled in GUI and headless paths.
+- Keep the raw Windows drive-letter repository behavior; do not restore the old
+  administrative-share rewrite.
+- Manual and scheduled backups must use the same `BackupSelection`.
+- Placeholder scanning/materialization must finish before VSS creation.
+- A multi-destination run must reuse one VSS snapshot and archive name.
+- Cancellation stops the active destination and skips remaining destinations.
+- Append-only client access must not run compact; prune/delete remain logical.
+- Manual backups ignore battery/Wi-Fi skip policy but still honor bandwidth and
+  sleep prevention.
+- Templates resolve known folders when listed/applied and never silently update
+  an existing explicit selection.
+- Keep Windows PowerShell smoke scripts ASCII-only for PowerShell 5.1.
 
-## Follow-up issue candidates
+## Independent follow-up
 
-The post-v0.2 follow-ups are tracked explicitly:
-
-- `#64` production Authenticode activation after Azure/OIDC configuration.
-- `#65` is complete: `validate-updater.ps1` passed an installed 0.1.0 → 0.2.0
-  update with explicit consent (3 passed, 0 failed, 0 skipped).
-- `#66` is complete in PR `#69`: Borg-for-Windows 1.4.4+win7 is pinned and local
-  drive-letter repositories no longer use administrative shares.
-- `#67` found no repository demand for provider-specific SSH instructions and no
-  maintained Borg archive adapter for WinFsp. Open a new evidence-backed issue
-  before changing the provider-neutral onboarding or adding mount dependencies.
-  Browse/selective restore remains the supported archive access path.
-
-Metered-network controls shipped in PR `#61`; the updater smoke harness shipped
-in PR `#62`; Azure signing configuration validation and its Windows Release dry
-run shipped in PR `#63`.
+Production Authenticode activation remains tracked in issue #64. It must not
+weaken or block unsigned development dry runs.
