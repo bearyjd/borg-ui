@@ -16,6 +16,7 @@ export interface Profile {
   hardening: HardeningPosture;
   reporting: ReportPreferences;
   placeholder_policy: PlaceholderPolicy;
+  storage_warnings: StorageWarningThresholds;
   retention: RetentionConfig | null;
   archive_template: string | null;
   pre_backup: string | null;
@@ -25,6 +26,11 @@ export interface Profile {
 export interface PlaceholderPolicy {
   mode: 'warn_and_skip' | 'fail' | 'materialize';
   minimum_free_space_reserve: number;
+}
+
+export interface StorageWarningThresholds {
+  minimum_free_space_bytes: number;
+  capacity_warning_days: number;
 }
 
 export interface ReportPreferences {

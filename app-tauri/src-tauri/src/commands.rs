@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use borg_core::archive::ArchiveEntry;
 use borg_core::borg::{ArchiveInfo, BorgClient, CancelToken, CheckMode, DiffEntry};
@@ -191,16 +191,92 @@ pub async fn generate_ssh_key(
 
 #[tauri::command]
 pub async fn get_repo_info(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     repo: RepoConfig,
 ) -> Result<serde_json::Value, String> {
     precheck_repo(&repo).await?;
     let pass = lookup_passphrase(&repo);
-    state
+    let value = state
         .borg
         .info(&repo, pass.as_deref())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Some(stored_size) = value
+        .pointer("/cache/stats/total_size")
+        .or_else(|| value.pointer("/repository/stats/total_size"))
+        .and_then(serde_json::Value::as_u64)
+    {
+        let data = read_profiles(&app).await?;
+        if let Some(profile) = data.active() {
+            let destination = if profile.repo.location() == repo.location() {
+                Some("primary")
+            } else if profile
+                .secondary_repo
+                .as_ref()
+                .is_some_and(|secondary| secondary.location() == repo.location())
+            {
+                Some("secondary")
+            } else {
+                None
+            };
+            if let Some(destination) = destination {
+                let dir = config_dir(&app).await?;
+                let _ =
+                    history::update_latest_stored_size(&dir, &profile.id, destination, stored_size)
+                        .await;
+            }
+        }
+    }
+    Ok(value)
+}
+
+#[tauri::command]
+pub async fn storage_forecast(
+    app: tauri::AppHandle,
+    destination: Option<String>,
+) -> Result<crate::forecast::StorageForecast, String> {
+    let data = read_profiles(&app).await?;
+    let profile = data
+        .active()
+        .ok_or_else(|| "no active profile".to_string())?;
+    let destination = destination.unwrap_or_else(|| "primary".into());
+    if destination != "primary" && destination != "secondary" {
+        return Err("destination must be primary or secondary".into());
+    }
+    let repo = if destination == "secondary" {
+        profile
+            .secondary_repo
+            .as_ref()
+            .ok_or_else(|| "secondary destination is not configured".to_string())?
+    } else {
+        &profile.repo
+    };
+    let dir = config_dir(&app).await?;
+    let metrics = history::repository_metrics(&dir, &profile.id, &destination).await?;
+    let free_space = repo
+        .is_local()
+        .then(|| {
+            let path = PathBuf::from(&repo.repo_path);
+            borg_platform_win::cloud_files::free_space(&path).ok()
+        })
+        .flatten();
+    Ok(crate::forecast::calculate(&metrics, free_space, None))
+}
+
+#[tauri::command]
+pub async fn save_storage_warnings(
+    app: tauri::AppHandle,
+    thresholds: crate::profiles::StorageWarningThresholds,
+) -> Result<(), String> {
+    if thresholds.minimum_free_space_bytes == 0 || thresholds.capacity_warning_days == 0 {
+        return Err("storage warning thresholds must be greater than zero".into());
+    }
+    let mut data = read_profiles(&app).await?;
+    data.active_mut()
+        .ok_or_else(|| "no active profile".to_string())?
+        .storage_warnings = thresholds;
+    write_profiles(&app, &data).await
 }
 
 #[tauri::command]
@@ -795,6 +871,9 @@ pub async fn create_backup(
             upload_limit_kib: resource_policy.upload_limit_kib,
         };
         let progress_app = app.clone();
+        let metric_totals = Arc::new(Mutex::new(crate::forecast::MetricTotals::default()));
+        let progress_metrics = Arc::clone(&metric_totals);
+        let destination_started = std::time::Instant::now();
         let result = state
             .borg
             .create(
@@ -804,12 +883,22 @@ pub async fn create_backup(
                 pass.as_deref(),
                 &cancel,
                 move |event| {
+                    if let Ok(mut totals) = progress_metrics.lock() {
+                        totals.observe(&event);
+                    }
                     let _ = progress_app.emit("backup-progress", &event);
                 },
             )
             .await;
         match result {
             Ok(outcome) => {
+                let totals = metric_totals.lock().map(|value| *value).unwrap_or_default();
+                let metric = totals.into_metric(
+                    profile_id.clone(),
+                    (*destination_name).into(),
+                    destination_started.elapsed().as_secs(),
+                );
+                let _ = history::append_repository_metric(&dir, metric).await;
                 let mut destination_warnings = outcome.warnings;
                 if let Some(retention) = &retention {
                     match state
@@ -1638,6 +1727,7 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
             hardening: Default::default(),
             reporting: Default::default(),
             placeholder_policy: Default::default(),
+            storage_warnings: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -1713,6 +1803,7 @@ pub async fn create_profile(
         hardening: Default::default(),
         reporting: Default::default(),
         placeholder_policy: Default::default(),
+        storage_warnings: Default::default(),
         retention: None,
         archive_template: None,
         pre_backup: None,
