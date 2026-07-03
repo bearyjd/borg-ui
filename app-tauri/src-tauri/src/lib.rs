@@ -2,6 +2,7 @@ mod archive_naming;
 mod commands;
 mod coverage;
 mod diagnostics;
+mod hardening;
 mod history;
 mod keychain;
 mod logging;
@@ -93,6 +94,9 @@ pub fn run() {
             commands::preview_restore_conflicts,
             commands::diff_archives,
             commands::compact_repo,
+            commands::generate_append_only_instructions,
+            commands::save_hardening_posture,
+            commands::hardening_checklist,
             commands::init_repo,
             commands::delete_archive,
             commands::prune_repo,
