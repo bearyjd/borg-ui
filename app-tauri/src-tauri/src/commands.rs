@@ -504,14 +504,116 @@ pub async fn diff_archives(
 }
 
 #[tauri::command]
-pub async fn compact_repo(state: State<'_, AppState>, repo: RepoConfig) -> Result<String, String> {
+pub async fn compact_repo(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    repo: RepoConfig,
+) -> Result<String, String> {
     precheck_repo(&repo).await?;
+    if read_profiles(&app).await?.active().is_some_and(|profile| {
+        profile.repo.location() == repo.location() && profile.hardening.append_only_declared
+    }) {
+        return Err(
+            "compact is disabled for declared append-only backup access; run physical cleanup with trusted server-side maintenance credentials".into(),
+        );
+    }
     let pass = lookup_passphrase(&repo);
     state
         .borg
         .compact(&repo, pass.as_deref())
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn generate_append_only_instructions(
+    app: tauri::AppHandle,
+) -> Result<crate::hardening::AuthorizedKeysInstructions, String> {
+    let data = read_profiles(&app).await?;
+    let profile = data
+        .active()
+        .ok_or_else(|| "no active profile".to_string())?;
+    if profile.repo.is_local() {
+        return Err("append-only SSH instructions apply only to SSH repositories".into());
+    }
+    let key_path = profile
+        .repo
+        .ssh_key_path
+        .as_deref()
+        .ok_or_else(|| "configure or generate the backup SSH key first".to_string())?;
+    let public_key = borg_core::ssh::read_public_key(key_path)
+        .await
+        .map_err(|error| error.to_string())?;
+    crate::hardening::generate_authorized_keys_line(&public_key, &profile.repo.repo_path)
+}
+
+#[tauri::command]
+pub async fn save_hardening_posture(
+    app: tauri::AppHandle,
+    posture: profiles::HardeningPosture,
+) -> Result<(), String> {
+    let mut data = read_profiles(&app).await?;
+    let profile = data
+        .active_mut()
+        .ok_or_else(|| "no active profile".to_string())?;
+    if profile.repo.is_local() && (posture.append_only_declared || posture.restricted_ssh_declared)
+    {
+        return Err("SSH hardening declarations do not apply to local repositories".into());
+    }
+    profile.hardening = posture;
+    write_profiles(&app, &data).await
+}
+
+#[derive(Debug, Serialize)]
+pub struct HardeningCheck {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub complete: bool,
+}
+
+#[tauri::command]
+pub async fn hardening_checklist(app: tauri::AppHandle) -> Result<Vec<HardeningCheck>, String> {
+    let data = read_profiles(&app).await?;
+    let profile = data
+        .active()
+        .ok_or_else(|| "no active profile".to_string())?;
+    let dir = config_dir(&app).await?;
+    let integrity = history::latest_integrity(&dir, &profile.id).await?;
+    let drill = history::latest_restore_drill(&dir, &profile.id).await?;
+    Ok(vec![
+        HardeningCheck {
+            id: "encryption",
+            label: "Repository encryption declared",
+            complete: profile.hardening.encrypted_repository_declared,
+        },
+        HardeningCheck {
+            id: "recovery_key",
+            label: "Encrypted recovery key exported",
+            complete: profile.hardening.recovery_key_exported,
+        },
+        HardeningCheck {
+            id: "restricted_ssh",
+            label: "Restricted append-only SSH access declared",
+            complete: profile.repo.is_local()
+                || (profile.hardening.restricted_ssh_declared
+                    && profile.hardening.append_only_declared),
+        },
+        HardeningCheck {
+            id: "integrity",
+            label: "Latest integrity check succeeded",
+            complete: integrity.is_some_and(|event| event.outcome == "success"),
+        },
+        HardeningCheck {
+            id: "restore_drill",
+            label: "Latest restore drill succeeded",
+            complete: drill.is_some_and(|event| event.outcome == "success"),
+        },
+        HardeningCheck {
+            id: "server_maintenance",
+            label: "Server maintenance and recovery documented",
+            complete: profile.repo.is_local() || profile.hardening.server_maintenance_documented,
+        },
+    ])
 }
 
 #[tauri::command]
@@ -1181,6 +1283,7 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
             integrity_schedule: None,
             restore_drill_schedule: None,
             resource_policy: Default::default(),
+            hardening: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -1227,6 +1330,7 @@ pub async fn create_profile(
         integrity_schedule: None,
         restore_drill_schedule: None,
         resource_policy: Default::default(),
+        hardening: Default::default(),
         retention: None,
         archive_template: None,
         pre_backup: None,
@@ -1478,7 +1582,13 @@ pub async fn export_recovery_key(
     let encoded = serde_json::to_vec_pretty(&envelope).map_err(|error| error.to_string())?;
     tokio::task::spawn_blocking(move || crate::recovery::write_exclusive(&destination, &encoded))
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())??;
+    let mut data = read_profiles(&app).await?;
+    data.active_mut()
+        .ok_or_else(|| "active profile disappeared".to_string())?
+        .hardening
+        .recovery_key_exported = true;
+    write_profiles(&app, &data).await
 }
 
 #[tauri::command]

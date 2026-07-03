@@ -12,10 +12,19 @@ export interface Profile {
   integrity_schedule: { enabled: boolean } | null;
   restore_drill_schedule: { enabled: boolean } | null;
   resource_policy: ResourcePolicy;
+  hardening: HardeningPosture;
   retention: RetentionConfig | null;
   archive_template: string | null;
   pre_backup: string | null;
   post_backup: string | null;
+}
+
+export interface HardeningPosture {
+  append_only_declared: boolean;
+  restricted_ssh_declared: boolean;
+  encrypted_repository_declared: boolean;
+  recovery_key_exported: boolean;
+  server_maintenance_documented: boolean;
 }
 
 export interface ResourcePolicy {

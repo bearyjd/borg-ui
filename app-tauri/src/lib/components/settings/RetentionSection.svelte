@@ -107,6 +107,9 @@
     <FieldHelp text="Old backups add up over time. This policy thins them out automatically: it keeps a recent few of each kind and deletes (prunes) the older ones that fall outside the rules. Leave a box empty to keep unlimited backups for that period." />
     <FieldHelp text="A common, comfortable setup: keep 7 daily + 4 weekly + 6 monthly. That's roughly six months of history, automatically thinned so it never balloons." />
     <FieldHelp text='"Run Prune Now" applies these rules immediately. Saving the policy makes scheduled backups apply it for you.' />
+    {#if profilesState.active?.hardening.append_only_declared}
+      <p class="append-only-note">Append-only access makes prune a logical operation. Physical cleanup requires trusted server-side maintenance and compact.</p>
+    {/if}
 
     <div class="field-row">
       <div class="field field-sm">
@@ -275,5 +278,10 @@
   .test-result.error {
     background: var(--color-danger-muted);
     color: var(--color-danger);
+  }
+
+  .append-only-note {
+    color: var(--color-warning);
+    font-size: var(--text-sm);
   }
 </style>
