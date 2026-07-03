@@ -37,6 +37,28 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  rust-windows:
+    name: Rust (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Compiles and lints the cfg(windows) code that the Linux job never
+      # builds (VSS, scheduler, power/WLAN, removable, cloud placeholders,
+      # atomic replace). Catches Windows-only breaks at PR time instead of
+      # at release time. --all-targets also compiles the cfg(windows) tests.
+      - name: Clippy (Windows)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
