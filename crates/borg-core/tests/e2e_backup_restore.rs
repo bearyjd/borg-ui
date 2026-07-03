@@ -63,6 +63,7 @@ fn profile(repo: RepoConfig, sources: Vec<PathBuf>, excludes: Vec<String>) -> Ba
         excludes,
         compression: Compression::Zstd { level: 3 },
         repo,
+        upload_limit_kib: None,
     }
 }
 

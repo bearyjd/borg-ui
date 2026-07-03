@@ -25,11 +25,40 @@ pub async fn schedule_backup(
     exe_path: &str,
     args: &str,
     schedule: &Schedule,
+    wake_to_run: bool,
 ) -> Result<()> {
     validate_schtasks_input(task_name, "task_name")?;
     validate_schtasks_input(exe_path, "exe_path")?;
     validate_schtasks_input(args, "args")?;
     schedule.validate()?;
+
+    if wake_to_run {
+        let xml = task_xml(exe_path, args, schedule, true);
+        let path = std::env::temp_dir().join(format!(
+            "borgui-task-{}-{}.xml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        tokio::fs::write(&path, xml).await?;
+        let output = tokio::process::Command::new("schtasks")
+            .args(["/Create", "/F", "/TN", task_name, "/XML"])
+            .arg(&path)
+            .output()
+            .await;
+        let _ = tokio::fs::remove_file(path).await;
+        let output = output?;
+        if output.status.success() {
+            return Ok(());
+        }
+        return Err(BorgError::ProcessFailed {
+            message: "schtasks XML registration failed".into(),
+            exit_code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).into(),
+        });
+    }
 
     let mut cmd = tokio::process::Command::new("schtasks");
     cmd.args(["/Create", "/F"])
@@ -56,6 +85,35 @@ pub async fn schedule_backup(
     }
 
     Ok(())
+}
+
+fn task_xml(exe_path: &str, args: &str, schedule: &Schedule, wake_to_run: bool) -> String {
+    let trigger = match schedule {
+        Schedule::Hourly => "<TimeTrigger><StartBoundary>2026-01-01T00:00:00</StartBoundary><Repetition><Interval>PT1H</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><Enabled>true</Enabled></TimeTrigger>".to_string(),
+        Schedule::Daily { hour, minute } => format!(
+            "<CalendarTrigger><StartBoundary>2026-01-01T{hour:02}:{minute:02}:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay><Enabled>true</Enabled></CalendarTrigger>"
+        ),
+    };
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\
+<Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\
+<Triggers>{trigger}</Triggers>\
+<Principals><Principal id=\"Author\"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\
+<Settings><WakeToRun>{wake_to_run}</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>\
+<Actions Context=\"Author\"><Exec><Command>{}</Command><Arguments>{}</Arguments></Exec></Actions>\
+</Task>",
+        xml_escape(exe_path),
+        xml_escape(args),
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 /// Install the separate, opt-in monthly metadata-only integrity task.
@@ -226,6 +284,19 @@ mod tests {
     #[test]
     fn hourly_validates_ok() {
         assert!(Schedule::Hourly.validate().is_ok());
+    }
+
+    #[test]
+    fn wake_task_xml_enables_wake_and_escapes_action() {
+        let xml = task_xml(
+            r"C:\Program Files\Borg & UI\borg-ui.exe",
+            "--scheduled-backup",
+            &Schedule::Daily { hour: 2, minute: 5 },
+            true,
+        );
+        assert!(xml.contains("<WakeToRun>true</WakeToRun>"));
+        assert!(xml.contains("T02:05:00"));
+        assert!(xml.contains("Borg &amp; UI"));
     }
 
     #[test]

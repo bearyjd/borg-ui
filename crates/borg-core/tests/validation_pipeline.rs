@@ -37,6 +37,7 @@ fn full_backup_validation_flow() {
         excludes: vec!["*.tmp".into(), "node_modules".into()],
         compression,
         repo: repo.clone(),
+        upload_limit_kib: None,
     };
 
     let archive_ref = format!("{}::{}", repo.ssh_url(), archive_name);
