@@ -118,7 +118,7 @@ pub async fn export_support_bundle(
     .map_err(|e| e.to_string())?;
     let versions = serde_json::to_vec_pretty(&json!({
         "metadata": metadata(),
-        "database_schema_version": 1,
+        "database_schema_version": crate::history::DATABASE_SCHEMA_VERSION,
         "profile_schema_version": PROFILE_SCHEMA_VERSION,
     }))
     .map_err(|e| e.to_string())?;
@@ -229,6 +229,7 @@ fn validate_profile(profile: &Profile) -> Result<(), String> {
     if let Some(schedule) = &profile.schedule {
         schedule.schedule.validate().map_err(|e| e.to_string())?;
     }
+    crate::reporting::validate_preferences(profile)?;
     Ok(())
 }
 
@@ -299,6 +300,7 @@ mod tests {
             restore_drill_schedule: None,
             resource_policy: Default::default(),
             hardening: Default::default(),
+            reporting: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -325,6 +327,7 @@ mod tests {
             restore_drill_schedule: None,
             resource_policy: Default::default(),
             hardening: Default::default(),
+            reporting: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,

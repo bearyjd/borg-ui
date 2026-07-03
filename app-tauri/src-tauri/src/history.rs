@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 const MAX_EVENTS: usize = 200;
-const DATABASE_SCHEMA_VERSION: i64 = 4;
+pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupEvent {
@@ -56,6 +56,88 @@ pub struct RestoreDrillEvent {
     pub duration_seconds: u64,
     #[serde(default)]
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeliveryEvent {
+    pub id: String,
+    pub timestamp: String,
+    pub profile_id: String,
+    pub channel: String,
+    pub report_kind: String,
+    pub outcome: String,
+    pub attempt: u8,
+    pub transient: bool,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+pub async fn append_delivery(config_dir: &Path, event: DeliveryEvent) -> Result<(), String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        conn.execute(
+            "INSERT INTO report_deliveries
+             (id, timestamp, profile_id, channel, report_kind, outcome, attempt, transient, error_message)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                event.id,
+                event.timestamp,
+                event.profile_id,
+                event.channel,
+                event.report_kind,
+                event.outcome,
+                event.attempt,
+                event.transient,
+                event.error_message,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub async fn pending_deliveries(
+    config_dir: &Path,
+    profile_id: &str,
+) -> Result<Vec<DeliveryEvent>, String> {
+    initialize(config_dir).await?;
+    let dir = config_dir.to_path_buf();
+    let profile_id = profile_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&dir)?;
+        let mut statement = conn
+            .prepare(
+                "SELECT id, timestamp, profile_id, channel, report_kind, outcome, attempt, transient, error_message
+                 FROM report_deliveries d WHERE profile_id = ?1 AND outcome = 'failure'
+                 AND transient = 1 AND attempt < 3
+                 AND attempt = (SELECT MAX(attempt) FROM report_deliveries WHERE id = d.id AND channel = d.channel)
+                 ORDER BY sequence ASC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([profile_id], |row| {
+                Ok(DeliveryEvent {
+                    id: row.get(0)?,
+                    timestamp: row.get(1)?,
+                    profile_id: row.get(2)?,
+                    channel: row.get(3)?,
+                    report_kind: row.get(4)?,
+                    outcome: row.get(5)?,
+                    attempt: row.get(6)?,
+                    transient: row.get(7)?,
+                    error_message: row.get(8)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 pub async fn append_restore_drill(
@@ -389,6 +471,18 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
              files_checked INTEGER NOT NULL,
              duration_seconds INTEGER NOT NULL,
              error_message TEXT
+         );
+         CREATE TABLE IF NOT EXISTS report_deliveries (
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+             id TEXT NOT NULL,
+             timestamp TEXT NOT NULL,
+             profile_id TEXT NOT NULL,
+             channel TEXT NOT NULL CHECK(channel IN ('webhook', 'smtp')),
+             report_kind TEXT NOT NULL CHECK(report_kind IN ('failure', 'recovery', 'digest')),
+             outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure')),
+             attempt INTEGER NOT NULL,
+             transient INTEGER NOT NULL,
+             error_message TEXT
          );",
     )
     .map_err(|e| e.to_string())?;
@@ -611,6 +705,45 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, "4");
+        assert_eq!(version, DATABASE_SCHEMA_VERSION.to_string());
+    }
+
+    #[tokio::test]
+    async fn transient_delivery_retries_stop_after_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = DeliveryEvent {
+            id: "delivery-1".into(),
+            timestamp: "2026-07-02T00:00:00Z".into(),
+            profile_id: "work".into(),
+            channel: "webhook".into(),
+            report_kind: "failure".into(),
+            outcome: "failure".into(),
+            attempt: 1,
+            transient: true,
+            error_message: Some("HTTP 503".into()),
+        };
+        append_delivery(dir.path(), base.clone()).await.unwrap();
+        assert_eq!(
+            pending_deliveries(dir.path(), "work").await.unwrap().len(),
+            1
+        );
+        append_delivery(
+            dir.path(),
+            DeliveryEvent {
+                outcome: "success".into(),
+                attempt: 2,
+                transient: false,
+                error_message: None,
+                ..base
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            pending_deliveries(dir.path(), "work")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
