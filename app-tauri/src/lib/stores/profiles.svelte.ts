@@ -11,10 +11,20 @@ export interface Profile {
   schedule: ScheduleConfig | null;
   integrity_schedule: { enabled: boolean } | null;
   restore_drill_schedule: { enabled: boolean } | null;
+  resource_policy: ResourcePolicy;
   retention: RetentionConfig | null;
   archive_template: string | null;
   pre_backup: string | null;
   post_backup: string | null;
+}
+
+export interface ResourcePolicy {
+  skip_on_battery: boolean;
+  prevent_sleep: boolean;
+  wake_for_backup: boolean;
+  upload_limit_kib: number | null;
+  allowed_wifi_names: string[];
+  removable_destination_trigger: boolean;
 }
 
 export interface BackupSelection {

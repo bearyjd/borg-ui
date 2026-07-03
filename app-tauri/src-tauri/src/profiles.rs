@@ -4,7 +4,7 @@ use borg_core::config::{RepoConfig, RetentionConfig};
 use borg_platform_win::scheduler::ScheduleConfig;
 use serde::{Deserialize, Serialize};
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 5;
+pub const PROFILE_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackupSelection {
@@ -30,6 +30,39 @@ pub struct RestoreDrillSchedule {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourcePolicy {
+    #[serde(default)]
+    pub skip_on_battery: bool,
+    #[serde(default = "default_prevent_sleep")]
+    pub prevent_sleep: bool,
+    #[serde(default)]
+    pub wake_for_backup: bool,
+    #[serde(default)]
+    pub upload_limit_kib: Option<u32>,
+    #[serde(default)]
+    pub allowed_wifi_names: Vec<String>,
+    #[serde(default)]
+    pub removable_destination_trigger: bool,
+}
+
+const fn default_prevent_sleep() -> bool {
+    true
+}
+
+impl Default for ResourcePolicy {
+    fn default() -> Self {
+        Self {
+            skip_on_battery: false,
+            prevent_sleep: true,
+            wake_for_backup: false,
+            upload_limit_kib: None,
+            allowed_wifi_names: Vec::new(),
+            removable_destination_trigger: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub id: String,
@@ -43,6 +76,8 @@ pub struct Profile {
     pub integrity_schedule: Option<IntegritySchedule>,
     #[serde(default)]
     pub restore_drill_schedule: Option<RestoreDrillSchedule>,
+    #[serde(default)]
+    pub resource_policy: ResourcePolicy,
     #[serde(default)]
     pub retention: Option<RetentionConfig>,
     #[serde(default)]
@@ -288,6 +323,7 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         schedule,
         integrity_schedule: None,
         restore_drill_schedule: None,
+        resource_policy: ResourcePolicy::default(),
         retention,
         archive_template: None,
         pre_backup: None,
@@ -359,6 +395,7 @@ mod tests {
             schedule: None,
             integrity_schedule: None,
             restore_drill_schedule: None,
+            resource_policy: ResourcePolicy::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,

@@ -9,7 +9,9 @@ mod network;
 mod profiles;
 mod recovery;
 mod redaction;
+mod removable;
 mod scheduled;
+mod snooze;
 mod tray;
 
 use borg_core::borg::BorgClient;
@@ -51,13 +53,14 @@ pub fn run() {
             let log_dir = app.path().app_log_dir()?;
             logging::initialize(&log_dir).map_err(std::io::Error::other)?;
             if scheduled_restore_drill {
-                start_scheduled_restore_drill(app.handle().clone(), setup_borg_path);
+                start_scheduled_restore_drill(app.handle().clone(), setup_borg_path.clone());
             } else if scheduled_integrity {
-                start_scheduled_integrity_check(app.handle().clone(), setup_borg_path);
+                start_scheduled_integrity_check(app.handle().clone(), setup_borg_path.clone());
             } else if scheduled {
-                start_scheduled_backup(app.handle().clone(), setup_borg_path);
+                start_scheduled_backup(app.handle().clone(), setup_borg_path.clone());
             } else {
                 tray::setup(app.handle())?;
+                start_removable_monitor(app.handle().clone(), setup_borg_path.clone());
                 // Autostart-at-login launches with `--minimized`: keep the window
                 // hidden so BorgUI sits in the tray instead of stealing focus.
                 if start_minimized && let Some(window) = app.get_webview_window("main") {
@@ -102,6 +105,10 @@ pub fn run() {
             commands::load_backup_selection,
             commands::save_backup_selection,
             commands::standard_backup_excludes,
+            commands::load_resource_policy,
+            commands::save_resource_policy,
+            commands::set_global_snooze,
+            commands::get_global_snooze,
             commands::cancel_backup,
             commands::restore_archive,
             commands::cancel_restore,
@@ -144,6 +151,34 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn start_removable_monitor(app: tauri::AppHandle, borg_path: std::path::PathBuf) {
+    tauri::async_runtime::spawn(async move {
+        let Ok(config_dir) = app.path().app_config_dir() else {
+            return;
+        };
+        let borg = BorgClient::new(borg_path);
+        let mut trigger = removable::TriggerState::default();
+        loop {
+            let profile = profiles::load(&config_dir)
+                .await
+                .ok()
+                .and_then(|data| data.active().cloned());
+            let present = profile.as_ref().is_some_and(|profile| {
+                profile.resource_policy.removable_destination_trigger
+                    && profile.repo.is_local()
+                    && removable::removable_destination_present(std::path::Path::new(
+                        &profile.repo.repo_path,
+                    ))
+            });
+            if trigger.update(present) {
+                let report = scheduled::run_removable_backup(&config_dir, &borg).await;
+                notify_scheduled_result(&app, &report);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        }
+    });
 }
 
 fn start_scheduled_restore_drill(app: tauri::AppHandle, borg_path: std::path::PathBuf) {

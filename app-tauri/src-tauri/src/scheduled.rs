@@ -189,6 +189,9 @@ fn nonempty(s: &Option<String>) -> Option<&str> {
 
 const RETRY_DELAYS_SECONDS: [u64; 2] = [30, 120];
 const METERED_SKIP_REASON: &str = "Skipped because the active network is marked as metered.";
+const SNOOZE_SKIP_REASON: &str = "Skipped because automatic backups are snoozed.";
+const BATTERY_SKIP_REASON: &str = "Skipped because this PC is running on battery.";
+const WIFI_SKIP_REASON: &str = "Skipped because the active Wi-Fi network is not allowed.";
 
 fn is_transient(error: &borg_core::error::BorgError) -> bool {
     use borg_core::error::BorgError;
@@ -254,6 +257,23 @@ fn should_skip_for_metered_network(
     cost: crate::network::NetworkCost,
 ) -> bool {
     schedule.skip_metered_networks && cost.is_metered()
+}
+
+fn should_skip_for_battery(
+    policy: &profiles::ResourcePolicy,
+    source: borg_platform_win::resource::PowerSource,
+) -> bool {
+    policy.skip_on_battery && source == borg_platform_win::resource::PowerSource::Battery
+}
+
+fn wifi_allowed(policy: &profiles::ResourcePolicy, current: Option<&str>) -> bool {
+    policy.allowed_wifi_names.is_empty()
+        || current.is_some_and(|current| {
+            policy
+                .allowed_wifi_names
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(current))
+        })
 }
 
 async fn record_attempt(
@@ -356,6 +376,18 @@ async fn finish(
 /// Run one backup from the active profile's schedule configuration. Never
 /// panics; all failures are returned in the [`RunReport`].
 pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunReport {
+    run_automatic_backup(config_dir, borg, true).await
+}
+
+pub async fn run_removable_backup(config_dir: &Path, borg: &BorgClient) -> RunReport {
+    run_automatic_backup(config_dir, borg, false).await
+}
+
+async fn run_automatic_backup(
+    config_dir: &Path,
+    borg: &BorgClient,
+    require_schedule: bool,
+) -> RunReport {
     let started = Instant::now();
 
     let profile = match load_active_profile(config_dir).await {
@@ -363,8 +395,16 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
         Err(e) => return RunReport::preflight(e),
     };
 
-    let Some(schedule) = profile.schedule.clone().filter(|s| s.enabled) else {
-        return RunReport::preflight("active profile has no enabled schedule".into());
+    let schedule = match profile.schedule.clone().filter(|schedule| schedule.enabled) {
+        Some(schedule) => schedule,
+        None if !require_schedule && profile.resource_policy.removable_destination_trigger => {
+            borg_platform_win::scheduler::ScheduleConfig {
+                enabled: true,
+                schedule: borg_platform_win::scheduler::Schedule::Hourly,
+                skip_metered_networks: false,
+            }
+        }
+        None => return RunReport::preflight("active profile has no enabled schedule".into()),
     };
 
     // Validate inputs the same way the manual backup path does.
@@ -378,6 +418,33 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
     if let Err(e) = borg_core::config::validate_exclude_patterns(&profile.backup_selection.excludes)
     {
         return RunReport::preflight(e.to_string());
+    }
+
+    if crate::snooze::load(config_dir)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|snooze| snooze.active(Utc::now()))
+    {
+        record_skipped_attempt(config_dir, &profile.id, SNOOZE_SKIP_REASON).await;
+        return RunReport::skipped(SNOOZE_SKIP_REASON.into());
+    }
+    if borg_platform_win::resource::power_source()
+        .ok()
+        .is_some_and(|source| should_skip_for_battery(&profile.resource_policy, source))
+    {
+        record_skipped_attempt(config_dir, &profile.id, BATTERY_SKIP_REASON).await;
+        return RunReport::skipped(BATTERY_SKIP_REASON.into());
+    }
+    if !profile.resource_policy.allowed_wifi_names.is_empty() {
+        let current = borg_platform_win::resource::current_wifi_name()
+            .ok()
+            .flatten();
+        let allowed = wifi_allowed(&profile.resource_policy, current.as_deref());
+        if !allowed {
+            record_skipped_attempt(config_dir, &profile.id, WIFI_SKIP_REASON).await;
+            return RunReport::skipped(WIFI_SKIP_REASON.into());
+        }
     }
 
     if schedule.skip_metered_networks {
@@ -420,6 +487,14 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
         .iter()
         .map(PathBuf::from)
         .collect();
+    let _sleep_guard = match borg_platform_win::resource::SleepGuard::acquire(
+        profile.resource_policy.prevent_sleep,
+    ) {
+        Ok(guard) => guard,
+        Err(error) => {
+            return finish(config_dir, &archive_name, started, Err(error)).await;
+        }
+    };
 
     // Scheduled (unattended) runs benefit from VSS most — files are likely in
     // use. Snapshot the source volume and back up from a junction mount so borg
@@ -434,6 +509,7 @@ pub async fn run_scheduled_backup(config_dir: &Path, borg: &BorgClient) -> RunRe
         excludes: profile.backup_selection.excludes.clone(),
         compression: Compression::default(),
         repo: profile.repo.clone(),
+        upload_limit_kib: profile.resource_policy.upload_limit_kib,
     };
     let cancel = CancelToken::new();
     let run_id = Utc::now().timestamp_millis().to_string();
@@ -596,6 +672,7 @@ mod tests {
             }),
             integrity_schedule: None,
             restore_drill_schedule: None,
+            resource_policy: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
@@ -673,6 +750,7 @@ mod tests {
             excludes: vec![],
             compression: Compression::default(),
             repo: repo.clone(),
+            upload_limit_kib: None,
         };
         borg.create(
             &profile,
@@ -801,6 +879,29 @@ mod tests {
             schedule,
             crate::network::NetworkCost::Unknown
         ));
+    }
+
+    #[test]
+    fn battery_and_wifi_policy_decisions_are_conservative() {
+        let mut policy = profiles::ResourcePolicy::default();
+        assert!(!should_skip_for_battery(
+            &policy,
+            borg_platform_win::resource::PowerSource::Battery
+        ));
+        policy.skip_on_battery = true;
+        assert!(should_skip_for_battery(
+            &policy,
+            borg_platform_win::resource::PowerSource::Battery
+        ));
+        assert!(!should_skip_for_battery(
+            &policy,
+            borg_platform_win::resource::PowerSource::Ac
+        ));
+
+        policy.allowed_wifi_names = vec!["Home Wi-Fi".into()];
+        assert!(wifi_allowed(&policy, Some("home wi-fi")));
+        assert!(!wifi_allowed(&policy, Some("Cafe")));
+        assert!(!wifi_allowed(&policy, None));
     }
 
     #[test]
