@@ -11,6 +11,7 @@ mod logging;
 mod network;
 mod placeholders;
 mod profiles;
+mod pruning;
 mod readiness;
 mod recovery;
 mod redaction;

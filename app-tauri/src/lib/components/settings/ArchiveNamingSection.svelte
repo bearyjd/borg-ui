@@ -71,14 +71,15 @@
     </ul>
     <FieldHelp
       examples={[
-        { input: '{datetime}-{random}', output: '2026-05-31T143015-a1b2' },
+        { input: '{hostname}-{profile}-{datetime}-{random}', output: 'her-pc-default-2026-05-31T143015-a1b2' },
         { input: '{hostname}-{date}', output: 'her-pc-2026-05-31' },
       ]}
     />
+    <FieldHelp text={"Start the template with something fixed like {hostname} or {profile}: that prefix is how retention pruning tells this profile's backups apart from other machines sharing the repository."} />
 
     <div class="field">
       <label for="archive-template">Template</label>
-      <input id="archive-template" type="text" bind:value={archiveTemplate} placeholder="{'{datetime}-{random}'}" />
+      <input id="archive-template" type="text" bind:value={archiveTemplate} placeholder="{'{hostname}-{profile}-{datetime}-{random}'}" />
     </div>
 
     <div class="field">

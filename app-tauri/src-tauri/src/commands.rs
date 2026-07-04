@@ -497,19 +497,40 @@ pub async fn save_retention_config(
 
 #[tauri::command]
 pub async fn prune_repo(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     repo: RepoConfig,
     retention: borg_core::config::RetentionConfig,
 ) -> Result<Vec<String>, String> {
     precheck_repo(&repo).await?;
     retention.validate().map_err(|e| e.to_string())?;
+    // Pruning is always scoped to the owning profile's archives (shared
+    // repositories hold other machines' backups), so resolve the profile the
+    // UI is pruning for and refuse rather than fall back to an unscoped prune.
+    let data = read_profiles(&app).await?;
+    let active = data
+        .active()
+        .ok_or_else(|| "no active profile; configure repository first".to_string())?;
+    let matches_active = repo.location() == active.repo.location()
+        || active
+            .secondary_repo
+            .as_ref()
+            .is_some_and(|secondary| repo.location() == secondary.location());
+    if !matches_active {
+        return Err("active profile changed; reload the settings page".into());
+    }
     let pass = lookup_passphrase(&repo);
-    state
-        .borg
-        .prune(&repo, &retention, pass.as_deref())
-        .await
-        .map(|outcome| outcome.warnings)
-        .map_err(|e| e.to_string())
+    crate::pruning::prune_scoped(
+        &state.borg,
+        &repo,
+        &retention,
+        pass.as_deref(),
+        active.archive_template.as_deref(),
+        &active.name,
+    )
+    .await
+    .map(|outcome| outcome.warnings)
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -824,6 +845,8 @@ pub async fn create_backup(
     let mut selection = active.backup_selection.clone();
     let resource_policy = active.resource_policy.clone();
     let profile_id = active.id.clone();
+    let profile_name = active.name.clone();
+    let archive_template = active.archive_template.clone();
     let retention = active.retention.clone();
     if repo.location() != active.repo.location() {
         return Err("active primary repository changed; reload the backup page".into());
@@ -956,10 +979,15 @@ pub async fn create_backup(
                 let _ = history::append_repository_metric(&dir, metric).await;
                 let mut destination_warnings = outcome.warnings;
                 if let Some(retention) = &retention {
-                    match state
-                        .borg
-                        .prune(destination, retention, pass.as_deref())
-                        .await
+                    match crate::pruning::prune_scoped(
+                        &state.borg,
+                        destination,
+                        retention,
+                        pass.as_deref(),
+                        archive_template.as_deref(),
+                        &profile_name,
+                    )
+                    .await
                     {
                         Ok(outcome) => destination_warnings.extend(outcome.warnings),
                         Err(_) => destination_warnings

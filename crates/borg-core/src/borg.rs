@@ -452,31 +452,23 @@ impl BorgClient {
             .await
     }
 
+    /// Prunes archives per the retention policy, restricted to archives whose
+    /// name matches `archive_glob` (borg 1.x `--glob-archives`).
+    ///
+    /// The glob is mandatory: a borg repository is commonly shared by several
+    /// machines/profiles, and an unscoped `borg prune` applies one profile's
+    /// retention policy to *every* archive in the repository — silently
+    /// deleting other machines' backups. Callers that genuinely mean "the
+    /// whole repository" must pass `"*"` explicitly.
     pub async fn prune(
         &self,
         repo: &RepoConfig,
         retention: &crate::config::RetentionConfig,
+        archive_glob: &str,
         passphrase: Option<&str>,
     ) -> Result<OpOutcome> {
         let mut cmd = self.base_command_with(passphrase);
-        cmd.arg("prune");
-
-        if let Some(n) = retention.keep_hourly {
-            cmd.args(["--keep-hourly", &n.to_string()]);
-        }
-        if let Some(n) = retention.keep_daily {
-            cmd.args(["--keep-daily", &n.to_string()]);
-        }
-        if let Some(n) = retention.keep_weekly {
-            cmd.args(["--keep-weekly", &n.to_string()]);
-        }
-        if let Some(n) = retention.keep_monthly {
-            cmd.args(["--keep-monthly", &n.to_string()]);
-        }
-        if let Some(n) = retention.keep_yearly {
-            cmd.args(["--keep-yearly", &n.to_string()]);
-        }
-
+        cmd.args(prune_args(retention, archive_glob));
         cmd.arg(repo.location());
 
         let output = self.run_checked(cmd, "prune", None).await?;
@@ -777,6 +769,33 @@ impl BorgClient {
     }
 }
 
+/// Builds the argument list for `borg prune` (everything between the binary
+/// and the repository location). `--glob-archives` is always emitted so a
+/// prune can never silently apply one profile's retention policy to archives
+/// created by another profile or machine sharing the repository. This borg
+/// build (1.4.x) uses `--glob-archives`; borg 2 renamed it `--match-archives`.
+fn prune_args(retention: &crate::config::RetentionConfig, archive_glob: &str) -> Vec<String> {
+    let mut args = vec![
+        "prune".to_string(),
+        "--glob-archives".to_string(),
+        archive_glob.to_string(),
+    ];
+    let keeps = [
+        ("--keep-hourly", retention.keep_hourly),
+        ("--keep-daily", retention.keep_daily),
+        ("--keep-weekly", retention.keep_weekly),
+        ("--keep-monthly", retention.keep_monthly),
+        ("--keep-yearly", retention.keep_yearly),
+    ];
+    for (flag, value) in keeps {
+        if let Some(n) = value {
+            args.push(flag.to_string());
+            args.push(n.to_string());
+        }
+    }
+    args
+}
+
 fn upload_rate_args(profile: &BackupProfile) -> Vec<String> {
     if profile.repo.is_local() {
         return Vec::new();
@@ -911,6 +930,52 @@ mod tests {
         profile.repo.ssh_user.clear();
         profile.repo.repo_path = "D:\\repo".into();
         assert!(upload_rate_args(&profile).is_empty());
+    }
+
+    #[test]
+    fn prune_args_always_scope_with_glob_archives() {
+        // Regression for the shared-repo data-loss bug: an unscoped
+        // `borg prune` deletes other machines'/profiles' archives.
+        let retention = crate::config::RetentionConfig {
+            keep_daily: Some(7),
+            keep_weekly: Some(4),
+            ..Default::default()
+        };
+        assert_eq!(
+            prune_args(&retention, "mybox-default-*"),
+            vec![
+                "prune",
+                "--glob-archives",
+                "mybox-default-*",
+                "--keep-daily",
+                "7",
+                "--keep-weekly",
+                "4",
+            ]
+        );
+    }
+
+    #[test]
+    fn prune_args_emit_every_configured_keep_rule() {
+        let retention = crate::config::RetentionConfig {
+            keep_hourly: Some(1),
+            keep_daily: Some(2),
+            keep_weekly: Some(3),
+            keep_monthly: Some(4),
+            keep_yearly: Some(5),
+        };
+        let args = prune_args(&retention, "*");
+        assert_eq!(args[..3], ["prune", "--glob-archives", "*"]);
+        for (flag, n) in [
+            ("--keep-hourly", "1"),
+            ("--keep-daily", "2"),
+            ("--keep-weekly", "3"),
+            ("--keep-monthly", "4"),
+            ("--keep-yearly", "5"),
+        ] {
+            let pos = args.iter().position(|a| a == flag).unwrap();
+            assert_eq!(args[pos + 1], n);
+        }
     }
 
     #[test]
