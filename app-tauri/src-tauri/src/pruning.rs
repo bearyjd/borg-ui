@@ -19,9 +19,14 @@
 //!   the template with stable variables expanded and time-varying ones
 //!   wildcarded, so it also matches the profile's historical archives.
 //! - A custom template with no unique prefix (e.g. the old default typed in
-//!   by hand) cannot be scoped at all; pruning then keeps the historical
-//!   repository-wide behaviour (glob `*`) but warns that retention applies
-//!   to every archive in the repository.
+//!   by hand) cannot be scoped at all. Rather than fall back to the old
+//!   repository-wide `borg prune` (which is exactly the data-loss bug this
+//!   module exists to prevent), retention pruning is skipped entirely for
+//!   that prune: no borg command runs, no archive is deleted, and a warning
+//!   tells the user to add a `{hostname}`/`{profile}` (or another unique
+//!   literal) prefix to the archive template to re-enable it. This is a
+//!   warn-and-skip, not an error, so it never fails an otherwise-successful
+//!   backup.
 
 use borg_core::borg::{BorgClient, OpOutcome};
 use borg_core::config::{RepoConfig, RetentionConfig};
@@ -52,15 +57,20 @@ pub async fn prune_scoped(
     profile_name: &str,
 ) -> Result<OpOutcome> {
     let Some(glob) = profile_prune_glob(archive_template, profile_name) else {
-        // No prefix to scope on (explicit user template): keep the historical
-        // repository-wide prune, but never do so silently.
-        let mut outcome = borg.prune(repo, retention, "*", passphrase).await?;
-        outcome.warnings.push(
-            "archive template has no unique profile prefix; retention pruning applies to \
-             every archive in the repository, including other machines' backups"
-                .into(),
-        );
-        return Ok(outcome);
+        // No prefix to scope on: a repository-wide prune would be exactly
+        // the data-loss bug this module exists to prevent, so skip pruning
+        // entirely rather than fall back to it. No borg command runs here.
+        // This is a successful no-op (Ok), not an error, so it never fails
+        // an otherwise-successful backup -- just warns and moves on.
+        return Ok(OpOutcome {
+            warnings: vec![
+                "retention pruning was skipped: the archive template has no unique profile \
+                 prefix, so a scoped prune is not possible and a repository-wide prune could \
+                 delete other machines' archives; add {hostname} or {profile} (or another \
+                 unique literal) to the archive template to enable retention pruning"
+                    .into(),
+            ],
+        });
     };
 
     let mut outcome = borg.prune(repo, retention, &glob, passphrase).await?;
@@ -88,6 +98,7 @@ pub async fn prune_scoped(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn default_template_yields_a_scoped_glob() {
@@ -113,8 +124,8 @@ mod tests {
 
     #[test]
     fn unprefixed_custom_template_cannot_be_scoped() {
-        // A user who typed the old default back in gets repository-wide
-        // pruning plus a warning (see prune_scoped), never a silent scope.
+        // A user who typed the old default back in gets a skipped, warned
+        // prune (see prune_scoped), never a silent repository-wide scope.
         assert_eq!(
             profile_prune_glob(Some("{datetime}-{random}"), "default"),
             None
@@ -126,6 +137,40 @@ mod tests {
         assert_eq!(
             profile_prune_glob(Some("laptop-{date}-{random}"), "default").as_deref(),
             Some("laptop-*-*")
+        );
+    }
+
+    #[tokio::test]
+    async fn unscopable_template_skips_without_invoking_borg() {
+        // Point at a binary that cannot possibly exist. If the no-scope
+        // branch of `prune_scoped` ever shells out to borg again (the old
+        // repository-wide fallback this replaced), `run_checked` would fail
+        // to spawn it and this `expect` would panic -- so a passing test
+        // proves the fail-safe skip never touches the repository, with no
+        // need for a real borg binary.
+        let borg = BorgClient::new(PathBuf::from("/nonexistent/definitely-not-borg"));
+        let repo = RepoConfig {
+            ssh_host: String::new(),
+            ssh_port: 0,
+            ssh_user: String::new(),
+            repo_path: "/nonexistent/repo".into(),
+            ssh_key_path: None,
+        };
+        let retention = RetentionConfig::default();
+        let outcome = prune_scoped(
+            &borg,
+            &repo,
+            &retention,
+            None,
+            Some("{datetime}-{random}"),
+            "default",
+        )
+        .await
+        .expect("no-scope prune must succeed without ever calling borg");
+        assert!(
+            outcome.warnings.iter().any(|w| w.contains("skipped")),
+            "must warn that retention pruning was skipped, got {:?}",
+            outcome.warnings
         );
     }
 }
@@ -253,6 +298,72 @@ mod prune_scoped_tests {
                 .iter()
                 .any(|w| w.contains("old default template")),
             "prune_scoped must warn about excluded legacy archives, got {:?}",
+            outcome.warnings
+        );
+    }
+
+    /// Real-repo counterpart to `unscopable_template_skips_without_invoking_borg`:
+    /// proves the fail-safe skip against actual archives, not just the absence
+    /// of a borg binary.
+    #[tokio::test]
+    async fn unscopable_template_prunes_nothing_but_warns() {
+        let Some(borg) = borg_or_skip() else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().join("repo");
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("f.txt"), b"data").unwrap();
+
+        let repo = local_repo(&repo_path);
+        borg.init_repo(&repo, "none", None).await.unwrap();
+
+        let backup_profile = BackupProfile {
+            name: "default".into(),
+            source_paths: vec![src.clone()],
+            excludes: vec![],
+            compression: Compression::default(),
+            repo: repo.clone(),
+            upload_limit_kib: None,
+        };
+        let cancel = CancelToken::new();
+        for name in ["old-1", "old-2", "old-3"] {
+            borg.create(&backup_profile, name, None, None, &cancel, |_| {})
+                .await
+                .unwrap();
+        }
+
+        // keep-hourly 1 would, if actually run, collapse all three archives
+        // down to one. The unscopable template must skip pruning entirely.
+        let retention = RetentionConfig {
+            keep_hourly: Some(1),
+            ..Default::default()
+        };
+        let outcome = prune_scoped(
+            &borg,
+            &repo,
+            &retention,
+            None,
+            Some("{datetime}-{random}"),
+            "default",
+        )
+        .await
+        .unwrap();
+
+        let names: Vec<String> = borg
+            .list_archives(&repo, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(
+            names.len(),
+            3,
+            "an unscopable template must skip pruning entirely, got {names:?}"
+        );
+        assert!(
+            outcome.warnings.iter().any(|w| w.contains("skipped")),
+            "must warn that retention pruning was skipped, got {:?}",
             outcome.warnings
         );
     }
