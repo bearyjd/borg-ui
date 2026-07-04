@@ -40,6 +40,12 @@ jobs:
   rust-windows:
     name: Rust (Windows)
     runs-on: windows-latest
+    # Build with the static CRT so this job matches the shipped release build
+    # (see .cargo/config.toml) and guards it — a dependency that breaks static
+    # linking fails here at PR time. Overrides the workflow-level RUSTFLAGS
+    # (an env RUSTFLAGS would otherwise shadow .cargo/config.toml's flags).
+    env:
+      RUSTFLAGS: "-C target-feature=+crt-static -D warnings"
     steps:
       - uses: actions/checkout@v5
 

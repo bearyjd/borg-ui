@@ -1,0 +1,13 @@
+# Statically link the MSVC C runtime into Windows binaries so the app runs on a
+# clean Windows install without the Microsoft Visual C++ Redistributable.
+#
+# borg-ui.exe otherwise dynamically links vcruntime140.dll / vcruntime140_1.dll /
+# msvcp140.dll, which Windows does not ship by default; on a machine without the
+# VC++ Redistributable it fails to launch with 0xC0000135 (STATUS_DLL_NOT_FOUND).
+# The NSIS/MSI installer bundles no CRT, so static linking is the fix.
+#
+# release.yml sets no RUSTFLAGS, so these target-scoped flags apply to the shipped
+# `cargo build --release`. The Windows CI job sets RUSTFLAGS explicitly (which
+# would otherwise override this file) so it builds the same way.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
