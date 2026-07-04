@@ -116,9 +116,14 @@ jobs:
 
       - name: Build frontend and application executable
         working-directory: app-tauri
-        run: |
-          pnpm build
-          cargo build --release -p borg-ui --locked
+        # Use `tauri build --no-bundle`, NOT `cargo build --release`: a plain cargo
+        # build produces a DEV-MODE Tauri binary that loads devUrl (localhost:5173)
+        # and shows "localhost refused to connect" instead of the embedded frontend.
+        # `tauri build` produces the production binary; `--no-bundle` leaves the exe
+        # unpackaged so it can be Authenticode-signed before `tauri bundle` packages
+        # it (the signing interleave PR #56 needed). It runs beforeBuildCommand
+        # (`pnpm build`) itself, so no separate frontend build step is needed.
+        run: pnpm tauri build --no-bundle
 
       - name: Azure login for Artifact Signing
         if: env.SIGNING_ENABLED == 'true'
