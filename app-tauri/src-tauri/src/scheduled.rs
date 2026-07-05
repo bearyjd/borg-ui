@@ -618,7 +618,16 @@ async fn run_automatic_backup(
                 if let Some(retention) = profile.retention.as_ref()
                     && retention.validate().is_ok()
                 {
-                    match borg.prune(&destination, retention, pass.as_deref()).await {
+                    match crate::pruning::prune_scoped(
+                        borg,
+                        &destination,
+                        retention,
+                        pass.as_deref(),
+                        profile.archive_template.as_deref(),
+                        &profile.name,
+                    )
+                    .await
+                    {
                         Ok(outcome) => warnings.extend(outcome.warnings),
                         Err(_) => warnings.push(format!(
                             "retention failed for the {destination_name} destination"
