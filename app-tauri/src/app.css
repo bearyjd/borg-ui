@@ -3,6 +3,7 @@
   --color-surface: oklch(18% 0.012 260);
   --color-surface-hover: oklch(22% 0.015 260);
   --color-surface-active: oklch(25% 0.015 260);
+  --color-surface-raised: oklch(21% 0.012 260);
   --color-border: oklch(28% 0.01 260);
   --color-border-subtle: oklch(22% 0.008 260);
   --color-text: oklch(92% 0.01 260);
@@ -18,6 +19,7 @@
   --color-danger: oklch(65% 0.2 25);
   --color-danger-muted: oklch(65% 0.2 25 / 0.15);
   --color-danger-hover: oklch(60% 0.22 25);
+  --color-error: var(--color-danger);
   --color-on-accent: oklch(14% 0 0);
   --color-backdrop: oklch(0% 0 0 / 0.5);
 
@@ -36,6 +38,7 @@
   --space-2: 0.5rem;
   --space-3: 0.75rem;
   --space-4: 1rem;
+  --space-5: 1.25rem;
   --space-6: 1.5rem;
   --space-8: 2rem;
   --space-12: 3rem;
