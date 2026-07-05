@@ -17,6 +17,26 @@ const SSH_FORBIDDEN: &[char] = &[
 ];
 const PATH_FORBIDDEN: &[char] = &[';', '&', '|', '`', '$', '\'', '"', '\n', '\r', '\0'];
 
+/// Central option-injection gate. borg and ssh are spawned with direct argv
+/// (no shell), so metacharacter injection is impossible — but an untrusted
+/// value that begins with `-` would be parsed as a *flag* instead of a
+/// positional argument (e.g. an ssh `-oProxyCommand=...`). Every untrusted
+/// string that ends up in an argv position must pass this gate: empty and
+/// option-like (leading `-`, ignoring leading whitespace) values are rejected.
+pub fn reject_option_like(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(BorgError::InvalidConfig {
+            message: format!("{field} cannot be empty"),
+        });
+    }
+    if value.trim_start().starts_with('-') {
+        return Err(BorgError::InvalidConfig {
+            message: format!("{field} cannot start with '-'"),
+        });
+    }
+    Ok(())
+}
+
 impl RepoConfig {
     /// A repo is "local" (a path on disk — external drive, USB, or mounted
     /// network share) when both the SSH host and user are blank. In that mode
@@ -27,11 +47,7 @@ impl RepoConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.repo_path.trim().is_empty() {
-            return Err(BorgError::InvalidConfig {
-                message: "repo_path cannot be empty".into(),
-            });
-        }
+        reject_option_like("repo_path", &self.repo_path)?;
         if self.repo_path.chars().any(|c| PATH_FORBIDDEN.contains(&c)) {
             return Err(BorgError::InvalidConfig {
                 message: "repo_path contains invalid characters".into(),
@@ -43,16 +59,8 @@ impl RepoConfig {
             return Ok(());
         }
 
-        if self.ssh_host.trim().is_empty() {
-            return Err(BorgError::InvalidConfig {
-                message: "ssh_host cannot be empty".into(),
-            });
-        }
-        if self.ssh_user.trim().is_empty() {
-            return Err(BorgError::InvalidConfig {
-                message: "ssh_user cannot be empty".into(),
-            });
-        }
+        reject_option_like("ssh_host", &self.ssh_host)?;
+        reject_option_like("ssh_user", &self.ssh_user)?;
         if self.ssh_port == 0 {
             return Err(BorgError::InvalidConfig {
                 message: "ssh_port must be > 0".into(),
@@ -148,11 +156,7 @@ impl Default for Compression {
 }
 
 pub fn validate_archive_name(name: &str) -> Result<()> {
-    if name.trim().is_empty() {
-        return Err(BorgError::InvalidConfig {
-            message: "archive_name cannot be empty".into(),
-        });
-    }
+    reject_option_like("archive_name", name)?;
     if !name
         .chars()
         .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
@@ -236,11 +240,7 @@ pub fn validate_source_paths(paths: &[String]) -> Result<()> {
         });
     }
     for path in paths {
-        if path.trim().is_empty() {
-            return Err(BorgError::InvalidConfig {
-                message: "source path cannot be empty".into(),
-            });
-        }
+        reject_option_like("source path", path)?;
     }
     Ok(())
 }
@@ -822,6 +822,61 @@ mod tests {
     fn rejects_whitespace_only_exclude_pattern() {
         let patterns = vec!["   ".to_string()];
         assert!(validate_exclude_patterns(&patterns).is_err());
+    }
+
+    #[test]
+    fn reject_option_like_rejects_empty_and_leading_dash() {
+        assert!(reject_option_like("field", "value").is_ok());
+        assert!(reject_option_like("field", "/data/repo").is_ok());
+        assert!(reject_option_like("field", "").is_err());
+        assert!(reject_option_like("field", "   ").is_err());
+        assert!(reject_option_like("field", "-rf").is_err());
+        assert!(reject_option_like("field", "--exclude=*").is_err());
+        // Leading whitespace must not smuggle an option-like value through.
+        assert!(reject_option_like("field", "  --sneaky").is_err());
+    }
+
+    #[test]
+    fn rejects_option_like_repo_path() {
+        assert!(local_repo("--remote-path=evil").validate().is_err());
+        let ssh = RepoConfig {
+            ssh_host: "host.com".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "-oProxyCommand=calc".into(),
+            ssh_key_path: None,
+        };
+        assert!(ssh.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_option_like_ssh_host_and_user() {
+        let mut repo = RepoConfig {
+            ssh_host: "-oProxyCommand=calc".into(),
+            ssh_port: 22,
+            ssh_user: "borg".into(),
+            repo_path: "/repo".into(),
+            ssh_key_path: None,
+        };
+        assert!(repo.validate().is_err());
+        repo.ssh_host = "host.com".into();
+        repo.ssh_user = "-l".into();
+        assert!(repo.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_option_like_archive_name() {
+        assert!(validate_archive_name("-evil").is_err());
+        assert!(validate_archive_name("--glob-archives").is_err());
+        // Interior dashes stay legal.
+        assert!(validate_archive_name("my-backup").is_ok());
+    }
+
+    #[test]
+    fn rejects_option_like_source_paths() {
+        assert!(validate_source_paths(&["--exclude=*".to_string()]).is_err());
+        assert!(validate_source_paths(&["/ok".to_string(), "-bad".to_string()]).is_err());
+        assert!(validate_source_paths(&["/ok".to_string()]).is_ok());
     }
 
     #[test]
