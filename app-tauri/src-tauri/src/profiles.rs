@@ -247,6 +247,44 @@ pub struct Profile {
     pub post_backup: Option<String>,
 }
 
+impl Profile {
+    /// Full-profile validation gate for every externally-influenced field.
+    /// Untrusted profiles arrive via `import_profile` and user-entered config;
+    /// this must run before a profile is persisted so option-like values
+    /// (leading `-`) can never reach borg/ssh argv positions. Empty optional
+    /// sections (no source paths yet, no schedule) stay valid — a profile must
+    /// remain savable while it is still being configured.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("profile name cannot be empty".into());
+        }
+        self.repo.validate().map_err(|e| e.to_string())?;
+        if let Some(secondary) = &self.secondary_repo {
+            secondary.validate().map_err(|e| e.to_string())?;
+            if secondary.location() == self.repo.location() {
+                return Err("secondary repository must differ from primary".into());
+            }
+        }
+        if !self.backup_selection.source_paths.is_empty() {
+            borg_core::config::validate_source_paths(&self.backup_selection.source_paths)
+                .map_err(|e| e.to_string())?;
+        }
+        borg_core::config::validate_exclude_patterns(&self.backup_selection.excludes)
+            .map_err(|e| e.to_string())?;
+        if let Some(template) = &self.archive_template {
+            borg_core::config::reject_option_like("archive_template", template)
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(retention) = &self.retention {
+            retention.validate().map_err(|e| e.to_string())?;
+        }
+        if let Some(schedule) = &self.schedule {
+            schedule.schedule.validate().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfilesData {
     #[serde(default)]
@@ -568,6 +606,70 @@ mod tests {
             pre_backup: None,
             post_backup: None,
         }
+    }
+
+    #[test]
+    fn profile_validate_accepts_minimal_and_full_profiles() {
+        // A freshly-created profile (no sources/schedule yet) must stay valid.
+        assert!(profile_with_id("fresh").validate().is_ok());
+
+        let mut full = profile_with_id("full");
+        full.secondary_repo = Some(RepoConfig {
+            ssh_host: String::new(),
+            ssh_port: 0,
+            ssh_user: String::new(),
+            repo_path: "D:\\backups\\secondary".into(),
+            ssh_key_path: None,
+        });
+        full.backup_selection.source_paths = vec!["C:\\Users\\me\\Documents".into()];
+        full.backup_selection.excludes = vec!["*.tmp".into()];
+        full.archive_template = Some("{hostname}-{date}".into());
+        full.retention = Some(RetentionConfig {
+            keep_daily: Some(7),
+            ..Default::default()
+        });
+        assert!(full.validate().is_ok());
+    }
+
+    #[test]
+    fn profile_validate_rejects_option_like_source_path() {
+        let mut profile = profile_with_id("p");
+        profile.backup_selection.source_paths = vec!["--exclude=*".into()];
+        assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn profile_validate_rejects_option_like_secondary_repo_path() {
+        let mut profile = profile_with_id("p");
+        profile.secondary_repo = Some(RepoConfig {
+            ssh_host: String::new(),
+            ssh_port: 0,
+            ssh_user: String::new(),
+            repo_path: "--remote-path=evil".into(),
+            ssh_key_path: None,
+        });
+        assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn profile_validate_rejects_secondary_equal_to_primary() {
+        let mut profile = profile_with_id("p");
+        profile.secondary_repo = Some(profile.repo.clone());
+        assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn profile_validate_rejects_option_like_archive_template() {
+        let mut profile = profile_with_id("p");
+        profile.archive_template = Some("--glob-archives".into());
+        assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn profile_validate_rejects_empty_name() {
+        let mut profile = profile_with_id("p");
+        profile.name = "   ".into();
+        assert!(profile.validate().is_err());
     }
 
     #[test]

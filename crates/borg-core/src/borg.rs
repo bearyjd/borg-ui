@@ -120,6 +120,22 @@ impl CancelToken {
     }
 }
 
+/// Defence in depth against option injection: every borg subcommand appends
+/// the `--` end-of-options separator before its positional arguments (repo
+/// locations, archive references, restore paths), so a value beginning with
+/// `-` can never be parsed as a flag even if an upstream validation gate is
+/// bypassed.
+trait EndOfOptions {
+    /// Append `--`; everything added afterwards is positional.
+    fn end_options(&mut self) -> &mut Self;
+}
+
+impl EndOfOptions for Command {
+    fn end_options(&mut self) -> &mut Self {
+        self.arg("--")
+    }
+}
+
 pub struct BorgClient {
     binary_path: PathBuf,
     passcommand: Option<String>,
@@ -231,7 +247,9 @@ impl BorgClient {
         passphrase: Option<&str>,
     ) -> Result<serde_json::Value> {
         let mut cmd = self.base_command_with(passphrase);
-        cmd.args(["info", "--json", &repo.location()]);
+        cmd.args(["info", "--json"])
+            .end_options()
+            .arg(repo.location());
         let output = self
             .run_checked(cmd, "info", Some(QUICK_OP_TIMEOUT_SECS))
             .await?;
@@ -246,7 +264,9 @@ impl BorgClient {
         passphrase: Option<&str>,
     ) -> Result<()> {
         let mut cmd = self.base_command_with(passphrase);
-        cmd.args(["key", "export", &repo.location()])
+        cmd.args(["key", "export"])
+            .end_options()
+            .arg(repo.location())
             .arg(destination);
         self.run_checked(cmd, "key export", Some(QUICK_OP_TIMEOUT_SECS))
             .await?;
@@ -260,7 +280,10 @@ impl BorgClient {
         passphrase: Option<&str>,
     ) -> Result<()> {
         let mut cmd = self.base_command_with(passphrase);
-        cmd.args(["key", "import", &repo.location()]).arg(source);
+        cmd.args(["key", "import"])
+            .end_options()
+            .arg(repo.location())
+            .arg(source);
         self.run_checked(cmd, "key import", Some(QUICK_OP_TIMEOUT_SECS))
             .await?;
         Ok(())
@@ -370,6 +393,7 @@ impl BorgClient {
         let mut cmd = self.base_command_with(passphrase);
         cmd.args(mode.args())
             .args(["--progress", "--log-json"])
+            .end_options()
             .arg(repo.location());
 
         tokio::time::timeout(
@@ -408,7 +432,7 @@ impl BorgClient {
         }
         cmd.args(upload_rate_args(profile));
 
-        cmd.arg(&archive);
+        cmd.end_options().arg(&archive);
         for path in &profile.source_paths {
             cmd.arg(path);
         }
@@ -435,7 +459,7 @@ impl BorgClient {
 
         let mut cmd = self.base_command_with(passphrase);
         cmd.args(["extract", "--progress", "--log-json"]);
-        cmd.arg(&archive);
+        cmd.end_options().arg(&archive);
         // Selective restore: borg matches positional PATHs using path-prefix
         // (`pp:`) style by default, which is a *literal* match — so a stored
         // path like `report?.txt` or `what's up?.txt` is matched exactly rather
@@ -469,7 +493,7 @@ impl BorgClient {
     ) -> Result<OpOutcome> {
         let mut cmd = self.base_command_with(passphrase);
         cmd.args(prune_args(retention, archive_glob));
-        cmd.arg(repo.location());
+        cmd.end_options().arg(repo.location());
 
         let output = self.run_checked(cmd, "prune", None).await?;
         // borg prune exits 1 (warning) for non-fatal issues; collect the plain
@@ -494,7 +518,9 @@ impl BorgClient {
         passphrase: Option<&str>,
     ) -> Result<()> {
         let mut cmd = self.base_command();
-        cmd.args(["init", "--encryption", encryption, &repo.location()]);
+        cmd.args(["init", "--encryption", encryption])
+            .end_options()
+            .arg(repo.location());
 
         if let Some(pass) = passphrase {
             cmd.env("BORG_PASSPHRASE", pass);
@@ -514,7 +540,7 @@ impl BorgClient {
     ) -> Result<()> {
         let archive = format!("{}::{}", repo.location(), archive_name);
         let mut cmd = self.base_command_with(passphrase);
-        cmd.args(["delete", &archive]);
+        cmd.arg("delete").end_options().arg(&archive);
         self.run_checked(cmd, "delete", Some(QUICK_OP_TIMEOUT_SECS))
             .await?;
         Ok(())
@@ -526,7 +552,9 @@ impl BorgClient {
         passphrase: Option<&str>,
     ) -> Result<Vec<ArchiveInfo>> {
         let mut cmd = self.base_command_with(passphrase);
-        cmd.args(["list", "--json", &repo.location()]);
+        cmd.args(["list", "--json"])
+            .end_options()
+            .arg(repo.location());
         let output = self
             .run_checked(cmd, "list", Some(QUICK_OP_TIMEOUT_SECS))
             .await?;
@@ -600,7 +628,9 @@ impl BorgClient {
         let archive = format!("{}::{}", repo.location(), archive_name);
 
         let mut cmd = self.base_command_with(passphrase);
-        cmd.args(["list", "--json-lines", &archive]);
+        cmd.args(["list", "--json-lines"])
+            .end_options()
+            .arg(&archive);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         // If the read loop times out (or the caller drops this future), the
         // child is dropped without an explicit wait — kill it then rather than
@@ -729,7 +759,9 @@ impl BorgClient {
         let archive_ref = format!("{}::{}", repo.location(), archive_a);
 
         let mut cmd = self.base_command_with(passphrase);
-        cmd.args(["diff", "--json-lines", &archive_ref, archive_b]);
+        cmd.args(["diff", "--json-lines"])
+            .end_options()
+            .args([archive_ref.as_str(), archive_b]);
         let output = self
             .run_checked(cmd, "diff", Some(LIST_CONTENTS_TIMEOUT_SECS))
             .await?;
@@ -751,7 +783,9 @@ impl BorgClient {
         let mut cmd = self.base_command_with(passphrase);
         // `--verbose` makes borg emit the "compaction freed about N" summary so
         // the UI can report how much space was reclaimed.
-        cmd.args(["compact", "--verbose", &repo.location()]);
+        cmd.args(["compact", "--verbose"])
+            .end_options()
+            .arg(repo.location());
         let output = self.run_checked(cmd, "compact", None).await?;
 
         // borg prints the freed-space line to stderr (info log); fall back to
@@ -1278,5 +1312,252 @@ mod tests {
             .await
             .expect("waiter should wake within timeout")
             .expect("waiter task should not panic");
+    }
+
+    /// Option-injection regression tests: run every borg subcommand against a
+    /// fake `borg` that records its argv, and prove the `--` end-of-options
+    /// separator immediately precedes the positional arguments. Unix-only
+    /// because the fake binary is a shell script; the argv construction under
+    /// test is platform-independent.
+    #[cfg(unix)]
+    mod end_of_options {
+        use super::*;
+        use crate::config::{BackupProfile, Compression, RetentionConfig};
+
+        /// Serialises these tests. On Linux a `fork` performed by one test can
+        /// inherit another test's still-open write fd to its script; the
+        /// subsequent `exec` of that script then fails with ETXTBSY.
+        static SPAWN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+        /// Write an executable fake `borg` that dumps its argv (one per line)
+        /// to `args.txt` and prints `{}` so JSON-parsing callers succeed.
+        fn fake_borg(dir: &Path) -> (PathBuf, PathBuf) {
+            use std::os::unix::fs::PermissionsExt;
+            let args_file = dir.join("args.txt");
+            let script = dir.join("fake-borg");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho '{{}}'\n",
+                    args_file.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (script, args_file)
+        }
+
+        fn recorded_args(path: &Path) -> Vec<String> {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        /// Assert that the recorded argv contains exactly one `--` and that
+        /// everything after it equals `positionals` — i.e. option parsing is
+        /// terminated before any value that could look like a flag.
+        fn assert_separator_then(args: &[String], positionals: &[&str]) {
+            let separators = args.iter().filter(|a| *a == "--").count();
+            assert_eq!(separators, 1, "expected exactly one `--` in argv: {args:?}");
+            let sep = args.iter().position(|a| a == "--").unwrap();
+            assert_eq!(
+                &args[sep + 1..],
+                positionals,
+                "positionals after `--` mismatch: {args:?}"
+            );
+        }
+
+        fn local_repo(path: &str) -> RepoConfig {
+            RepoConfig {
+                ssh_host: String::new(),
+                ssh_port: 0,
+                ssh_user: String::new(),
+                repo_path: path.into(),
+                ssh_key_path: None,
+            }
+        }
+
+        #[tokio::test]
+        async fn info_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            BorgClient::new(borg).info(&repo, None).await.unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo"]);
+        }
+
+        #[tokio::test]
+        async fn list_archives_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            BorgClient::new(borg)
+                .list_archives(&repo, None)
+                .await
+                .unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo"]);
+        }
+
+        #[tokio::test]
+        async fn list_contents_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            BorgClient::new(borg)
+                .list_contents(&repo, "arch", None)
+                .await
+                .unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo::arch"]);
+        }
+
+        #[tokio::test]
+        async fn delete_archive_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            BorgClient::new(borg)
+                .delete_archive(&repo, "arch", None)
+                .await
+                .unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo::arch"]);
+        }
+
+        #[tokio::test]
+        async fn prune_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            let retention = RetentionConfig {
+                keep_daily: Some(7),
+                ..Default::default()
+            };
+            BorgClient::new(borg)
+                .prune(&repo, &retention, "*", None)
+                .await
+                .unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo"]);
+        }
+
+        #[tokio::test]
+        async fn init_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            BorgClient::new(borg)
+                .init_repo(&repo, "repokey", None)
+                .await
+                .unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo"]);
+        }
+
+        #[tokio::test]
+        async fn compact_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            BorgClient::new(borg).compact(&repo, None).await.unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo"]);
+        }
+
+        #[tokio::test]
+        async fn check_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            let cancel = CancelToken::new();
+            BorgClient::new(borg)
+                .check(&repo, CheckMode::Repository, None, &cancel, |_| {})
+                .await
+                .unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo"]);
+        }
+
+        #[tokio::test]
+        async fn diff_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            BorgClient::new(borg)
+                .diff_archives(&repo, "a", "b", None)
+                .await
+                .unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo::a", "b"]);
+        }
+
+        #[tokio::test]
+        async fn key_export_and_import_separate_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            let key = dir.path().join("key.txt");
+            let client = BorgClient::new(borg);
+
+            client.export_key(&repo, &key, None).await.unwrap();
+            assert_separator_then(
+                &recorded_args(&args),
+                &["/tmp/repo", &key.display().to_string()],
+            );
+
+            client.import_key(&repo, &key, None).await.unwrap();
+            assert_separator_then(
+                &recorded_args(&args),
+                &["/tmp/repo", &key.display().to_string()],
+            );
+        }
+
+        #[tokio::test]
+        async fn create_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let profile = BackupProfile {
+                name: "test".into(),
+                source_paths: vec![PathBuf::from("data"), PathBuf::from("more")],
+                excludes: vec!["*.tmp".into()],
+                compression: Compression::default(),
+                repo: local_repo("/tmp/repo"),
+                upload_limit_kib: None,
+            };
+            let cancel = CancelToken::new();
+            BorgClient::new(borg)
+                .create(&profile, "arch", None, None, &cancel, |_| {})
+                .await
+                .unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo::arch", "data", "more"]);
+        }
+
+        #[tokio::test]
+        async fn extract_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            let repo = local_repo("/tmp/repo");
+            let cancel = CancelToken::new();
+            BorgClient::new(borg)
+                .extract(
+                    &repo,
+                    "arch",
+                    dir.path(),
+                    &["docs/file.txt".into()],
+                    None,
+                    &cancel,
+                    |_| {},
+                )
+                .await
+                .unwrap();
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo::arch", "docs/file.txt"]);
+        }
     }
 }
