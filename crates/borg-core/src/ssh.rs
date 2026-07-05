@@ -161,8 +161,17 @@ pub async fn generate_key(path: &Path, overwrite: bool) -> Result<PathBuf> {
 
     let private_tmp = path.with_extension("borgui-private.tmp");
     let public_tmp = path.with_extension("borgui-public.tmp");
+    // Create the private-key file empty and lock its permissions down BEFORE
+    // the key material is written, so the secret never sits on disk with the
+    // default (other-user-readable) mode/ACL. If permissions cannot be
+    // restricted, key generation must fail — remove the temp file and bail
+    // rather than leave behind a key other local users could read.
+    tokio::fs::write(&private_tmp, b"").await?;
+    if let Err(error) = restrict_private_key_permissions(&private_tmp).await {
+        let _ = tokio::fs::remove_file(&private_tmp).await;
+        return Err(error);
+    }
     tokio::fs::write(&private_tmp, private_text.as_bytes()).await?;
-    restrict_private_key_permissions(&private_tmp).await?;
     tokio::fs::write(&public_tmp, format!("{public_text}\n")).await?;
     if let Err(error) =
         commit_keypair(&private_tmp, &public_tmp, path, &public_path, overwrite).await
@@ -260,9 +269,93 @@ async fn restrict_private_key_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-async fn restrict_private_key_permissions(_path: &Path) -> Result<()> {
+/// Restrict a private-key file to the current user only: break ACL
+/// inheritance (removing the inherited `Users`/`Authenticated Users` read
+/// grants) and replace all access with a single full-control entry for the
+/// current user. This is the Windows equivalent of `chmod 600`.
+#[cfg(windows)]
+async fn restrict_private_key_permissions(path: &Path) -> Result<()> {
+    let sid = current_user_sid().await?;
+    // Grant by SID (`*S-1-...`), never by account name: localized Windows
+    // editions translate well-known account names, so a name-based grant
+    // breaks outside English locales. SIDs are locale-independent.
+    let output = proc::command("icacls")
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r", &format!("*{sid}:F")])
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(BorgError::CheckFailed {
+            message: format!(
+                "failed to restrict private key permissions on {:?}: icacls exited with {:?}: {}",
+                path,
+                output.status.code(),
+                stderr.trim()
+            ),
+        });
+    }
     Ok(())
+}
+
+/// Resolve the current user's SID via `whoami /user` (ships with every
+/// supported Windows, in System32).
+#[cfg(windows)]
+async fn current_user_sid() -> Result<String> {
+    let output = proc::command("whoami")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(BorgError::CheckFailed {
+            message: format!(
+                "failed to resolve current user SID: whoami exited with {:?}",
+                output.status.code()
+            ),
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_sid_from_whoami(&stdout).ok_or_else(|| BorgError::CheckFailed {
+        message: format!(
+            "failed to parse current user SID from whoami output: {}",
+            stdout.trim()
+        ),
+    })
+}
+
+/// Extract the `S-1-...` SID from `whoami /user /fo csv /nh` output
+/// (`"DOMAIN\user","S-1-5-21-..."`). Only the SID field is used, so the
+/// parse is independent of the account-name field and of locale.
+/// Un-gated so the parsing logic is unit-testable on every platform.
+#[cfg(any(windows, test))]
+fn parse_sid_from_whoami(output: &str) -> Option<String> {
+    let start = output.find("S-1-")?;
+    let tail = &output[start..];
+    let end = tail
+        .char_indices()
+        .skip(1)
+        .find(|(_, c)| !c.is_ascii_digit() && *c != '-')
+        .map(|(i, _)| i)
+        .unwrap_or(tail.len());
+    let sid = tail[..end].trim_end_matches('-');
+    // A real SID has sub-authorities beyond the bare "S-1-" prefix.
+    if sid.len() > 4 && sid.ends_with(|c: char| c.is_ascii_digit()) {
+        Some(sid.to_string())
+    } else {
+        None
+    }
+}
+
+/// Fail closed on platforms without an implementation: refusing to generate
+/// the key beats silently leaving it readable by other users.
+#[cfg(not(any(unix, windows)))]
+async fn restrict_private_key_permissions(path: &Path) -> Result<()> {
+    Err(BorgError::CheckFailed {
+        message: format!(
+            "cannot restrict private key permissions on {:?}: unsupported platform",
+            path
+        ),
+    })
 }
 
 pub async fn read_public_key(private_key_path: &Path) -> Result<String> {
@@ -312,6 +405,80 @@ mod tests {
             .await
             .unwrap();
         assert!(pub_content.contains("borgui-backup-key"));
+    }
+
+    #[test]
+    fn parses_sid_from_whoami_csv_output() {
+        let output =
+            "\"DESKTOP-ABC\\someuser\",\"S-1-5-21-1004336348-1177238915-682003330-1001\"\r\n";
+        assert_eq!(
+            parse_sid_from_whoami(output).as_deref(),
+            Some("S-1-5-21-1004336348-1177238915-682003330-1001")
+        );
+    }
+
+    #[test]
+    fn parses_sid_rejects_output_without_sid() {
+        assert_eq!(parse_sid_from_whoami("\"DESKTOP\\user\",\"\""), None);
+        assert_eq!(parse_sid_from_whoami("garbage"), None);
+        // A bare prefix with no sub-authorities is not a usable SID.
+        assert_eq!(parse_sid_from_whoami("\"u\",\"S-1-\""), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generated_private_key_has_owner_only_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("test_key");
+        generate_key(&key_path, false).await.unwrap();
+
+        let mode = tokio::fs::metadata(&key_path)
+            .await
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn current_user_sid_resolves() {
+        let sid = current_user_sid().await.unwrap();
+        assert!(sid.starts_with("S-1-"), "unexpected SID: {sid}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn restrict_permissions_fails_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does_not_exist");
+        assert!(restrict_private_key_permissions(&missing).await.is_err());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn generated_private_key_grants_only_current_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("test_key");
+        generate_key(&key_path, false).await.unwrap();
+
+        let output = proc::command("icacls")
+            .arg(&key_path)
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let listing = String::from_utf8_lossy(&output.stdout);
+        // Exactly one ACE — the current user's explicit full-control grant.
+        // Inherited entries (Users, SYSTEM, Administrators, ...) must be gone,
+        // and the DACL must survive the tmp-file rename into place.
+        let aces: Vec<&str> = listing.lines().filter(|l| l.contains(":(")).collect();
+        assert_eq!(aces.len(), 1, "expected exactly one ACE, got: {listing}");
+        assert!(
+            aces[0].contains("(F)") && !aces[0].contains("(I)"),
+            "expected an explicit (non-inherited) full-control ACE: {listing}"
+        );
     }
 
     #[tokio::test]
