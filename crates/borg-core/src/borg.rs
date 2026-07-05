@@ -1470,10 +1470,7 @@ mod tests {
                 .create(&profile, "arch", None, None, &cancel, |_| {})
                 .await
                 .unwrap();
-            assert_separator_then(
-                &recorded_args(&args),
-                &["/tmp/repo::arch", "data", "more"],
-            );
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo::arch", "data", "more"]);
         }
 
         #[tokio::test]
@@ -1495,10 +1492,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_separator_then(
-                &recorded_args(&args),
-                &["/tmp/repo::arch", "docs/file.txt"],
-            );
+            assert_separator_then(&recorded_args(&args), &["/tmp/repo::arch", "docs/file.txt"]);
         }
     }
 }
