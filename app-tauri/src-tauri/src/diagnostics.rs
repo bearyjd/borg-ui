@@ -216,25 +216,10 @@ fn validate_profile(profile: &Profile) -> Result<(), String> {
     if profile.id.trim().is_empty() || profile.name.trim().is_empty() {
         return Err("profile ids and names cannot be empty".into());
     }
-    profile.repo.validate().map_err(|e| e.to_string())?;
-    if let Some(secondary) = &profile.secondary_repo {
-        secondary.validate().map_err(|e| e.to_string())?;
-        if secondary.location() == profile.repo.location() {
-            return Err("secondary repository must differ from primary".into());
-        }
-    }
-    if !profile.backup_selection.source_paths.is_empty() {
-        borg_core::config::validate_source_paths(&profile.backup_selection.source_paths)
-            .map_err(|e| e.to_string())?;
-    }
-    borg_core::config::validate_exclude_patterns(&profile.backup_selection.excludes)
-        .map_err(|e| e.to_string())?;
-    if let Some(retention) = &profile.retention {
-        retention.validate().map_err(|e| e.to_string())?;
-    }
-    if let Some(schedule) = &profile.schedule {
-        schedule.schedule.validate().map_err(|e| e.to_string())?;
-    }
+    // Field-level validation (repo, secondary repo, selection, template,
+    // retention, schedule) lives on the profile itself so the settings-import
+    // path and the save path enforce identical rules.
+    profile.validate()?;
     crate::reporting::validate_preferences(profile)?;
     if matches!(
         profile.placeholder_policy.mode,

@@ -11,9 +11,10 @@ pub struct ArchiveEntry {
 }
 
 pub fn validate_restore_path(path: &str) -> Result<(), String> {
-    if path.trim().is_empty() {
-        return Err("restore path cannot be empty".into());
-    }
+    // Restore paths come from *inside* an archive, so a hostile archive could
+    // contain a filename like `--strip-components=99`; the central gate keeps
+    // option-like names out of borg's argv (and rejects empty paths).
+    crate::config::reject_option_like("restore path", path).map_err(|e| e.to_string())?;
     let bytes = path.as_bytes();
     let windows_absolute =
         bytes.get(1) == Some(&b':') || path.starts_with('\\') || path.starts_with('/');
@@ -116,6 +117,16 @@ not valid json
         assert!(validate_restore_path("../secret").is_err());
         assert!(validate_restore_path("/absolute").is_err());
         assert!(validate_restore_path(r"C:\absolute").is_err());
+    }
+
+    #[test]
+    fn restore_paths_reject_option_like_names() {
+        // An archive-internal filename must never be parseable as a borg flag.
+        assert!(validate_restore_path("--strip-components=99").is_err());
+        assert!(validate_restore_path("-evil").is_err());
+        assert!(validate_restore_path("").is_err());
+        // Interior dashes are still fine.
+        assert!(validate_restore_path("docs/my-file.txt").is_ok());
     }
 
     #[test]
