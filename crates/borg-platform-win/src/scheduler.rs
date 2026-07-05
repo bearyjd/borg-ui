@@ -99,7 +99,7 @@ fn task_xml(exe_path: &str, args: &str, schedule: &Schedule, wake_to_run: bool) 
 <Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\
 <Triggers>{trigger}</Triggers>\
 <Principals><Principal id=\"Author\"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\
-<Settings><WakeToRun>{wake_to_run}</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>\
+<Settings><StartWhenAvailable>true</StartWhenAvailable><WakeToRun>{wake_to_run}</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>\
 <Actions Context=\"Author\"><Exec><Command>{}</Command><Arguments>{}</Arguments></Exec></Actions>\
 </Task>",
         xml_escape(exe_path),
@@ -297,6 +297,26 @@ mod tests {
         assert!(xml.contains("<WakeToRun>true</WakeToRun>"));
         assert!(xml.contains("T02:05:00"));
         assert!(xml.contains("Borg &amp; UI"));
+    }
+
+    #[test]
+    fn task_xml_enables_catch_up_for_missed_runs() {
+        // <StartWhenAvailable> makes the Task Scheduler run a missed backup as
+        // soon as the machine becomes available (was asleep/off at trigger time).
+        for schedule in [Schedule::Hourly, Schedule::Daily { hour: 2, minute: 5 }] {
+            let xml = task_xml(
+                r"C:\Program Files\BorgUI\borg-ui.exe",
+                "--scheduled-backup",
+                &schedule,
+                true,
+            );
+            assert!(xml.contains("<StartWhenAvailable>true</StartWhenAvailable>"));
+            // Schema order within <Settings>: StartWhenAvailable precedes WakeToRun.
+            let start_pos = xml.find("<StartWhenAvailable>").unwrap();
+            let settings_pos = xml.find("<Settings>").unwrap();
+            let wake_pos = xml.find("<WakeToRun>").unwrap();
+            assert!(settings_pos < start_pos && start_pos < wake_pos);
+        }
     }
 
     #[test]
