@@ -389,7 +389,7 @@ async fn prune_and_delete_manage_archives() {
         keep_daily: Some(100),
         ..Default::default()
     };
-    let prune_warnings = client.prune(&repo, &retention, None).await.unwrap();
+    let prune_warnings = client.prune(&repo, &retention, "a*", None).await.unwrap();
     assert!(
         prune_warnings.warnings.is_empty(),
         "a keep-all prune should report no warnings"
@@ -401,6 +401,58 @@ async fn prune_and_delete_manage_archives() {
     let remaining = client.list_archives(&repo, None).await.unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].name, "a2");
+}
+
+/// Regression for the shared-repo data-loss bug: prune is scoped with
+/// `--glob-archives`, so applying one machine's retention policy never
+/// deletes archives another machine/profile created in the same repository.
+#[tokio::test]
+async fn scoped_prune_never_touches_other_machines_archives() {
+    use borg_core::config::RetentionConfig;
+
+    let client = borg_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_path = tmp.path().join("repo");
+    let src = tmp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("f.txt"), b"data").unwrap();
+
+    let repo = local_repo(&repo_path);
+    client.init_repo(&repo, "none", None).await.unwrap();
+    let prof = profile(repo.clone(), vec![PathBuf::from(".")], vec![]);
+    let cancel = CancelToken::new();
+    // Two archives from "machine one", one from "machine two".
+    for name in ["mach1-a", "mach1-b", "mach2-a"] {
+        client
+            .create(&prof, name, Some(&src), None, &cancel, |_| {})
+            .await
+            .unwrap();
+    }
+
+    // keep-hourly 1 with all archives in the same hour keeps only the newest
+    // mach1 archive — and must leave mach2's untouched.
+    let retention = RetentionConfig {
+        keep_hourly: Some(1),
+        ..Default::default()
+    };
+    client
+        .prune(&repo, &retention, "mach1-*", None)
+        .await
+        .unwrap();
+
+    let mut names: Vec<String> = client
+        .list_archives(&repo, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["mach1-b".to_string(), "mach2-a".to_string()],
+        "prune must apply retention only within its glob scope"
+    );
 }
 
 /// diff between two archives reports added / removed / modified paths.
