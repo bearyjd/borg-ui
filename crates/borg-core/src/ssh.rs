@@ -269,31 +269,43 @@ async fn restrict_private_key_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Restrict a private-key file to the current user only: break ACL
-/// inheritance (removing the inherited `Users`/`Authenticated Users` read
-/// grants) and replace all access with a single full-control entry for the
-/// current user. This is the Windows equivalent of `chmod 600`.
+/// Restrict a private-key file to the current user only: collapse the ACL
+/// down to zero entries and replace it with a single full-control grant for
+/// the current user. This is the Windows equivalent of `chmod 600`.
 #[cfg(windows)]
 async fn restrict_private_key_permissions(path: &Path) -> Result<()> {
     let sid = current_user_sid().await?;
+    // New files get explicit (non-inherited) ACEs for SYSTEM/Administrators
+    // from the creating process's default DACL, on top of whatever the
+    // parent directory inherits down. `/inheritance:r` alone only strips
+    // the inherited ACEs, leaving those explicit ones behind. `/reset`
+    // first collapses the ACL back to just-inherited defaults, then
+    // `/inheritance:r` strips those too, so the file has zero ACEs before
+    // we grant the sole entry we want.
     // Grant by SID (`*S-1-...`), never by account name: localized Windows
     // editions translate well-known account names, so a name-based grant
     // breaks outside English locales. SIDs are locale-independent.
-    let output = proc::command("icacls")
-        .arg(path)
-        .args(["/inheritance:r", "/grant:r", &format!("*{sid}:F")])
-        .output()
-        .await?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(BorgError::CheckFailed {
-            message: format!(
-                "failed to restrict private key permissions on {:?}: icacls exited with {:?}: {}",
-                path,
-                output.status.code(),
-                stderr.trim()
-            ),
-        });
+    for args in [
+        vec!["/reset".to_string()],
+        vec!["/inheritance:r".to_string()],
+        vec!["/grant:r".to_string(), format!("*{sid}:F")],
+    ] {
+        let output = proc::command("icacls")
+            .arg(path)
+            .args(&args)
+            .output()
+            .await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(BorgError::CheckFailed {
+                message: format!(
+                    "failed to restrict private key permissions on {:?}: icacls exited with {:?}: {}",
+                    path,
+                    output.status.code(),
+                    stderr.trim()
+                ),
+            });
+        }
     }
     Ok(())
 }
