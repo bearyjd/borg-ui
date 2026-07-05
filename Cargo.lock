@@ -425,6 +425,7 @@ name = "borg-platform-win"
 version = "0.3.0"
 dependencies = [
  "borg-core",
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",
