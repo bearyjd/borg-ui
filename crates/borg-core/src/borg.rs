@@ -479,11 +479,13 @@ impl BorgClient {
     /// Prunes archives per the retention policy, restricted to archives whose
     /// name matches `archive_glob` (borg 1.x `--glob-archives`).
     ///
-    /// The glob is mandatory: a borg repository is commonly shared by several
-    /// machines/profiles, and an unscoped `borg prune` applies one profile's
-    /// retention policy to *every* archive in the repository — silently
-    /// deleting other machines' backups. Callers that genuinely mean "the
-    /// whole repository" must pass `"*"` explicitly.
+    /// The glob is mandatory and must carry a discriminating prefix: a borg
+    /// repository is commonly shared by several machines/profiles, and an
+    /// unscoped `borg prune` applies one profile's retention policy to *every*
+    /// archive in the repository — silently deleting other machines' backups.
+    /// An empty glob or one starting with `*` is rejected here as a final
+    /// backstop; there is deliberately no whole-repository prune in this
+    /// client. Higher layers (`prune_scoped` in the app) derive safe globs.
     pub async fn prune(
         &self,
         repo: &RepoConfig,
@@ -491,6 +493,15 @@ impl BorgClient {
         archive_glob: &str,
         passphrase: Option<&str>,
     ) -> Result<OpOutcome> {
+        if archive_glob.is_empty() || archive_glob.starts_with('*') {
+            return Err(BorgError::InvalidConfig {
+                message: format!(
+                    "refusing to prune with unscoped archive glob {archive_glob:?}: \
+                     it would apply this retention policy to every archive in the \
+                     repository, including other machines' backups"
+                ),
+            });
+        }
         let mut cmd = self.base_command_with(passphrase);
         cmd.args(prune_args(retention, archive_glob));
         cmd.end_options().arg(repo.location());
@@ -998,8 +1009,8 @@ mod tests {
             keep_monthly: Some(4),
             keep_yearly: Some(5),
         };
-        let args = prune_args(&retention, "*");
-        assert_eq!(args[..3], ["prune", "--glob-archives", "*"]);
+        let args = prune_args(&retention, "mybox-default-*");
+        assert_eq!(args[..3], ["prune", "--glob-archives", "mybox-default-*"]);
         for (flag, n) in [
             ("--keep-hourly", "1"),
             ("--keep-daily", "2"),
@@ -1167,6 +1178,32 @@ mod tests {
         let envs: Vec<_> = cmd.as_std().get_envs().collect();
         let passcommand = envs.iter().find(|(k, _)| *k == "BORG_PASSCOMMAND");
         assert!(passcommand.is_none());
+    }
+
+    #[tokio::test]
+    async fn prune_refuses_unscoped_archive_globs() {
+        // Final backstop for the shared-repo data-loss bug: even if a future
+        // caller bypasses prune_scoped, the client itself must never issue a
+        // prune that can match every archive in the repository. The binary
+        // path is nonexistent on purpose — rejection must happen before any
+        // process is spawned.
+        let client = BorgClient::new(PathBuf::from("/nonexistent/borg"));
+        let retention = crate::config::RetentionConfig {
+            keep_daily: Some(7),
+            ..Default::default()
+        };
+        for glob in ["", "*", "*-default"] {
+            let err = client
+                .prune(&test_repo(), &retention, glob, None)
+                .await
+                .expect_err("unscoped glob must be rejected");
+            match err {
+                BorgError::InvalidConfig { message } => {
+                    assert!(message.contains("unscoped archive glob"), "{message}");
+                }
+                other => panic!("expected InvalidConfig, got {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -1439,7 +1476,7 @@ mod tests {
                 ..Default::default()
             };
             BorgClient::new(borg)
-                .prune(&repo, &retention, "*", None)
+                .prune(&repo, &retention, "mybox-default-*", None)
                 .await
                 .unwrap();
             assert_separator_then(&recorded_args(&args), &["/tmp/repo"]);
