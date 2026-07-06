@@ -253,6 +253,23 @@ mod tests {
     }
 
     #[test]
+    fn colliding_slugs_share_a_prune_scope() {
+        // Documented limitation: slugify maps distinct raw names onto the same
+        // slug ("Work Laptop" and "work?laptop" both scope as one prefix on a
+        // shared repo — but note slugs are case-sensitive, so "Work Laptop"
+        // and "work laptop" do NOT collide). Machines/profiles whose slugs
+        // collide share one prune scope and one retention policy. This is a
+        // narrowing-only hazard within the shared prefix, never a widening to
+        // unrelated archives; users avoid it by choosing distinct names.
+        let a = prune_glob(DEFAULT_TEMPLATE, "my box", "Work Laptop").unwrap();
+        let b = prune_glob(DEFAULT_TEMPLATE, "my?box", "Work?Laptop").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, "my-box-Work-Laptop-*-*");
+        let c = prune_glob(DEFAULT_TEMPLATE, "my box", "work laptop").unwrap();
+        assert_ne!(a, c, "case differences keep scopes distinct");
+    }
+
+    #[test]
     fn legacy_default_names_are_detected() {
         assert!(is_legacy_default_archive_name("2026-05-24T143015-ab12"));
         assert!(is_legacy_default_archive_name("2024-01-01T000000-FFFF"));
