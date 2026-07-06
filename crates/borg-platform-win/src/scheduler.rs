@@ -32,64 +32,54 @@ pub async fn schedule_backup(
     validate_schtasks_input(args, "args")?;
     schedule.validate()?;
 
-    if wake_to_run {
-        let xml = task_xml(exe_path, args, schedule, true);
-        let path = std::env::temp_dir().join(format!(
-            "borgui-task-{}-{}.xml",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        tokio::fs::write(&path, xml).await?;
-        let output = tokio::process::Command::new("schtasks")
-            .args(["/Create", "/F", "/TN", task_name, "/XML"])
-            .arg(&path)
-            .output()
-            .await;
-        let _ = tokio::fs::remove_file(path).await;
-        let output = output?;
-        if output.status.success() {
-            return Ok(());
-        }
-        return Err(BorgError::ProcessFailed {
-            message: "schtasks XML registration failed".into(),
-            exit_code: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).into(),
-        });
+    // Always register via an XML task definition rather than the `/SC ...`
+    // flag shorthand. The flag-based form cannot express
+    // <StartWhenAvailable>, which is what makes Task Scheduler run a backup
+    // that was missed because the PC was asleep or off as soon as it becomes
+    // available again, instead of silently waiting for the next slot.
+    let xml = task_xml(exe_path, args, schedule, wake_to_run);
+    let path = std::env::temp_dir().join(format!(
+        "borgui-task-{}-{}.xml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    tokio::fs::write(&path, xml).await?;
+    let output = tokio::process::Command::new("schtasks")
+        .args(["/Create", "/F", "/TN", task_name, "/XML"])
+        .arg(&path)
+        .output()
+        .await;
+    let _ = tokio::fs::remove_file(path).await;
+    let output = output?;
+    if output.status.success() {
+        return Ok(());
     }
-
-    let mut cmd = tokio::process::Command::new("schtasks");
-    cmd.args(["/Create", "/F"])
-        .args(["/TN", task_name])
-        .args(["/TR", &format!("\"{}\" {}", exe_path, args)]);
-
-    match schedule {
-        Schedule::Hourly => {
-            cmd.args(["/SC", "HOURLY"]).args(["/MO", "1"]);
-        }
-        Schedule::Daily { hour, minute } => {
-            cmd.args(["/SC", "DAILY"]).args(["/MO", "1"]);
-            cmd.args(["/ST", &format!("{:02}:{:02}", hour, minute)]);
-        }
-    }
-
-    let output = cmd.output().await?;
-    if !output.status.success() {
-        return Err(BorgError::ProcessFailed {
-            message: "schtasks failed".into(),
-            exit_code: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).into(),
-        });
-    }
-
-    Ok(())
+    Err(BorgError::ProcessFailed {
+        message: "schtasks XML registration failed".into(),
+        exit_code: output.status.code(),
+        stderr: String::from_utf8_lossy(&output.stderr).into(),
+    })
 }
 
 fn task_xml(exe_path: &str, args: &str, schedule: &Schedule, wake_to_run: bool) -> String {
     let trigger = match schedule {
-        Schedule::Hourly => "<TimeTrigger><StartBoundary>2026-01-01T00:00:00</StartBoundary><Repetition><Interval>PT1H</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><Enabled>true</Enabled></TimeTrigger>".to_string(),
+        Schedule::Hourly => {
+            // Anchor to the current local time, matching the plain
+            // `schtasks /SC HOURLY /MO 1` default (no /ST): the task fires
+            // every hour offset by whatever minute:second it's registered at,
+            // not aligned to the top of the hour. The frontend depends on
+            // this exact semantic -- see the `nextRun` doc comment in
+            // app-tauri/src/lib/stores/schedule.svelte.ts, which can't
+            // predict the exact minute and shows "Every hour" instead of a
+            // clock time for that reason.
+            let start = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
+            format!(
+                "<TimeTrigger><StartBoundary>{start}</StartBoundary><Repetition><Interval>PT1H</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><Enabled>true</Enabled></TimeTrigger>"
+            )
+        }
         Schedule::Daily { hour, minute } => format!(
             "<CalendarTrigger><StartBoundary>2026-01-01T{hour:02}:{minute:02}:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay><Enabled>true</Enabled></CalendarTrigger>"
         ),
@@ -99,7 +89,7 @@ fn task_xml(exe_path: &str, args: &str, schedule: &Schedule, wake_to_run: bool) 
 <Task version=\"1.4\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\
 <Triggers>{trigger}</Triggers>\
 <Principals><Principal id=\"Author\"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\
-<Settings><WakeToRun>{wake_to_run}</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>\
+<Settings><StartWhenAvailable>true</StartWhenAvailable><WakeToRun>{wake_to_run}</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>\
 <Actions Context=\"Author\"><Exec><Command>{}</Command><Arguments>{}</Arguments></Exec></Actions>\
 </Task>",
         xml_escape(exe_path),
@@ -297,6 +287,76 @@ mod tests {
         assert!(xml.contains("<WakeToRun>true</WakeToRun>"));
         assert!(xml.contains("T02:05:00"));
         assert!(xml.contains("Borg &amp; UI"));
+    }
+
+    #[test]
+    fn task_xml_enables_catch_up_for_missed_runs() {
+        // <StartWhenAvailable> makes the Task Scheduler run a missed backup as
+        // soon as the machine becomes available (was asleep/off at trigger
+        // time). This must hold for every registration -- wake-to-run and
+        // plain alike, since `schedule_backup` now always goes through XML.
+        for wake_to_run in [true, false] {
+            for schedule in [Schedule::Hourly, Schedule::Daily { hour: 2, minute: 5 }] {
+                let xml = task_xml(
+                    r"C:\Program Files\BorgUI\borg-ui.exe",
+                    "--scheduled-backup",
+                    &schedule,
+                    wake_to_run,
+                );
+                assert!(xml.contains("<StartWhenAvailable>true</StartWhenAvailable>"));
+                assert!(xml.contains(&format!("<WakeToRun>{wake_to_run}</WakeToRun>")));
+                // Schema order within <Settings>: StartWhenAvailable precedes WakeToRun.
+                let start_pos = xml.find("<StartWhenAvailable>").unwrap();
+                let settings_pos = xml.find("<Settings>").unwrap();
+                let wake_pos = xml.find("<WakeToRun>").unwrap();
+                assert!(settings_pos < start_pos && start_pos < wake_pos);
+            }
+        }
+    }
+
+    #[test]
+    fn non_wake_task_xml_preserves_trigger_semantics() {
+        // Registering without wake-to-run must still preserve the same
+        // trigger behavior the old flag-based `/SC ...` path had: an exact
+        // daily time, and an hourly repetition anchored to "now" (matching
+        // `/SC HOURLY /MO 1` with no `/ST`, which starts from the moment the
+        // task is created rather than the top of the hour).
+        let daily_xml = task_xml(
+            r"C:\Program Files\BorgUI\borg-ui.exe",
+            "--scheduled-backup",
+            &Schedule::Daily { hour: 2, minute: 5 },
+            false,
+        );
+        assert!(daily_xml.contains("<CalendarTrigger>"));
+        assert!(daily_xml.contains("T02:05:00"));
+        assert!(daily_xml.contains("<WakeToRun>false</WakeToRun>"));
+
+        let hourly_xml = task_xml(
+            r"C:\Program Files\BorgUI\borg-ui.exe",
+            "--scheduled-backup",
+            &Schedule::Hourly,
+            false,
+        );
+        assert!(hourly_xml.contains("<TimeTrigger>"));
+        assert!(hourly_xml.contains("<Interval>PT1H</Interval>"));
+        assert!(hourly_xml.contains("<WakeToRun>false</WakeToRun>"));
+
+        // StartBoundary should be anchored to "now" (small tolerance for test
+        // execution time), not a fixed date, so the hourly repeat lands on
+        // the same minute:second as when the task was registered.
+        let start = hourly_xml
+            .split("<StartBoundary>")
+            .nth(1)
+            .and_then(|s| s.split("</StartBoundary>").next())
+            .expect("StartBoundary present");
+        let parsed = chrono::NaiveDateTime::parse_from_str(start, "%Y-%m-%dT%H:%M:%S")
+            .expect("StartBoundary is a valid local datetime");
+        let now = chrono::Local::now().naive_local();
+        let diff = (now - parsed).num_seconds().abs();
+        assert!(
+            diff < 10,
+            "StartBoundary {start} not close to now (diff {diff}s)"
+        );
     }
 
     #[test]
