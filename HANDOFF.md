@@ -170,29 +170,63 @@ Still required before publishing:
 
 A read-only features/UI/security audit of 0.3.0-dev ran this pass. The codebase is
 well-built (complete v0.3 feature set, parameterized SQL, secrets in Credential
-Manager, correct `unsafe` FFI, signed updater, minimal capabilities). Two findings
-are **candidate release blockers** on par with #85/#86:
+Manager, correct `unsafe` FFI, signed updater, minimal capabilities). At the time
+this section was written, two findings were flagged as **candidate release
+blockers** on par with #85/#86, plus a HIGH tier below them. **All of those items
+have since been fixed except one; status below verified against `git log` on
+2026-07-07 — see `.agent_native/agent_roadmap.md` item 1 for the full
+cross-check.**
 
-1. **🔴 SSH argument-injection → RCE.** `SSH_FORBIDDEN` blocks metacharacters but
-   NOT a leading `-`, so `ssh_user = -oProxyCommand=calc.exe` reaches `ssh` as an
-   executed option. It passes `validate()` and is reachable by **importing a
-   malicious profile**; `test_ssh_connection` validates nothing.
-   `crates/borg-core/src/config.rs:15-17,61-70`, `ssh.rs:19-28`, `commands.rs:133-144`.
-   Fix: reject a leading `-` in host/user; validate in the test path.
-2. **🔴 Cross-profile prune data loss.** Auto-prune after every backup passes no
-   `--glob-archives` (`crates/borg-core/src/borg.rs:455-496`); two profiles/machines
-   sharing a repo prune each other's archives. Fix: scope prune to the archive glob.
+**Note for future readers:** before trusting any "still open" claim below,
+run `git log --oneline -- <the cited file>` for the referenced path/line range —
+this section had already gone stale once (see the audit-staleness note at the
+top of `CLAUDE.md`).
 
-Next tier (HIGH): no `--` end-of-options before borg positional paths
-(`borg.rs:411-414,446-448`); no passphrase rotation + `set_repo_passphrase` can
-desync Credential Manager from the repo (`commands.rs:1757`); generated SSH key not
-ACL-restricted on Windows (`ssh.rs:256-266`); no missed-backup catch-up
-(`<StartWhenAvailable>` missing, `scheduler.rs:97-108`); undefined `--color-error`
-CSS token → a failed integrity check renders gray not red
-(`IntegritySection.svelte:135`); no keyboard focus styles anywhere (WCAG).
+1. **✅ FIXED — SSH argument-injection → RCE.** `SSH_FORBIDDEN` blocked
+   metacharacters but not a leading `-`, so `ssh_user = -oProxyCommand=calc.exe`
+   reached `ssh` as an executed option, reachable via **importing a malicious
+   profile**; `test_ssh_connection` validated nothing.
+   Fixed by `9257b75` — added the `reject_option_like` gate
+   (`crates/borg-core/src/config.rs:25-36`), wired into `RepoConfig::validate()`
+   and independently into `test_ssh_connection`
+   (`app-tauri/src-tauri/src/commands.rs:142-157`).
+2. **✅ FIXED — Cross-profile prune data loss.** Auto-prune after every backup
+   passed no `--glob-archives`, so two profiles/machines sharing a repo could
+   prune each other's archives. Fixed by `85a5ea1` (scope prune to the archive
+   glob) plus `61831c2` (backstop rejecting unscoped globs — see
+   `prune_refuses_unscoped_archive_globs` test at
+   `crates/borg-core/src/borg.rs:1184`).
 
-Full Top-10 + detail in the `borgui-audit-2026-07` memory. **All audit items are
-findings only — nothing implemented.**
+Former HIGH tier:
+
+- **✅ FIXED — no `--` end-of-options before borg positional paths.** Fixed as
+  part of `9257b75` (same commit as #1 above) — every borg subcommand now calls
+  `.end_options()` before positional args (`crates/borg-core/src/borg.rs:123-137`,
+  the `EndOfOptions` trait).
+- **🟡 STILL OPEN — no passphrase rotation + `set_repo_passphrase` can desync
+  Credential Manager from the repo** (`app-tauri/src-tauri/src/commands.rs:1798`).
+  `set_repo_passphrase` only overwrites the Credential Manager entry; there is
+  still no `borg key change-passphrase` (or equivalent) call anywhere in the
+  codebase, so calling it without also rotating the repo's actual passphrase
+  desyncs the two. Confirmed still absent via `grep -rn
+  "change-passphrase\|change_passphrase" crates/ app-tauri/` on 2026-07-07.
+- **✅ FIXED — generated SSH key not ACL-restricted on Windows.** Fixed by
+  `a5a8bf0` (fail-closed ACL restriction on generated SSH private keys).
+- **✅ FIXED — no missed-backup catch-up** (`<StartWhenAvailable>` missing).
+  Fixed by `4a7278a` — adds `<StartWhenAvailable>true</StartWhenAvailable>` to
+  generated Task Scheduler XML and routes non-wake tasks through XML too, so
+  catch-up applies to all schedules, not just wake-to-run ones.
+- **✅ FIXED — undefined `--color-error` CSS token** (failed integrity check
+  rendered gray not red). Fixed by `61d0bc4` (defines `--color-error`,
+  `--space-5`, `--color-surface-raised`).
+- **🟡 STILL OPEN — no keyboard focus styles anywhere (WCAG).** No
+  `:focus-visible` rule found in `app-tauri/src/app.css`; the only `:focus`
+  selector in the frontend is a single `.profile-picker select:focus` rule in
+  `app-tauri/src/routes/+layout.svelte:198`, which doesn't cover the rest of the
+  interactive surface. Not part of the original two-item "still open" tally
+  below — added here since this pass found it unresolved too.
+
+Full Top-10 + detail in the `borgui-audit-2026-07` memory.
 
 Useful entry points:
 
