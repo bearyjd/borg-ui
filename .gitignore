@@ -21,6 +21,9 @@ Thumbs.db
 # Binaries
 app-tauri/src-tauri/binaries/
 
+# Fetched test-only borg binary (scripts/fetch-borg-linux.sh)
+.cache/
+
 # Environment
 .env
 .env.*

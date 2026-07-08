@@ -119,6 +119,15 @@ green. To run them, point `BORG_TEST_BIN` at a borg executable:
 BORG_TEST_BIN=/path/to/borg cargo test -p borg-core --test e2e_backup_restore -- --nocapture
 ```
 
+If you don't already have `borg` installed (e.g. in a sandbox with no package
+manager access), `scripts/fetch-borg-linux.sh` downloads a pinned, checksum-verified
+borgbackup Linux static binary into `.cache/borg-test-bin/`:
+
+```bash
+scripts/fetch-borg-linux.sh
+BORG_TEST_BIN=$(pwd)/.cache/borg-test-bin/borg cargo test -p borg-core --test e2e_backup_restore -- --nocapture
+```
+
 A local on-disk repository is used, so no SSH server is needed — the same code
 path the app uses for "Local folder / USB drive" repos.
 
