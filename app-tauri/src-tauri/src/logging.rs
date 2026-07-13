@@ -47,7 +47,11 @@ pub fn initialize(log_dir: &Path) -> Result<(), String> {
                 // matched here by directive-prefix luck) — borg-core, where the
                 // actual backup/restore/SSH logging lives (borg.rs, ssh.rs), was
                 // never enabled and silently dropped everything below ERROR.
-                .add_directive("borg_ui_lib=debug".parse().expect("valid tracing directive"))
+                .add_directive(
+                    "borg_ui_lib=debug"
+                        .parse()
+                        .expect("valid tracing directive"),
+                )
                 .add_directive("borg_core=debug".parse().expect("valid tracing directive")),
         )
         .with_writer(RedactingMakeWriter { inner: appender })
