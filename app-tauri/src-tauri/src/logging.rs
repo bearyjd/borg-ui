@@ -41,7 +41,14 @@ pub fn initialize(log_dir: &Path) -> Result<(), String> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::from_default_env()
-                .add_directive("borg_ui=debug".parse().expect("valid tracing directive")),
+                // Without RUST_LOG set, unmatched targets default to ERROR-only.
+                // The old single directive ("borg_ui=debug") only covered this
+                // crate (whose real name is `borg_ui_lib` per src-tauri/Cargo.toml,
+                // matched here by directive-prefix luck) — borg-core, where the
+                // actual backup/restore/SSH logging lives (borg.rs, ssh.rs), was
+                // never enabled and silently dropped everything below ERROR.
+                .add_directive("borg_ui_lib=debug".parse().expect("valid tracing directive"))
+                .add_directive("borg_core=debug".parse().expect("valid tracing directive")),
         )
         .with_writer(RedactingMakeWriter { inner: appender })
         .try_init()
