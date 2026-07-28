@@ -4,6 +4,9 @@
   import { onMount } from 'svelte';
   import { repoState, isLocalRepo, type RepoConfig } from '$lib/stores/repo.svelte';
   import { profilesState } from '$lib/stores/profiles.svelte';
+  import { parseRepoUrl, type ParsedRepoUrl } from '$lib/repo-url';
+  import { explainConnectionError, type HintContext } from '$lib/connection-hints';
+  import { formatBytes } from '$lib/format';
   import FieldHelp from '$lib/components/FieldHelp.svelte';
   import ProfilesSection from '$lib/components/settings/ProfilesSection.svelte';
   import ArchiveNamingSection from '$lib/components/settings/ArchiveNamingSection.svelte';
@@ -36,6 +39,16 @@
   let testResult = $state('');
   let saveResult = $state('');
   let connectionStage = $state('');
+
+  // Plain-language hints derived from raw error text, shown under the
+  // corresponding raw error so non-experts know what to try next.
+  let testHint = $state('');
+  let hostCheckHint = $state('');
+  let keyCheckHint = $state('');
+  let initHint = $state('');
+  let passphraseHint = $state('');
+  // Set when a pasted ssh:// or user@host address was auto-split into fields.
+  let autofillNote = $state('');
 
   // Per-field pre-flight checks (Host reachability, SSH key validity).
   let hostCheckResult = $state('');
@@ -147,10 +160,66 @@
     hostCheckResult = '';
     testResult = '';
     saveResult = '';
+    testHint = '';
+    hostCheckHint = '';
+    autofillNote = '';
+    repoSummary = null;
+    repoCheckError = '';
+    repoCheckHint = '';
+  }
+
+  /** Plain-language suggestion for a raw ssh/borg error, or '' if unknown. */
+  function hintFor(e: unknown, contexts: HintContext[]): string {
+    return explainConnectionError(String(e), contexts) ?? '';
+  }
+
+  /** Hint contexts for operations on the configured repository. */
+  function repoContexts(): HintContext[] {
+    return repoType === 'ssh' ? ['ssh', 'repo'] : ['repo'];
+  }
+
+  function applyParsedUrl(parsed: ParsedRepoUrl) {
+    sshHost = parsed.host;
+    const filled: string[] = [];
+    if (parsed.user) {
+      sshUser = parsed.user;
+      filled.push('username');
+    }
+    if (parsed.port) {
+      sshPort = parsed.port;
+      filled.push('port');
+    }
+    if (parsed.path) {
+      repoPath = parsed.path;
+      filled.push('repository folder');
+    }
+    autofillNote = filled.length > 0
+      ? `That looked like a full repository address — the ${filled.join(', ').replace(/, ([^,]*)$/, ' and $1')} ${filled.length > 1 ? 'were' : 'was'} filled in for you. Double-check the fields below.`
+      : '';
+  }
+
+  function onHostPaste(e: ClipboardEvent) {
+    const text = e.clipboardData?.getData('text') ?? '';
+    const parsed = parseRepoUrl(text);
+    if (!parsed) return;
+    e.preventDefault();
+    clearConnectionResults();
+    applyParsedUrl(parsed);
+  }
+
+  // Catch typed-in (not pasted) combined addresses once the field loses focus,
+  // so we never rewrite the value mid-keystroke.
+  function onHostBlur() {
+    const parsed = parseRepoUrl(sshHost);
+    if (parsed && parsed.host !== sshHost.trim()) {
+      clearConnectionResults();
+      applyParsedUrl(parsed);
+    }
   }
 
   function clearKeyResult() {
     keyCheckResult = '';
+    keyCheckHint = '';
     keyPublicKey = '';
     copyKeyResult = '';
     copyInstallCommandResult = '';
@@ -207,6 +276,7 @@
     passphraseInput = '';
     passphraseConfirm = '';
     passphraseResult = '';
+    passphraseHint = '';
     passphraseModalOpen = true;
   }
 
@@ -234,6 +304,7 @@
       passphraseResult = 'Passphrase saved to system keychain.';
     } catch (e) {
       passphraseResult = `Failed to save passphrase: ${e}`;
+      passphraseHint = hintFor(e, repoContexts());
     } finally {
       passphraseSaving = false;
     }
@@ -256,6 +327,78 @@
     } finally {
       clearPassphraseModalOpen = false;
     }
+  }
+
+  // Vorta-style "what's actually in this repository" summary, populated by
+  // checkRepository() after a successful verify or on demand.
+  interface RepoSummary {
+    encryption: string;
+    totalSize: number | null;
+    compressedSize: number | null;
+    dedupSize: number | null;
+    archiveCount: number;
+    latestArchive: { name: string; start: string } | null;
+  }
+
+  interface BorgStats {
+    total_size?: number;
+    total_csize?: number;
+    unique_csize?: number;
+  }
+
+  interface BorgInfoPayload {
+    encryption?: { mode?: string };
+    cache?: { stats?: BorgStats };
+    // Some borg versions report stats here instead of under cache — the
+    // backend (get_repo_info) reads both locations too.
+    repository?: { stats?: BorgStats };
+  }
+
+  interface ArchiveEntry {
+    name: string;
+    start: string;
+    id: string;
+  }
+
+  let repoSummary = $state<RepoSummary | null>(null);
+  let repoChecking = $state(false);
+  let repoCheckError = $state('');
+  let repoCheckHint = $state('');
+
+  async function checkRepository() {
+    repoChecking = true;
+    repoCheckError = '';
+    repoCheckHint = '';
+    repoSummary = null;
+    try {
+      const repo = buildRepoConfig();
+      const info = await invoke<BorgInfoPayload>('get_repo_info', { repo });
+      const archives = await invoke<ArchiveEntry[]>('list_archives', { repo });
+      const stats = info.cache?.stats ?? info.repository?.stats;
+      // Don't trust list order for "latest" — pick by start timestamp
+      // (ISO 8601 strings, so lexicographic comparison is chronological).
+      const latest = archives.length > 0
+        ? archives.reduce((a, b) => (a.start > b.start ? a : b))
+        : null;
+      repoSummary = {
+        encryption: info.encryption?.mode ?? 'unknown',
+        totalSize: stats?.total_size ?? null,
+        compressedSize: stats?.total_csize ?? null,
+        dedupSize: stats?.unique_csize ?? null,
+        archiveCount: archives.length,
+        latestArchive: latest ? { name: latest.name, start: latest.start } : null,
+      };
+    } catch (e) {
+      repoCheckError = `Could not read the repository: ${e}`;
+      repoCheckHint = hintFor(e, repoContexts());
+    } finally {
+      repoChecking = false;
+    }
+  }
+
+  function formatArchiveTime(start: string): string {
+    const parsed = new Date(start);
+    return Number.isNaN(parsed.getTime()) ? start : parsed.toLocaleString();
   }
 
   let hasPassphrase = $state(false);
@@ -302,6 +445,11 @@
       sshUser = r.ssh_user;
       repoPath = r.repo_path;
       sshKeyPath = r.ssh_key_path ?? '';
+      // The form now describes a (possibly) different destination — any
+      // repository summary or check result on screen belongs to the old one.
+      repoSummary = null;
+      repoCheckError = '';
+      repoCheckHint = '';
     }
   });
 
@@ -325,10 +473,17 @@
       connectionStage = 'Saving connection…';
       await repoState.save(buildRepoConfig(), { connectionVerified: true });
       testResult = 'Connection verified and saved.';
+      testHint = '';
+      connectionStage = 'Reading repository…';
+      await checkRepository();
     } catch (e) {
-      testResult = connectionStage === 'Saving connection…'
-        ? `Connection worked, but settings could not be saved: ${e}`
-        : `Could not sign in: ${e}`;
+      if (connectionStage === 'Saving connection…') {
+        testResult = `Connection worked, but settings could not be saved: ${e}`;
+        testHint = '';
+      } else {
+        testResult = `Could not sign in: ${e}`;
+        testHint = hintFor(e, ['ssh', 'key']);
+      }
     } finally {
       connectionStage = '';
       testing = false;
@@ -339,12 +494,14 @@
   async function checkHost(): Promise<boolean> {
     connectionStage = 'Checking server address…';
     hostCheckResult = '';
+    hostCheckHint = '';
     try {
       await invoke('check_host_reachable', { host: sshHost, port: sshPort });
       hostCheckResult = `Server is reachable on port ${sshPort}.`;
       return true;
     } catch (e) {
       hostCheckResult = `Could not reach this server: ${e}`;
+      hostCheckHint = hintFor(e, ['ssh']);
       return false;
     }
   }
@@ -353,6 +510,7 @@
     connectionStage = 'Checking private key…';
     keyChecking = true;
     keyCheckResult = '';
+    keyCheckHint = '';
     keyPublicKey = '';
     try {
       keyPublicKey = await invoke<string>('validate_ssh_key', { keyPath: sshKeyPath });
@@ -360,6 +518,7 @@
       return true;
     } catch (e) {
       keyCheckResult = `This key cannot be used: ${e}`;
+      keyCheckHint = hintFor(e, ['key']);
       return false;
     } finally {
       connectionStage = '';
@@ -382,6 +541,7 @@
 
   async function initRepo() {
     initResult = '';
+    initHint = '';
     if (needsPassphrase) {
       if (!initPassphrase) {
         initResult = 'Passphrase required for this encryption mode.';
@@ -406,6 +566,7 @@
       await refreshPassphraseStatus();
     } catch (e) {
       initResult = `Init failed: ${e}`;
+      initHint = hintFor(e, repoContexts());
     } finally {
       initing = false;
     }
@@ -450,7 +611,7 @@
           class:active={repoType === 'ssh'}
           role="radio"
           aria-checked={repoType === 'ssh'}
-          onclick={() => (repoType = 'ssh')}
+          onclick={() => { repoType = 'ssh'; clearConnectionResults(); }}
         >
           <span class="repo-type-title">Backup server (SSH)</span>
           <span class="repo-type-sub">A remote server you connect to over the internet.</span>
@@ -461,7 +622,7 @@
           class:active={repoType === 'local'}
           role="radio"
           aria-checked={repoType === 'local'}
-          onclick={() => (repoType = 'local')}
+          onclick={() => { repoType = 'local'; clearConnectionResults(); }}
         >
           <span class="repo-type-title">Local folder / USB / network drive</span>
           <span class="repo-type-sub">A folder on this PC, an external/USB drive, or a network share. No server needed.</span>
@@ -472,7 +633,7 @@
         <div class="field">
           <label for="local-path">Backup folder path</label>
           <div class="inline-row">
-            <input id="local-path" type="text" bind:value={repoPath} placeholder="E:\Backups\her-pc" />
+            <input id="local-path" type="text" bind:value={repoPath} oninput={clearConnectionResults} placeholder="E:\Backups\her-pc" />
             <button type="button" class="btn btn-secondary" onclick={browseLocalRepoFolder}>Browse…</button>
           </div>
           <FieldHelp
@@ -498,6 +659,8 @@
               type="text"
               bind:value={sshHost}
               oninput={clearConnectionResults}
+              onpaste={onHostPaste}
+              onblur={onHostBlur}
               placeholder="backup.example.com"
               autocomplete="off"
               spellcheck="false"
@@ -520,11 +683,21 @@
           </div>
         </div>
         <div id="ssh-host-help">
-          <FieldHelp text="Enter only the hostname or IP address. Keep port 22 unless your server provider gave you a different port." />
+          <FieldHelp
+            text="Enter the hostname or IP address. Keep port 22 unless your server provider gave you a different port. You can also paste a full address like ssh://borg@192.168.1.12/backups/laptop — the other fields fill in automatically."
+            examples={[
+              { input: 'backup.example.com' },
+              { input: '192.168.1.12' },
+            ]}
+          />
         </div>
+        {#if autofillNote}
+          <div class="field-result info" role="status">{autofillNote}</div>
+        {/if}
         {#if hostCheckResult}
           <div class="field-result" role="status" class:success={hostCheckResult.startsWith('Server is')} class:error={hostCheckResult.startsWith('Could not')}>
             {hostCheckResult}
+            {#if hostCheckHint}<span class="result-hint">{hostCheckHint}</span>{/if}
           </div>
         {/if}
 
@@ -542,7 +715,13 @@
             required
           />
           <div id="ssh-user-help">
-            <FieldHelp text="The login name provided by your server host. This is often “borg”, but it is not necessarily your Windows username." />
+            <FieldHelp
+              text="The login name on the backup server — not your Windows username. Your server provider tells you this."
+              examples={[
+                { input: 'borg' },
+                { input: 'u384522' },
+              ]}
+            />
           </div>
         </div>
 
@@ -560,7 +739,13 @@
             required
           />
           <div id="repo-path-help">
-            <FieldHelp text="Use one folder for this PC. Enter the path your server provider gave you; do not include the server address or username." />
+            <FieldHelp
+              text="Use one folder for this PC. Enter the path on the server; do not include the server address or username."
+              examples={[
+                { input: '/backups/her-pc' },
+                { input: './backups/laptop' },
+              ]}
+            />
           </div>
         </div>
 
@@ -590,6 +775,7 @@
           {#if keyCheckResult}
             <div class="field-result" role="status" class:success={keyCheckResult.startsWith('Valid') || keyCheckResult.startsWith('New Ed25519')} class:error={keyCheckResult.startsWith('This key') || keyCheckResult.startsWith('Could not')}>
               {keyCheckResult}
+              {#if keyCheckHint}<span class="result-hint">{keyCheckHint}</span>{/if}
             </div>
           {/if}
           {#if keyPublicKey}
@@ -645,6 +831,7 @@
         {#if testResult}
           <div class="test-result" role="status" class:success={testResult.includes('verified')} class:error={testResult.startsWith('Could not') || testResult.includes('could not be saved')}>
             {testResult}
+            {#if testHint}<span class="result-hint">{testHint}</span>{/if}
           </div>
         {/if}
       {/if}
@@ -653,6 +840,59 @@
         <div class="test-result" class:success={saveResult === 'Settings saved.'} class:error={saveResult.includes('failed')}>
           {saveResult}
         </div>
+      {/if}
+
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary" onclick={checkRepository} disabled={repoChecking || testing || saving || !repoConfigured}>
+          {repoChecking ? 'Checking repository…' : 'Check repository'}
+        </button>
+        <span class="action-hint">Reads the destination and shows what's stored there: encryption, size, and the latest backup.</span>
+      </div>
+
+      {#if repoCheckError}
+        <div class="test-result error" role="status">
+          {repoCheckError}
+          {#if repoCheckHint}<span class="result-hint">{repoCheckHint}</span>{/if}
+        </div>
+      {/if}
+
+      {#if repoSummary}
+        <section class="repo-summary" aria-label="Repository contents">
+          <h3>Repository found</h3>
+          <dl>
+            <div class="summary-row">
+              <dt>Encryption</dt>
+              <dd>{repoSummary.encryption}</dd>
+            </div>
+            <div class="summary-row">
+              <dt>Original size</dt>
+              <dd>{repoSummary.totalSize === null ? 'N/A' : formatBytes(repoSummary.totalSize)}</dd>
+            </div>
+            <div class="summary-row">
+              <dt>Compressed size</dt>
+              <dd>{repoSummary.compressedSize === null ? 'N/A' : formatBytes(repoSummary.compressedSize)}</dd>
+            </div>
+            <div class="summary-row">
+              <dt>Deduplicated size</dt>
+              <dd>{repoSummary.dedupSize === null ? 'N/A' : formatBytes(repoSummary.dedupSize)}</dd>
+            </div>
+            <div class="summary-row">
+              <dt>Backups</dt>
+              <dd>{repoSummary.archiveCount}</dd>
+            </div>
+            {#if repoSummary.latestArchive}
+              <div class="summary-row">
+                <dt>Latest backup</dt>
+                <dd>{repoSummary.latestArchive.name} — {formatArchiveTime(repoSummary.latestArchive.start)}</dd>
+              </div>
+            {/if}
+          </dl>
+          {#if repoSummary.archiveCount === 0}
+            <p class="summary-note">The repository is ready but has no backups yet. Head to the Backup page to run your first one.</p>
+          {:else}
+            <p class="summary-note">Browse and restore these backups from the Archives page.</p>
+          {/if}
+        </section>
       {/if}
     </fieldset>
   </form>
@@ -721,6 +961,7 @@
       {#if initResult}
         <div class="test-result" class:success={initResult.includes('success')} class:error={initResult.includes('failed') || initResult.includes('required') || initResult.includes('do not match')}>
           {initResult}
+          {#if initHint}<span class="result-hint">{initHint}</span>{/if}
         </div>
       {/if}
     </fieldset>
@@ -855,7 +1096,10 @@
             <input id="pass-confirm" type="password" autocomplete="new-password" bind:value={passphraseConfirm} />
           </div>
           {#if passphraseResult}
-            <div class="test-result error">{passphraseResult}</div>
+            <div class="test-result error">
+              {passphraseResult}
+              {#if passphraseHint}<span class="result-hint">{passphraseHint}</span>{/if}
+            </div>
           {/if}
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" onclick={() => (passphraseModalOpen = false)}>Cancel</button>
@@ -1181,6 +1425,67 @@
   .field-result.error {
     background: var(--color-danger-muted);
     color: var(--color-danger);
+  }
+
+  .field-result.info {
+    background: var(--color-accent-muted);
+    color: var(--color-text-muted);
+    font-family: inherit;
+  }
+
+  /* Plain-language suggestion shown under a raw error message. */
+  .result-hint {
+    display: block;
+    margin-top: var(--space-2);
+    font-family: inherit;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  .repo-summary {
+    margin-top: var(--space-3);
+    padding: var(--space-4);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--color-bg);
+  }
+
+  .repo-summary h3 {
+    margin: 0 0 var(--space-3);
+    font-size: var(--text-sm);
+    color: var(--color-success);
+  }
+
+  .repo-summary dl {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: 0;
+  }
+
+  .summary-row {
+    display: flex;
+    gap: var(--space-3);
+    font-size: var(--text-xs);
+  }
+
+  .summary-row dt {
+    flex: 0 0 9rem;
+    color: var(--color-text-dim);
+  }
+
+  .summary-row dd {
+    margin: 0;
+    color: var(--color-text);
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  .summary-note {
+    margin: var(--space-3) 0 0;
+    font-size: var(--text-xs);
+    color: var(--color-text-dim);
+    line-height: 1.5;
   }
 
   .ssh-onboarding {
