@@ -41,14 +41,13 @@ iterating, matching the allowlist already in `.claude/settings.local.json`.
 ## Before trusting a doc claim, verify it against git log
 
 `HANDOFF.md` is a living status file, not a changelog — it can and does lag
-behind `master`. As of this writing, its "Audit (2026-07-04)" section still
-describes an SSH argument-injection RCE and a cross-profile prune data-loss bug
-as unimplemented findings; both were fixed in commits `9257b75` and
-`85a5ea1`/`61831c2` respectively (see `.agent_native/agent_roadmap.md` item 1
-for the full list). **Before acting on any "known issue" or "still open" claim
-in `HANDOFF.md` or `TODO.md`, run `git log --oneline -- <the cited file>` for
-the referenced path/line range.** If a fix postdates the doc, treat the doc as
-stale, not the code.
+behind `master`. Its "Audit (2026-07-04)" section has since been re-verified
+(2026-07-07) and now correctly marks the SSH argument-injection RCE and the
+cross-profile prune data-loss bug as fixed — but the lesson stands: this file
+has gone stale before. **Before acting on any "known issue" or "still open"
+claim in `HANDOFF.md` or `TODO.md`, run `git log --oneline -- <the cited file>`
+for the referenced path/line range.** If a fix postdates the doc, treat the doc
+as stale, not the code.
 
 ## The option-injection gate — apply to every new untrusted argv field
 
