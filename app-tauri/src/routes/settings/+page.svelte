@@ -166,6 +166,7 @@
     repoSummary = null;
     repoCheckError = '';
     repoCheckHint = '';
+    repoCheckWarning = '';
   }
 
   /** Plain-language suggestion for a raw ssh/borg error, or '' if unknown. */
@@ -195,7 +196,7 @@
     }
     autofillNote = filled.length > 0
       ? `That looked like a full repository address — the ${filled.join(', ').replace(/, ([^,]*)$/, ' and $1')} ${filled.length > 1 ? 'were' : 'was'} filled in for you. Double-check the fields below.`
-      : '';
+      : 'Simplified the pasted address to just the server name.';
   }
 
   function onHostPaste(e: ClipboardEvent) {
@@ -364,16 +365,27 @@
   let repoChecking = $state(false);
   let repoCheckError = $state('');
   let repoCheckHint = $state('');
+  // Set when the repository itself was readable but the backup list wasn't —
+  // the summary still renders, minus the archive rows.
+  let repoCheckWarning = $state('');
 
   async function checkRepository() {
     repoChecking = true;
     repoCheckError = '';
     repoCheckHint = '';
+    repoCheckWarning = '';
     repoSummary = null;
     try {
       const repo = buildRepoConfig();
+      // Sequential on purpose: each call spawns borg, which takes an
+      // exclusive repository lock — concurrent calls would just contend on it.
       const info = await invoke<BorgInfoPayload>('get_repo_info', { repo });
-      const archives = await invoke<ArchiveEntry[]>('list_archives', { repo });
+      let archives: ArchiveEntry[] = [];
+      try {
+        archives = await invoke<ArchiveEntry[]>('list_archives', { repo });
+      } catch (e) {
+        repoCheckWarning = `Repository found, but its backup list could not be read: ${e}`;
+      }
       const stats = info.cache?.stats ?? info.repository?.stats;
       // Don't trust list order for "latest" — pick by start timestamp
       // (ISO 8601 strings, so lexicographic comparison is chronological).
@@ -439,17 +451,26 @@
   $effect(() => {
     const r = repoState.config;
     if (r) {
+      // Only discard the repository summary when the destination actually
+      // changed — a save that writes back the same values (e.g. right after
+      // Verify & save or a local Save) must not wipe a still-valid summary.
+      const locationChanged =
+        r.ssh_host !== sshHost ||
+        r.ssh_user !== sshUser ||
+        r.repo_path !== repoPath ||
+        (r.ssh_port || 22) !== sshPort;
       repoType = isLocalRepo(r) ? 'local' : 'ssh';
       sshHost = r.ssh_host;
       sshPort = r.ssh_port || 22;
       sshUser = r.ssh_user;
       repoPath = r.repo_path;
       sshKeyPath = r.ssh_key_path ?? '';
-      // The form now describes a (possibly) different destination — any
-      // repository summary or check result on screen belongs to the old one.
-      repoSummary = null;
-      repoCheckError = '';
-      repoCheckHint = '';
+      if (locationChanged) {
+        repoSummary = null;
+        repoCheckError = '';
+        repoCheckHint = '';
+        repoCheckWarning = '';
+      }
     }
   });
 
@@ -876,18 +897,22 @@
               <dt>Deduplicated size</dt>
               <dd>{repoSummary.dedupSize === null ? 'N/A' : formatBytes(repoSummary.dedupSize)}</dd>
             </div>
-            <div class="summary-row">
-              <dt>Backups</dt>
-              <dd>{repoSummary.archiveCount}</dd>
-            </div>
-            {#if repoSummary.latestArchive}
+            {#if !repoCheckWarning}
               <div class="summary-row">
-                <dt>Latest backup</dt>
-                <dd>{repoSummary.latestArchive.name} — {formatArchiveTime(repoSummary.latestArchive.start)}</dd>
+                <dt>Backups</dt>
+                <dd>{repoSummary.archiveCount}</dd>
               </div>
+              {#if repoSummary.latestArchive}
+                <div class="summary-row">
+                  <dt>Latest backup</dt>
+                  <dd>{repoSummary.latestArchive.name} — {formatArchiveTime(repoSummary.latestArchive.start)}</dd>
+                </div>
+              {/if}
             {/if}
           </dl>
-          {#if repoSummary.archiveCount === 0}
+          {#if repoCheckWarning}
+            <p class="summary-warning" role="status">{repoCheckWarning}</p>
+          {:else if repoSummary.archiveCount === 0}
             <p class="summary-note">The repository is ready but has no backups yet. Head to the Backup page to run your first one.</p>
           {:else}
             <p class="summary-note">Browse and restore these backups from the Archives page.</p>
@@ -1486,6 +1511,14 @@
     font-size: var(--text-xs);
     color: var(--color-text-dim);
     line-height: 1.5;
+  }
+
+  .summary-warning {
+    margin: var(--space-3) 0 0;
+    font-size: var(--text-xs);
+    color: var(--color-warning);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
   }
 
   .ssh-onboarding {
