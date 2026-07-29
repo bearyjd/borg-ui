@@ -21,6 +21,23 @@ export function repoHintContexts(isSsh: boolean, extra: HintContext[] = []): Hin
   return isSsh ? ['ssh', 'repo', ...extra] : ['repo', ...extra];
 }
 
+/**
+ * Contexts for a recorded history event, so failure rows in the dashboard can
+ * carry the same plain-language hints as the live operation surfaces.
+ *
+ * Deliberately NEVER includes 'ssh': the history store is global across
+ * profiles and events don't record which transport they used, so an ssh hint
+ * keyed off the currently-active profile could be confidently wrong for an
+ * event from a different profile. Fewer hints beats wrong hints. `kind` is
+ * accepted as a plain string because the Rust side stores an open String —
+ * unknown kinds degrade to repo-level hints only.
+ */
+export function historyEventContexts(kind: string): HintContext[] {
+  const extra: HintContext[] =
+    kind === 'backup' || kind === 'restore' ? [kind] : [];
+  return ['repo', ...extra];
+}
+
 interface Hint {
   pattern: RegExp;
   contexts: HintContext[];

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { repoState, describeRepo } from '$lib/stores/repo.svelte';
+  import { explainConnectionError, historyEventContexts } from '$lib/connection-hints';
   import { scheduleState, describeSchedule, nextRun } from '$lib/stores/schedule.svelte';
   import { historyState, type BackupEvent } from '$lib/stores/history.svelte';
   import { formatBytes } from '$lib/format';
@@ -295,7 +296,11 @@
                 <code class="event-archive">{event.archive_name}</code>
               </div>
               {#if event.outcome === 'failure' && event.error_message}
-                <div class="event-error">{event.error_message}</div>
+                {@const eventHint = explainConnectionError(event.error_message, historyEventContexts(event.kind))}
+                <div class="event-error">
+                  {event.error_message}
+                  {#if eventHint}<span class="result-hint">{eventHint}</span>{/if}
+                </div>
               {:else}
                 <div class="event-detail">
                   {#if event.file_count}{event.file_count.toLocaleString()} files · {/if}
@@ -582,6 +587,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Plain-language suggestion shown under a raw failure message. The parent
+     truncates to one line; the hint wraps normally below it. */
+  .event-error .result-hint {
+    display: block;
+    margin-top: var(--space-2);
+    color: var(--color-text-muted);
+    white-space: normal;
   }
 
   .event-time {
