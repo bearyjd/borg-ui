@@ -5,8 +5,11 @@
   import { repoForm } from '$lib/stores/repo-form.svelte';
   import { parseRepoUrl, type ParsedRepoUrl } from '$lib/repo-url';
   import { explainConnectionError, type HintContext } from '$lib/connection-hints';
-  import { formatBytes } from '$lib/format';
   import FieldHelp from '$lib/components/FieldHelp.svelte';
+  import SshKeyOnboarding from './SshKeyOnboarding.svelte';
+  import RepoSummaryPanel from './RepoSummaryPanel.svelte';
+  import ReplaceKeyModal from './ReplaceKeyModal.svelte';
+  import { loadRepoSummary, type RepoSummary } from '$lib/repo-info';
 
   let testing = $state(false);
   let saving = $state(false);
@@ -29,9 +32,6 @@
   let keyPublicKey = $state('');
   let keyGenerating = $state(false);
   let overwriteKeyModalOpen = $state(false);
-  let copyKeyResult = $state('');
-  let copyInstallCommandResult = $state('');
-  let copyVerifyCommandResult = $state('');
 
   interface GeneratedSshKey {
     private_key_path: string;
@@ -58,7 +58,10 @@
   async function generateSshKey(overwrite = false) {
     keyGenerating = true;
     keyCheckResult = '';
-    copyKeyResult = '';
+    // Blank the key so the onboarding panel unmounts and remounts with the
+    // new key — otherwise its "Copied." indicators survive a Replace while
+    // the clipboard still holds the OLD key (a wrong-key paste hazard).
+    keyPublicKey = '';
     try {
       const generated = await invoke<GeneratedSshKey>('generate_ssh_key', { overwrite });
       repoForm.sshKeyPath = generated.private_key_path;
@@ -74,49 +77,6 @@
       }
     } finally {
       keyGenerating = false;
-    }
-  }
-
-  async function copyPublicKey() {
-    try {
-      await navigator.clipboard.writeText(keyPublicKey);
-      copyKeyResult = 'Copied.';
-    } catch (e) {
-      copyKeyResult = `Copy failed: ${e}`;
-    }
-  }
-
-  function shellQuote(value: string) {
-    return `'${value.replaceAll("'", "'\\''")}'`;
-  }
-
-  let authorizedKeysPath = $derived(repoForm.sshUser.trim() ? `~/.ssh/authorized_keys for ${repoForm.sshUser.trim()}` : '~/.ssh/authorized_keys');
-  let installKeyCommand = $derived(
-    keyPublicKey
-      ? `mkdir -p ~/.ssh && chmod 700 ~/.ssh && printf '%s\\n' ${shellQuote(keyPublicKey.trim())} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`
-      : ''
-  );
-  let verifySshCommand = $derived(
-    repoForm.sshHost.trim() && repoForm.sshUser.trim()
-      ? `ssh${repoForm.sshKeyPath.trim() ? ` -i "${repoForm.sshKeyPath.trim()}"` : ''} -p ${repoForm.sshPort || 22} ${repoForm.sshUser.trim()}@${repoForm.sshHost.trim()} "echo ok"`
-      : ''
-  );
-
-  async function copyInstallCommand() {
-    try {
-      await navigator.clipboard.writeText(installKeyCommand);
-      copyInstallCommandResult = 'Copied.';
-    } catch (e) {
-      copyInstallCommandResult = `Copy failed: ${e}`;
-    }
-  }
-
-  async function copyVerifyCommand() {
-    try {
-      await navigator.clipboard.writeText(verifySshCommand);
-      copyVerifyCommandResult = 'Copied.';
-    } catch (e) {
-      copyVerifyCommandResult = `Copy failed: ${e}`;
     }
   }
 
@@ -182,37 +142,6 @@
     }
   }
 
-  // Vorta-style "what's actually in this repository" summary, populated by
-  // checkRepository() after a successful verify or on demand.
-  interface RepoSummary {
-    encryption: string;
-    totalSize: number | null;
-    compressedSize: number | null;
-    dedupSize: number | null;
-    archiveCount: number;
-    latestArchive: { name: string; start: string } | null;
-  }
-
-  interface BorgStats {
-    total_size?: number;
-    total_csize?: number;
-    unique_csize?: number;
-  }
-
-  interface BorgInfoPayload {
-    encryption?: { mode?: string };
-    cache?: { stats?: BorgStats };
-    // Some borg versions report stats here instead of under cache — the
-    // backend (get_repo_info) reads both locations too.
-    repository?: { stats?: BorgStats };
-  }
-
-  interface ArchiveEntry {
-    name: string;
-    start: string;
-    id: string;
-  }
-
   let repoSummary = $state<RepoSummary | null>(null);
   let repoChecking = $state(false);
   let repoCheckError = $state('');
@@ -228,30 +157,9 @@
     repoCheckWarning = '';
     repoSummary = null;
     try {
-      const repo = repoForm.buildRepoConfig();
-      // Sequential on purpose: each call spawns borg, which takes an
-      // exclusive repository lock — concurrent calls would just contend on it.
-      const info = await invoke<BorgInfoPayload>('get_repo_info', { repo });
-      let archives: ArchiveEntry[] = [];
-      try {
-        archives = await invoke<ArchiveEntry[]>('list_archives', { repo });
-      } catch (e) {
-        repoCheckWarning = `Repository found, but its backup list could not be read: ${e}`;
-      }
-      const stats = info.cache?.stats ?? info.repository?.stats;
-      // Don't trust list order for "latest" — pick by start timestamp
-      // (ISO 8601 strings, so lexicographic comparison is chronological).
-      const latest = archives.length > 0
-        ? archives.reduce((a, b) => (a.start > b.start ? a : b))
-        : null;
-      repoSummary = {
-        encryption: info.encryption?.mode ?? 'unknown',
-        totalSize: stats?.total_size ?? null,
-        compressedSize: stats?.total_csize ?? null,
-        dedupSize: stats?.unique_csize ?? null,
-        archiveCount: archives.length,
-        latestArchive: latest ? { name: latest.name, start: latest.start } : null,
-      };
+      const result = await loadRepoSummary(repoForm.buildRepoConfig());
+      repoSummary = result.summary;
+      repoCheckWarning = result.warning;
     } catch (e) {
       repoCheckError = `Could not read the repository: ${e}`;
       repoCheckHint = hintFor(e, repoContexts());
@@ -259,22 +167,6 @@
       repoChecking = false;
     }
   }
-
-  function formatArchiveTime(start: string): string {
-    const parsed = new Date(start);
-    return Number.isNaN(parsed.getTime()) ? start : parsed.toLocaleString();
-  }
-
-  // Close the overwrite-key modal with the Escape key, mirroring the
-  // click-backdrop-to-close behaviour.
-  $effect(() => {
-    if (!overwriteKeyModalOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') overwriteKeyModalOpen = false;
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  });
 
   $effect(() => {
     const r = repoState.config;
@@ -379,9 +271,6 @@
     keyCheckResult = '';
     keyCheckHint = '';
     keyPublicKey = '';
-    copyKeyResult = '';
-    copyInstallCommandResult = '';
-    copyVerifyCommandResult = '';
     testResult = '';
     saveResult = '';
   }
@@ -580,45 +469,7 @@
           </div>
         {/if}
         {#if keyPublicKey}
-          <section class="ssh-onboarding" aria-label="SSH public key onboarding">
-            <div class="onboarding-header">
-              <h3>{keyCheckResult.startsWith('New Ed25519') ? 'Install this new public key' : 'Use this existing public key'}</h3>
-              <p>BorgUI does not ask for your server password and will not install keys for you. Add this public key on the backup server, then run Verify & save.</p>
-            </div>
-
-            <div class="onboarding-step">
-              <h4>1. Copy the exact public key</h4>
-              <code class="copy-block">{keyPublicKey}</code>
-              <div class="public-key-actions">
-                <button type="button" class="btn btn-secondary" onclick={copyPublicKey}>Copy public key</button>
-                {#if copyKeyResult}<span>{copyKeyResult}</span>{/if}
-              </div>
-            </div>
-
-            <div class="onboarding-step">
-              <h4>2. Add it to the server account</h4>
-              <p>On the server, append the key to <code>{authorizedKeysPath}</code>. The <code>.ssh</code> directory should be <code>700</code>; <code>authorized_keys</code> should be <code>600</code>.</p>
-              {#if installKeyCommand}
-                <code class="copy-block">{installKeyCommand}</code>
-                <div class="public-key-actions">
-                  <button type="button" class="btn btn-secondary" onclick={copyInstallCommand}>Copy server command</button>
-                  {#if copyInstallCommandResult}<span>{copyInstallCommandResult}</span>{/if}
-                </div>
-              {/if}
-            </div>
-
-            {#if verifySshCommand}
-              <div class="onboarding-step">
-                <h4>3. Verify access</h4>
-                <p>Use BorgUI’s Verify & save button below, or run this command from a terminal to confirm the server accepts the key:</p>
-                <code class="copy-block">{verifySshCommand}</code>
-                <div class="public-key-actions">
-                  <button type="button" class="btn btn-secondary" onclick={copyVerifyCommand}>Copy verification command</button>
-                  {#if copyVerifyCommandResult}<span>{copyVerifyCommandResult}</span>{/if}
-                </div>
-              </div>
-            {/if}
-          </section>
+          <SshKeyOnboarding publicKey={keyPublicKey} isNewKey={keyCheckResult.startsWith('New Ed25519')} />
         {/if}
       </div>
 
@@ -658,72 +509,17 @@
     {/if}
 
     {#if repoSummary}
-      <section class="repo-summary" aria-label="Repository contents">
-        <h3>Repository found</h3>
-        <dl>
-          <div class="summary-row">
-            <dt>Encryption</dt>
-            <dd>{repoSummary.encryption}</dd>
-          </div>
-          <div class="summary-row">
-            <dt>Original size</dt>
-            <dd>{repoSummary.totalSize === null ? 'N/A' : formatBytes(repoSummary.totalSize)}</dd>
-          </div>
-          <div class="summary-row">
-            <dt>Compressed size</dt>
-            <dd>{repoSummary.compressedSize === null ? 'N/A' : formatBytes(repoSummary.compressedSize)}</dd>
-          </div>
-          <div class="summary-row">
-            <dt>Deduplicated size</dt>
-            <dd>{repoSummary.dedupSize === null ? 'N/A' : formatBytes(repoSummary.dedupSize)}</dd>
-          </div>
-          {#if !repoCheckWarning}
-            <div class="summary-row">
-              <dt>Backups</dt>
-              <dd>{repoSummary.archiveCount}</dd>
-            </div>
-            {#if repoSummary.latestArchive}
-              <div class="summary-row">
-                <dt>Latest backup</dt>
-                <dd>{repoSummary.latestArchive.name} — {formatArchiveTime(repoSummary.latestArchive.start)}</dd>
-              </div>
-            {/if}
-          {/if}
-        </dl>
-        {#if repoCheckWarning}
-          <p class="summary-warning" role="status">{repoCheckWarning}</p>
-        {:else if repoSummary.archiveCount === 0}
-          <p class="summary-note">The repository is ready but has no backups yet. Head to the Backup page to run your first one.</p>
-        {:else}
-          <p class="summary-note">Browse and restore these backups from the Archives page.</p>
-        {/if}
-      </section>
+      <RepoSummaryPanel summary={repoSummary} warning={repoCheckWarning} />
     {/if}
   </fieldset>
 </form>
 
-{#if overwriteKeyModalOpen}
-  <div class="modal-backdrop" onclick={() => (overwriteKeyModalOpen = false)} role="presentation">
-    <div
-      class="modal"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={() => {}}
-      role="dialog"
-      tabindex="-1"
-      aria-modal="true"
-      aria-labelledby="overwrite-key-title"
-    >
-      <h2 id="overwrite-key-title">Replace generated SSH key?</h2>
-      <p>A BorgUI-managed SSH key already exists. Replacing it will prevent server access until you install the new public key on the server.</p>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-secondary" onclick={() => (overwriteKeyModalOpen = false)}>Cancel</button>
-        <button type="button" class="btn btn-delete-confirm" disabled={keyGenerating} onclick={() => generateSshKey(true)}>
-          {keyGenerating ? 'Replacing…' : 'Replace key'}
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
+<ReplaceKeyModal
+  open={overwriteKeyModalOpen}
+  busy={keyGenerating}
+  onConfirm={() => generateSshKey(true)}
+  onCancel={() => (overwriteKeyModalOpen = false)}
+/>
 
 <style>
   .settings-form {
@@ -963,156 +759,6 @@
     font-family: inherit;
     font-size: var(--text-xs);
     color: var(--color-text-muted);
-  }
-
-  .repo-summary {
-    margin-top: var(--space-3);
-    padding: var(--space-4);
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--color-bg);
-  }
-
-  .repo-summary h3 {
-    margin: 0 0 var(--space-3);
-    font-size: var(--text-sm);
-    color: var(--color-success);
-  }
-
-  .repo-summary dl {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    margin: 0;
-  }
-
-  .summary-row {
-    display: flex;
-    gap: var(--space-3);
-    font-size: var(--text-xs);
-  }
-
-  .summary-row dt {
-    flex: 0 0 9rem;
-    color: var(--color-text-dim);
-  }
-
-  .summary-row dd {
-    margin: 0;
-    color: var(--color-text);
-    font-family: var(--font-mono);
-    overflow-wrap: anywhere;
-  }
-
-  .summary-note {
-    margin: var(--space-3) 0 0;
-    font-size: var(--text-xs);
-    color: var(--color-text-dim);
-    line-height: 1.5;
-  }
-
-  .summary-warning {
-    margin: var(--space-3) 0 0;
-    font-size: var(--text-xs);
-    color: var(--color-warning);
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-  }
-
-  .ssh-onboarding {
-    margin-top: var(--space-2);
-    padding: var(--space-3);
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--color-bg);
-    color: var(--color-text-muted);
-    font-size: var(--text-xs);
-  }
-
-  .onboarding-header h3 {
-    margin: 0 0 var(--space-1);
-    color: var(--color-text);
-    font-size: var(--text-sm);
-  }
-
-  .onboarding-header p,
-  .onboarding-step p {
-    margin: 0;
-    line-height: 1.5;
-  }
-
-  .onboarding-step {
-    margin-top: var(--space-3);
-  }
-
-  .onboarding-step h4 {
-    margin: 0 0 var(--space-1);
-    color: var(--color-text);
-    font-size: var(--text-xs);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  .copy-block {
-    display: block;
-    margin-top: var(--space-2);
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--color-border-subtle);
-    border-radius: var(--radius-sm);
-    background: var(--color-bg);
-    color: var(--color-text-muted);
-    font-size: 0.7rem;
-    line-height: 1.5;
-    overflow-wrap: anywhere;
-    user-select: text;
-  }
-
-  .public-key-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    margin-top: var(--space-2);
-  }
-
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    background: var(--color-backdrop);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-  }
-
-  .modal {
-    background: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-6);
-    max-width: 440px;
-    width: 90%;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-  }
-
-  .modal h2 {
-    font-size: var(--text-lg);
-    font-weight: 600;
-    letter-spacing: -0.02em;
-  }
-
-  .modal p {
-    color: var(--color-text-muted);
-    font-size: var(--text-sm);
-    line-height: 1.5;
-  }
-
-  .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-2);
-    margin-top: var(--space-4);
   }
 
   @media (max-width: 620px) {
