@@ -85,17 +85,26 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # pnpm to match packageManager in app-tauri/package.json and the
+      # release workflow — a second npm lockfile drifts out of sync silently.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: app-tauri/package-lock.json
+          cache: pnpm
+          cache-dependency-path: app-tauri/pnpm-lock.yaml
 
       - name: Install
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Sync SvelteKit
-        run: npx svelte-kit sync
+        run: pnpm exec svelte-kit sync
 
       - name: Type check
-        run: npm run check
+        run: pnpm check
+
+      - name: Unit tests
+        run: pnpm test
