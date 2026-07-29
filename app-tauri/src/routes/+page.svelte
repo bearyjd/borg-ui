@@ -244,25 +244,26 @@
     <section class="first-run">
       <h2>Let's get you set up</h2>
       <p class="first-run-intro">Four quick steps and your PC is protected. Do them in order.</p>
+      <a class="setup-cta" href="/setup">Open the setup assistant →</a>
       <ol class="checklist">
         <li>
           <span class="step-num">1</span>
           <div class="step-body">
-            <a href="/settings">Choose a backup destination</a>
+            <a href="/setup">Choose a backup destination</a>
             <p>A backup server (SSH) or a local folder, USB drive, or network share.</p>
           </div>
         </li>
         <li>
           <span class="step-num">2</span>
           <div class="step-body">
-            <a href="/settings">Initialize or connect the repository</a>
+            <a href="/setup">Initialize or connect the repository</a>
             <p>Create a fresh repository for a new destination, or connect to one you already have.</p>
           </div>
         </li>
         <li>
           <span class="step-num">3</span>
           <div class="step-body">
-            <a href="/settings">Set your passphrase</a>
+            <a href="/setup">Set your passphrase</a>
             <p>The password that unlocks your encrypted backups. Keep it somewhere safe.</p>
           </div>
         </li>
@@ -436,6 +437,22 @@
     margin-top: var(--space-1);
     color: var(--color-text-muted);
     font-size: var(--text-sm);
+  }
+
+  .setup-cta {
+    display: inline-block;
+    margin-top: var(--space-3);
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-md);
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    transition: background var(--duration-fast) var(--ease-out);
+  }
+
+  .setup-cta:hover {
+    background: var(--color-accent-hover);
   }
 
   .checklist {
