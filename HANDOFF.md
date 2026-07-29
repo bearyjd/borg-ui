@@ -27,9 +27,35 @@ shipped in the published **v0.2.0**. Five PRs landed after the feature baseline:
   (real Dashboard renders).
 
 The repository now reports application version **0.3.0**, but this is
-**0.3.0-dev**: no `v0.3.0` tag or GitHub release exists (latest tag is `v0.2.0`).
-There is no feature branch or PR in flight. Release publication and the
-end-to-end updater test are the remaining phase.
+**0.3.0-dev**: no `v0.3.0` tag or GitHub release exists (latest tag is `v0.2.0`;
+a v0.3.0 **draft** release with installers and signatures exists). Release
+publication and the end-to-end updater test are the remaining phase.
+
+### Update (2026-07-29)
+
+Landed on `master` since the section above was written (verify with
+`git log --oneline 3b9add5..`):
+
+- **Connection UX overhaul** (`5915b4d`, `bce9ff3`): Vorta-style paste of a full
+  repo address (`ssh://user@host:port/path` auto-splits into fields, option-like
+  components refused up front), per-field examples, a "Check repository" summary
+  (encryption, sizes, latest archive), and a plain-language hint layer under raw
+  ssh/borg errors (`app-tauri/src/lib/connection-hints.ts`, context-scoped).
+- **Hints extended to Backup/Archives/restore and dashboard history rows**
+  (`b055766`, PR #95) — history hints deliberately never use ssh context
+  (events don't record their transport).
+- **Settings page decomposed** (`5a388b7`): Connection/Init/Passphrase sections
+  extracted; shared form state in `app-tauri/src/lib/stores/repo-form.svelte.ts`.
+- **First-run setup wizard** (`e293aaa`): `/setup` is a 3-step assistant reusing
+  the section components; step 1 gates on a *saved* (not merely typed) destination.
+- **Frontend CI switched npm→pnpm** (`ffb273a`): the stale `package-lock.json`
+  (out of sync with `pnpm-lock.yaml`, would have failed `npm ci`) is deleted;
+  a vitest suite now gates CI (`pnpm test`).
+- **Smoke against the real backup server (2026-07-29):** borg 1.4.4 client from
+  this repo's pinned binary ran init → create → extract → byte-verify →
+  wrong-passphrase-rejection → delete against a scratch repo on the production
+  borg 1.2.8 server (restricted-path wrapper honored). Client/server version
+  pairing confirmed working.
 
 **Why the version bump exposed work:** the 0.3.0 Release dry-run was the first
 Windows build since #71–#80 merged. Linux CI only compiles the
