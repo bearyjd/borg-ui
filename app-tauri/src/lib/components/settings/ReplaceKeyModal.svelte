@@ -2,7 +2,7 @@
   interface Props {
     open: boolean;
     busy: boolean;
-    onConfirm: () => void;
+    onConfirm: () => void | Promise<void>;
     onCancel: () => void;
   }
 

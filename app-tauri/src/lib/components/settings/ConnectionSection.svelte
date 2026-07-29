@@ -58,6 +58,10 @@
   async function generateSshKey(overwrite = false) {
     keyGenerating = true;
     keyCheckResult = '';
+    // Blank the key so the onboarding panel unmounts and remounts with the
+    // new key — otherwise its "Copied." indicators survive a Replace while
+    // the clipboard still holds the OLD key (a wrong-key paste hazard).
+    keyPublicKey = '';
     try {
       const generated = await invoke<GeneratedSshKey>('generate_ssh_key', { overwrite });
       repoForm.sshKeyPath = generated.private_key_path;
