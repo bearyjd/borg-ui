@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'vitest';
-import { explainConnectionError, type HintContext } from './connection-hints';
+import { explainConnectionError, repoHintContexts, type HintContext } from './connection-hints';
 
 const SSH: HintContext[] = ['ssh'];
 const SSH_REPO: HintContext[] = ['ssh', 'repo'];
 const REPO: HintContext[] = ['repo'];
 const KEY: HintContext[] = ['key'];
+const SSH_BACKUP: HintContext[] = ['ssh', 'repo', 'backup'];
+const LOCAL_RESTORE: HintContext[] = ['repo', 'restore'];
 
 describe('explainConnectionError', () => {
   test.each<[string, HintContext[], RegExp]>([
@@ -23,8 +25,33 @@ describe('explainConnectionError', () => {
     ['Failed to create/acquire the lock /b/lock.exclusive (timeout).', SSH_REPO, /stale lock/],
     ['passphrase supplied in ... is incorrect.', REPO, /Repository Passphrase section/],
     ["bash: borg: command not found", SSH_REPO, /install BorgBackup/],
+    // Backup/restore-specific hints.
+    ['Error: VSS snapshot creation failed', SSH_BACKUP, /Volume Shadow Copy/],
+    ['[Errno 28] No space left on device', SSH_BACKUP, /prune old backups/],
+    // During a backup, a permission error is a source-file hint, not an
+    // SSH sign-in hint — even for an SSH repository.
+    ['C:\\Users\\x\\NTUSER.DAT: Permission denied', SSH_BACKUP, /antivirus/],
+    ['Access is denied. (os error 5)', LOCAL_RESTORE, /folder you own/],
+    ['stat: [Errno 2] No such file or directory: D:\\Photos', SSH_BACKUP, /source folder no longer exists/],
+    // The very specific publickey failure still wins in backup context.
+    ['borg@tower: Permission denied (publickey).', SSH_BACKUP, /authorized_keys/],
+    // ssh's password-auth rejection is a sign-in hint even during a backup.
+    ['borg@tower: Permission denied, please try again.', SSH_BACKUP, /rejected the sign-in/],
+    // A missing borg binary is not a missing source folder.
+    ['bash: /usr/bin/borg: No such file or directory', SSH_BACKUP, /install BorgBackup/],
+    // Restore disk-full advice targets the LOCAL folder, not the repository.
+    ['[Errno 28] No space left on device', LOCAL_RESTORE, /restoring into/],
+    // A folder merely NAMED vss must not trigger snapshot advice.
+    ['stat: [Errno 2] No such file or directory: D:\\vss-archive', SSH_BACKUP, /source folder no longer exists/],
+    // Repo-level hints still reachable through backup/restore contexts.
+    ['Repository /backups/pc does not exist.', SSH_BACKUP, /Create Repository/],
   ])('%s → hint', (raw, contexts, expected) => {
     expect(explainConnectionError(raw, contexts)).toMatch(expected);
+  });
+
+  test('repoHintContexts adds ssh only for remote repos', () => {
+    expect(repoHintContexts(true, ['backup'])).toEqual(['ssh', 'repo', 'backup']);
+    expect(repoHintContexts(false)).toEqual(['repo']);
   });
 
   test.each<[string, string, HintContext[]]>([

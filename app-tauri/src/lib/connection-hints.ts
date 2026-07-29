@@ -5,11 +5,21 @@
  *
  * Hints are scoped by context so, e.g., a local-folder "permission denied"
  * never gets SSH-public-key advice:
- *   'ssh'  — reaching / signing in to a remote server
- *   'key'  — validating a local private-key file
- *   'repo' — borg operations against an (already reachable) repository
+ *   'ssh'     — reaching / signing in to a remote server
+ *   'key'     — validating a local private-key file
+ *   'repo'    — borg operations against an (already reachable) repository
+ *   'backup'  — creating an archive (source-file reads, VSS snapshots)
+ *   'restore' — extracting an archive to a local folder
  */
-export type HintContext = 'ssh' | 'key' | 'repo';
+export type HintContext = 'ssh' | 'key' | 'repo' | 'backup' | 'restore';
+
+/**
+ * Contexts for an operation against a configured repository: always 'repo',
+ * plus 'ssh' when the repo is remote, plus any operation-specific extras.
+ */
+export function repoHintContexts(isSsh: boolean, extra: HintContext[] = []): HintContext[] {
+  return isSsh ? ['ssh', 'repo', ...extra] : ['repo', ...extra];
+}
 
 interface Hint {
   pattern: RegExp;
@@ -26,9 +36,60 @@ const HINTS: Hint[] = [
     hint: 'The server refused the key. Make sure the public key is installed in authorized_keys for this exact username, and that the username is spelled right.',
   },
   {
+    // Sign-in-specific spellings must beat the backup/restore permission
+    // entries below — "please try again" is ssh's password-auth rejection.
+    pattern: /permission denied, please try again|authentication failed/i,
+    contexts: ['ssh'],
+    hint: 'The server rejected the sign-in. Double-check the username and make sure the public key is installed on the server for that user.',
+  },
+  {
+    // Before the generic ssh permission entry: during a backup, a
+    // permission error is far more likely a source file than a sign-in.
+    pattern: /permission denied|access is denied/i,
+    contexts: ['backup'],
+    hint: 'A file or folder couldn’t be read. This is usually Windows permissions or antivirus on one of the selected folders — the raw message above names the path; consider excluding it.',
+  },
+  {
+    pattern: /permission denied|access is denied/i,
+    contexts: ['restore'],
+    hint: 'Windows blocked writing to the restore folder. Restore into a folder you own (like Documents or Downloads), or run BorgUI as administrator.',
+  },
+  {
     pattern: /permission denied|authentication failed/i,
     contexts: ['ssh'],
     hint: 'The server rejected the sign-in. Double-check the username and make sure the public key shown above is installed on the server for that user.',
+  },
+  {
+    // Anchored to the platform crate's real messages ("VSS failed", "VSS
+    // snapshot failed", "VSS unavailable") — a bare /vss/ would also match
+    // backed-up paths like D:\vss-archive.
+    pattern: /vss[^:]{0,20}fail|vss (not )?availab|vss unavailable|unexpected vss|volume shadow|shadow ?copy/i,
+    contexts: ['backup'],
+    hint: 'Windows couldn’t take a file snapshot (VSS). Try again; if it keeps failing, check that the “Volume Shadow Copy” service is running and that BorgUI has administrator rights.',
+  },
+  {
+    // Restore-first: during a restore the full disk is the LOCAL target
+    // folder — pruning the repository would free nothing.
+    pattern: /no space left|not enough (disk )?space|disk full|insufficient disk space/i,
+    contexts: ['restore'],
+    hint: 'The folder you’re restoring into is out of space. Free some space there, or restore to a different drive or folder.',
+  },
+  {
+    pattern: /no space left|not enough (disk )?space|disk full|insufficient disk space/i,
+    contexts: ['repo', 'backup'],
+    hint: 'The destination is out of space. Free some space there, or prune old backups (Retention section in Settings) and run Compact, then try again.',
+  },
+  {
+    // Before the source-missing entry: "bash: /usr/bin/borg: No such file
+    // or directory" is a missing borg install, not a missing source folder.
+    pattern: /borg.*(not found|no such file)|command not found/i,
+    contexts: ['ssh', 'repo', 'backup', 'restore'],
+    hint: 'The borg program wasn’t found on the server. Ask your server provider to install BorgBackup, or check that it’s on the PATH for SSH sessions.',
+  },
+  {
+    pattern: /no such file or directory|path does not exist|file not found/i,
+    contexts: ['backup'],
+    hint: 'A selected source folder no longer exists (it may have been moved, renamed, or be on a disconnected drive). Review the folder list on the Backup page.',
   },
   {
     pattern: /host key verification failed|remote host identification has changed/i,
@@ -86,11 +147,6 @@ const HINTS: Hint[] = [
     pattern: /passphrase supplied.*incorrect|wrong passphrase|decryption failed|integrityerror/i,
     contexts: ['repo'],
     hint: 'The stored passphrase doesn’t match this repository. Use the Repository Passphrase section to enter the passphrase this repository was created with.',
-  },
-  {
-    pattern: /borg.*(not found|no such file)|command not found/i,
-    contexts: ['ssh', 'repo'],
-    hint: 'The borg program wasn’t found on the server. Ask your server provider to install BorgBackup, or check that it’s on the PATH for SSH sessions.',
   },
 ];
 

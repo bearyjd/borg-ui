@@ -3,11 +3,12 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { open } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
-  import { repoState, type RepoConfig } from '$lib/stores/repo.svelte';
+  import { repoState, isLocalRepo, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
   import { profilesState } from '$lib/stores/profiles.svelte';
   import { formatBytes } from '$lib/format';
+  import { explainConnectionError, repoHintContexts } from '$lib/connection-hints';
 
   interface ArchiveProgress {
     type: 'archive_progress';
@@ -85,6 +86,21 @@
   let isRunning = $state(false);
   let cancelling = $state(false);
   let status = $state('');
+  // Plain-language suggestion under a raw failure message (see connection-hints).
+  let statusHint = $state('');
+
+  // A hint's advice is captured for the repo that failed — switching profiles
+  // must not leave e.g. SSH-key advice on screen for a local-folder repo.
+  let lastHintProfileId = $state<string | null>(profilesState.activeId);
+  $effect(() => {
+    const id = profilesState.activeId;
+    if (id === lastHintProfileId) return;
+    lastHintProfileId = id;
+    if (!isRunning) {
+      status = '';
+      statusHint = '';
+    }
+  });
   let warnings = $state<string[]>([]);
   let destinationAttempts = $state<Array<{ destination: string; outcome: string }>>([]);
   let cancelled = $state(false);
@@ -249,6 +265,7 @@
     warnings = [];
     destinationAttempts = [];
     status = 'Starting backup...';
+    statusHint = '';
     resetProgress();
 
     const startMs = Date.now();
@@ -292,6 +309,14 @@
       });
       warnings = result.warnings;
       destinationAttempts = result.attempts;
+      // create_backup resolves (doesn't throw) on outcome 'failure' — the
+      // per-destination error text lives in attempts, so hint from there.
+      if (result.outcome === 'failure' && repo) {
+        statusHint = explainConnectionError(
+          result.attempts.map((a) => a.outcome).join('\n'),
+          repoHintContexts(!isLocalRepo(repo), ['backup'])
+        ) ?? '';
+      }
       // A resolved promise means the archive was created. A non-empty list
       // just means some files were skipped (locked/in-use) — still a success.
       status = result.outcome === 'partial_success'
@@ -331,6 +356,10 @@
         return;
       }
       status = `Backup failed: ${e}`;
+      statusHint = explainConnectionError(
+        String(e),
+        repoHintContexts(repo ? !isLocalRepo(repo) : false, ['backup'])
+      ) ?? '';
       notificationsState.notify('Backup failed', 'See BorgUI for details.');
       historyState.record({
         id: `${Date.now()}`,
@@ -639,6 +668,7 @@
         class:cancelled={status.includes('cancelled')}
       >
         {status}
+        {#if statusHint}<span class="result-hint">{statusHint}</span>{/if}
       </div>
     {/if}
   </div>
@@ -956,6 +986,14 @@
   .status-message.error {
     background: var(--color-danger-muted);
     color: var(--color-danger);
+  }
+
+  /* Plain-language suggestion shown under a raw error message. */
+  .status-message .result-hint {
+    display: block;
+    margin-top: var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
   }
 
   .status-message.success {
