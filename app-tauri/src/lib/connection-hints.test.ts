@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { explainConnectionError, repoHintContexts, type HintContext } from './connection-hints';
+import { explainConnectionError, historyEventContexts, repoHintContexts, type HintContext } from './connection-hints';
 
 const SSH: HintContext[] = ['ssh'];
 const SSH_REPO: HintContext[] = ['ssh', 'repo'];
@@ -52,6 +52,35 @@ describe('explainConnectionError', () => {
   test('repoHintContexts adds ssh only for remote repos', () => {
     expect(repoHintContexts(true, ['backup'])).toEqual(['ssh', 'repo', 'backup']);
     expect(repoHintContexts(false)).toEqual(['repo']);
+  });
+
+  describe('historyEventContexts', () => {
+    test('maps known event kinds, degrades unknown kinds to repo-only', () => {
+      expect(historyEventContexts('backup')).toEqual(['repo', 'backup']);
+      expect(historyEventContexts('restore')).toEqual(['repo', 'restore']);
+      expect(historyEventContexts('prune')).toEqual(['repo']);
+    });
+
+    test('repo-level failures still get a hint', () => {
+      expect(
+        explainConnectionError(
+          'Backup failed: Failed to create/acquire the lock (timeout).',
+          historyEventContexts('backup')
+        )
+      ).toMatch(/stale lock/);
+    });
+
+    // History events don't record their transport, so ssh-specific hints
+    // must never fire — a timeout from a USB backup would otherwise get
+    // "check the server address" advice.
+    test('never emits ssh-specific hints for historical events', () => {
+      expect(
+        explainConnectionError(
+          'Backup failed: connection to tower timed out after 10s',
+          historyEventContexts('backup')
+        )
+      ).toBeNull();
+    });
   });
 
   test.each<[string, string, HintContext[]]>([
