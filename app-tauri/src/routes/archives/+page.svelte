@@ -10,6 +10,7 @@
   import ArchiveBrowser from '$lib/components/ArchiveBrowser.svelte';
   import DiffViewer from '$lib/components/DiffViewer.svelte';
   import { formatBytes } from '$lib/format';
+  import { explainConnectionError, repoHintContexts, type HintContext } from '$lib/connection-hints';
 
   interface Archive {
     name: string;
@@ -29,6 +30,16 @@
   let archives = $state<Archive[]>([]);
   let loading = $state(false);
   let error = $state('');
+  // Plain-language suggestions under raw failure messages (see connection-hints).
+  let errorHint = $state('');
+  let restoreHint = $state('');
+  let deleteHint = $state('');
+  let compactHint = $state('');
+
+  function hintFor(e: unknown, extra: HintContext[] = []): string {
+    const ssh = repoState.config ? !isLocalRepo(repoState.config) : false;
+    return explainConnectionError(String(e), repoHintContexts(ssh, extra)) ?? '';
+  }
   let repoAvailable = $derived(repoState.hasRepo);
 
   let restoringArchive = $state('');
@@ -166,11 +177,13 @@
     if (!repoState.config || busy) return;
     compacting = true;
     compactStatus = '';
+    compactHint = '';
     try {
       const summary = await invoke<string>('compact_repo', { repo: repoState.config });
       compactStatus = summary || 'Compaction complete.';
     } catch (e) {
       compactStatus = `Compaction failed: ${e}`;
+      compactHint = hintFor(e);
     } finally {
       compacting = false;
     }
@@ -194,6 +207,7 @@
       untrack(() => {
         archives = [];
         error = '';
+        errorHint = '';
         loadedKey = null;
       });
       return;
@@ -218,18 +232,24 @@
     if (loadedKey && loadedKey !== key) {
       archives = [];
       deleteStatus = '';
+      deleteHint = '';
+      compactStatus = '';
+      compactHint = '';
       if (!restoringArchive) {
         restoreStatus = '';
+        restoreHint = '';
         restoreWarnings = [];
       }
     }
     loading = true;
     error = '';
+    errorHint = '';
     try {
       archives = await invoke<Archive[]>('list_archives', { repo: r });
       loadedKey = key;
     } catch (e) {
       error = `Failed to load archives: ${e}`;
+      errorHint = hintFor(e);
     } finally {
       loading = false;
       if (pendingRepo) {
@@ -267,6 +287,7 @@
     restoringArchive = archiveName;
     restoreCancelling = false;
     restoreWarnings = [];
+    restoreHint = '';
     restoreStatus = paths && paths.length > 0
       ? `Restoring ${paths.length.toLocaleString()} selected items...`
       : 'Restoring...';
@@ -342,6 +363,7 @@
         return;
       }
       restoreStatus = `Restore failed: ${e}`;
+      restoreHint = hintFor(e, ['restore']);
       notificationsState.notify('Restore failed', 'See BorgUI for details.');
       historyState.record({
         id: `${Date.now()}`,
@@ -366,6 +388,7 @@
     confirmDeleteArchive = null;
     deletingArchive = archiveName;
     deleteStatus = '';
+    deleteHint = '';
 
     try {
       await invoke('delete_archive', {
@@ -376,6 +399,7 @@
       archives = archives.filter((a) => a.name !== archiveName);
     } catch (e) {
       deleteStatus = `Delete failed: ${e}`;
+      deleteHint = hintFor(e);
     } finally {
       deletingArchive = '';
     }
@@ -450,6 +474,7 @@
   {#if compactStatus}
     <div class="restore-result" class:error={compactStatus.includes('failed')}>
       {compactStatus}
+      {#if compactHint}<span class="result-hint">{compactHint}</span>{/if}
     </div>
   {/if}
 
@@ -460,7 +485,10 @@
   {:else if loading}
     <div class="loading-state">Loading archives...</div>
   {:else if error}
-    <div class="error-banner">{error}</div>
+    <div class="error-banner">
+      {error}
+      {#if errorHint}<span class="result-hint">{errorHint}</span>{/if}
+    </div>
   {:else if archives.length === 0}
     <div class="empty-state">
       <p>No archives found. <a href="/backup">Create your first backup</a> to get started.</p>
@@ -528,6 +556,7 @@
     {#if deleteStatus}
       <div class="restore-result" class:error={deleteStatus.includes('failed')}>
         {deleteStatus}
+        {#if deleteHint}<span class="result-hint">{deleteHint}</span>{/if}
       </div>
     {/if}
 
@@ -585,6 +614,7 @@
         class:cancelled={restoreStatus.includes('cancelled')}
       >
         {restoreStatus}
+        {#if restoreHint}<span class="result-hint">{restoreHint}</span>{/if}
       </div>
     {/if}
   {/if}
@@ -798,6 +828,14 @@
     padding: var(--space-3) var(--space-4);
     border-radius: var(--radius-md);
     font-size: var(--text-sm);
+  }
+
+  /* Plain-language suggestion shown under a raw error message. */
+  .result-hint {
+    display: block;
+    margin-top: var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
   }
 
   .archive-list {
