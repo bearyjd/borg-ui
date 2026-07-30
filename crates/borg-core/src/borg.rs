@@ -543,6 +543,41 @@ impl BorgClient {
         Ok(())
     }
 
+    fn change_passphrase_command(&self, repo: &RepoConfig, old: &str, new: &str) -> Command {
+        let mut cmd = self.base_command_with(Some(old));
+        cmd.env("BORG_NEW_PASSPHRASE", new);
+        cmd.args(["key", "change-passphrase"])
+            .end_options()
+            .arg(repo.location());
+        cmd
+    }
+
+    /// Rotate the repository's real passphrase via `borg key change-passphrase`.
+    /// Callers own keeping the OS keychain in sync: update it only after this
+    /// succeeds, or the stored copy and the repository will desync.
+    pub async fn change_passphrase(
+        &self,
+        repo: &RepoConfig,
+        old_passphrase: &str,
+        new_passphrase: &str,
+    ) -> Result<()> {
+        if old_passphrase.is_empty() {
+            return Err(BorgError::InvalidConfig {
+                message: "current passphrase is required to change the repository passphrase"
+                    .into(),
+            });
+        }
+        if new_passphrase.is_empty() {
+            return Err(BorgError::InvalidConfig {
+                message: "new passphrase cannot be empty".into(),
+            });
+        }
+        let cmd = self.change_passphrase_command(repo, old_passphrase, new_passphrase);
+        self.run_checked(cmd, "key change-passphrase", Some(QUICK_OP_TIMEOUT_SECS))
+            .await?;
+        Ok(())
+    }
+
     pub async fn delete_archive(
         &self,
         repo: &RepoConfig,
@@ -1180,6 +1215,56 @@ mod tests {
         assert!(passcommand.is_none());
     }
 
+    #[test]
+    fn change_passphrase_command_sets_old_and_new_env() {
+        let client = BorgClient::new(PathBuf::from("borg"));
+        let cmd = client.change_passphrase_command(&test_repo(), "old-pass", "new-pass");
+        let std_cmd = cmd.as_std();
+        let envs: Vec<_> = std_cmd.get_envs().collect();
+        assert!(
+            envs.iter()
+                .any(|(k, v)| *k == "BORG_PASSPHRASE" && v.is_some_and(|v| v == "old-pass"))
+        );
+        assert!(
+            envs.iter()
+                .any(|(k, v)| *k == "BORG_NEW_PASSPHRASE" && v.is_some_and(|v| v == "new-pass"))
+        );
+        let args: Vec<_> = std_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "key".to_string(),
+                "change-passphrase".to_string(),
+                "--".to_string(),
+                test_repo().location(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn change_passphrase_rejects_empty_passphrases_before_spawn() {
+        // Nonexistent binary on purpose: rejection must happen before any
+        // process is spawned — an empty old passphrase means there is nothing
+        // to rotate (unencrypted repo or nothing stored), and an empty new
+        // passphrase would lock the user out of prompting flows.
+        let client = BorgClient::new(PathBuf::from("/nonexistent/borg"));
+        for (old, new) in [("", "new-pass"), ("old-pass", ""), ("", "")] {
+            let err = client
+                .change_passphrase(&test_repo(), old, new)
+                .await
+                .expect_err("empty passphrase must be rejected");
+            match err {
+                BorgError::InvalidConfig { message } => {
+                    assert!(message.contains("passphrase"), "{message}");
+                }
+                other => panic!("expected InvalidConfig, got {other:?}"),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn prune_refuses_unscoped_archive_globs() {
         // Final backstop for the shared-repo data-loss bug: even if a future
@@ -1463,6 +1548,20 @@ mod tests {
                 .await
                 .unwrap();
             assert_separator_then(&recorded_args(&args), &["/tmp/repo::arch"]);
+        }
+
+        #[tokio::test]
+        async fn change_passphrase_separates_positionals() {
+            let _guard = SPAWN_LOCK.lock().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (borg, args) = fake_borg(dir.path());
+            // A repo path that would be parsed as a flag without the `--`.
+            let repo = local_repo("-oProxyCommand=touch /tmp/pwned");
+            BorgClient::new(borg)
+                .change_passphrase(&repo, "old-pass", "new-pass")
+                .await
+                .unwrap();
+            assert_separator_then(&recorded_args(&args), &["-oProxyCommand=touch /tmp/pwned"]);
         }
 
         #[tokio::test]

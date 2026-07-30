@@ -71,6 +71,17 @@ html, body {
   user-select: none;
 }
 
+/* Keyboard focus (WCAG 2.4.7): a visible accent ring on any focusable
+   element that doesn't define its own treatment. Inputs/selects keep their
+   accent-border focus style — their scoped :focus rules are more specific
+   and override this. :focus-visible means mouse clicks don't paint rings,
+   so pointer UX is unchanged. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
 a {
   color: var(--color-accent);
   text-decoration: none;

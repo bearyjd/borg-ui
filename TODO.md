@@ -1,6 +1,6 @@
 # BorgUI Roadmap Status
 
-Last updated: 2026-07-02.
+Last updated: 2026-07-29.
 
 The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 
@@ -31,9 +31,19 @@ The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 - Installers remain usable unsigned. Authenticode signing is prepared but intentionally disabled until Azure Trusted Signing repository configuration exists.
 - Updater signing is separate from Authenticode signing; keep the updater private key only in GitHub Actions secrets.
 
+Shipped since 2026-07-02 (see `HANDOFF.md` "Update (2026-07-29)"): Vorta-style
+connection UX with paste-to-fill and repository summary, context-scoped
+plain-language error hints across Settings/Backup/Archives/dashboard, settings
+page decomposition, first-run setup wizard at `/setup`, frontend CI switched to
+pnpm with a vitest gate.
+
 ## Tracked follow-up issues
 
-- [#64](https://github.com/bearyjd/borg-ui/issues/64) — enable production Authenticode signing after Azure/OIDC configuration.
+- [#64](https://github.com/bearyjd/borg-ui/issues/64) — enable production Authenticode signing after Azure/OIDC configuration (blocked on cert provisioning).
+
+Closed since: passphrase-change desync (the change flow now rotates via
+`borg key change-passphrase` before touching Credential Manager) and the
+app-wide keyboard `:focus-visible` styles (#97).
 
 Provider-specific SSH examples and Windows archive mounting were evaluated in
 [#67](https://github.com/bearyjd/borg-ui/issues/67). There is no recorded user
