@@ -5,6 +5,9 @@ use regex::Regex;
 const REDACTED: &str = "[REDACTED]";
 const SENSITIVE_ENV_NAMES: &[&str] = &[
     "BORG_PASSPHRASE",
+    // `\b` cannot match between `_` and `PASSPHRASE`, so the generic pattern
+    // below never covered this one — it needs naming explicitly.
+    "BORG_NEW_PASSPHRASE",
     "BORG_PASSCOMMAND",
     "BORG_RSH",
     "SSH_AUTH_SOCK",
@@ -44,7 +47,7 @@ fn patterns() -> &'static [Regex] {
     PATTERNS.get_or_init(|| {
         vec![
             Regex::new(
-                r#"(?i)\b(passphrase|password|token|secret|private_key|BORG_PASSPHRASE|BORG_PASSCOMMAND)\s*[:=]\s*(?:\S+|"[^"]*")"#,
+                r#"(?i)\b(passphrase|password|token|secret|private_key|BORG_(?:NEW_)?PASSPHRASE|BORG_PASSCOMMAND)\s*[:=]\s*(?:\S+|"[^"]*")"#,
             )
             .expect("valid secret pattern"),
             Regex::new(
@@ -82,6 +85,16 @@ mod tests {
         assert!(!redacted.contains("hunter2"));
         assert!(!redacted.contains("nope"));
         assert!(!redacted.contains("secret"));
+    }
+
+    /// `BORG_NEW_PASSPHRASE` carries the rotation's *new* secret. `\b` cannot
+    /// match between `_` and `PASSPHRASE`, so the generic `\bpassphrase` pattern
+    /// never covered it — it needs its own alternation and env-name entry.
+    #[test]
+    fn redacts_the_rotation_new_passphrase_variable() {
+        let redacted = redact("BORG_NEW_PASSPHRASE=rotated-secret");
+        assert!(!redacted.contains("rotated-secret"), "{redacted}");
+        assert!(redacted.contains(REDACTED), "{redacted}");
     }
 
     #[test]

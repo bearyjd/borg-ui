@@ -157,6 +157,7 @@ pub fn run() {
             commands::get_autostart,
             commands::set_autostart,
             commands::set_repo_passphrase,
+            commands::change_repo_passphrase,
             commands::clear_repo_passphrase,
             commands::has_repo_passphrase,
             commands::list_profiles,
