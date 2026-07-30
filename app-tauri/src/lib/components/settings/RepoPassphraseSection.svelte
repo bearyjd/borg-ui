@@ -4,6 +4,7 @@
   import { repoForm } from '$lib/stores/repo-form.svelte';
   import { profilesState } from '$lib/stores/profiles.svelte';
   import { explainConnectionError, type HintContext } from '$lib/connection-hints';
+  import { passphraseFailureMessage, planPassphraseSave } from '$lib/passphrase-save';
   import FieldHelp from '$lib/components/FieldHelp.svelte';
 
   let hasPassphrase = $state(false);
@@ -13,8 +14,15 @@
   let passphraseConfirm = $state('');
   let passphraseSaving = $state(false);
   let passphraseResult = $state('');
+  // Set explicitly alongside every `passphraseResult`. The banner used to sniff
+  // the message text for 'saved'/'match'/'Failed', which silently mis-styled any
+  // new wording — a success ending in "…updated to match." rendered as an error.
+  let passphraseStatus = $state<'success' | 'error' | ''>('');
   let passphraseHint = $state('');
   let clearPassphraseModalOpen = $state(false);
+  // Change-flow escape hatch: overwrite only the stored copy without rotating
+  // the repository's real passphrase (for repairing an out-of-sync keychain).
+  let storeOnly = $state(false);
 
   function hintFor(e: unknown): string {
     const contexts: HintContext[] = repoForm.repoType === 'ssh' ? ['ssh', 'repo'] : ['repo'];
@@ -38,11 +46,21 @@
     }
   }
 
-  function openPassphraseModal() {
+  async function openPassphraseModal() {
     passphraseInput = '';
     passphraseConfirm = '';
     passphraseResult = '';
+    passphraseStatus = '';
     passphraseHint = '';
+    storeOnly = false;
+    // `hasPassphrase` decides rotate-vs-store, and the command runs against
+    // whatever the repo form currently holds. `refresh()` otherwise only fires
+    // on mount and on profile switch, so editing the connection fields to point
+    // at a different repository would leave this stale — and a stale `false`
+    // silently downgrades a real change into a keychain-only write, which is
+    // exactly the desync this component is supposed to prevent. Re-check
+    // against the live form before opening.
+    await refresh();
     passphraseModalOpen = true;
   }
 
@@ -50,26 +68,39 @@
     const repo = repoForm.currentRepoFromForm();
     if (!repo) {
       passphraseResult = 'Configure SSH connection first.';
+      passphraseStatus = 'error';
       return;
     }
-    if (!passphraseInput) {
-      passphraseResult = 'Passphrase cannot be empty.';
-      return;
-    }
-    if (passphraseInput !== passphraseConfirm) {
-      passphraseResult = 'Passphrases do not match.';
+    const plan = planPassphraseSave({
+      hasStoredPassphrase: hasPassphrase,
+      storeOnly,
+      passphrase: passphraseInput,
+      confirm: passphraseConfirm
+    });
+    if (plan.kind === 'invalid') {
+      passphraseResult = plan.message;
+      passphraseStatus = 'error';
       return;
     }
     passphraseSaving = true;
     try {
-      await invoke('set_repo_passphrase', { repo, passphrase: passphraseInput });
+      // `plan.command` encodes the rotate-vs-store decision (see
+      // $lib/passphrase-save): changing an existing passphrase must rotate the
+      // REPOSITORY's own passphrase, not just overwrite the stored copy.
+      if (plan.mode === 'rotate') {
+        await invoke(plan.command, { repo, newPassphrase: passphraseInput });
+      } else {
+        await invoke(plan.command, { repo, passphrase: passphraseInput });
+      }
       hasPassphrase = true;
       passphraseModalOpen = false;
       passphraseInput = '';
       passphraseConfirm = '';
-      passphraseResult = 'Passphrase saved to system keychain.';
+      passphraseResult = plan.successMessage;
+      passphraseStatus = 'success';
     } catch (e) {
-      passphraseResult = `Failed to save passphrase: ${e}`;
+      passphraseResult = passphraseFailureMessage(plan.mode, e);
+      passphraseStatus = 'error';
       passphraseHint = hintFor(e);
     } finally {
       passphraseSaving = false;
@@ -86,8 +117,10 @@
       await invoke('clear_repo_passphrase', { repo });
       hasPassphrase = false;
       passphraseResult = 'Passphrase removed from keychain.';
+      passphraseStatus = 'success';
     } catch (e) {
       passphraseResult = `Failed to clear passphrase: ${e}`;
+      passphraseStatus = 'error';
     } finally {
       clearPassphraseModalOpen = false;
     }
@@ -152,7 +185,7 @@
     </div>
 
     {#if passphraseResult && !passphraseModalOpen}
-      <div class="test-result" class:success={passphraseResult.includes('saved') || passphraseResult.includes('removed')} class:error={passphraseResult.includes('Failed') || passphraseResult.includes('first') || passphraseResult.includes('match') || passphraseResult.includes('empty')}>
+      <div class="test-result" class:success={passphraseStatus === 'success'} class:error={passphraseStatus === 'error'}>
         {passphraseResult}
       </div>
     {/if}
@@ -192,7 +225,20 @@
       aria-labelledby="passphrase-title"
     >
       <h2 id="passphrase-title">{hasPassphrase ? 'Change passphrase' : 'Set passphrase'}</h2>
-      <p>Enter the passphrase used to encrypt this borg repository. It will be stored in your OS keychain.</p>
+      {#if hasPassphrase}
+        <p>
+          This re-encrypts this repository's key with a new passphrase, using the currently stored
+          one, then updates the stored copy to match.
+        </p>
+        <p class="modal-note">
+          For <code>keyfile</code> repositories the key is held on this PC, so the change applies
+          here only — other machines using their own copy of the key keep the old passphrase. Any
+          recovery key you exported earlier still carries the <em>old</em> passphrase; export a
+          fresh one afterwards.
+        </p>
+      {:else}
+        <p>Enter the passphrase used to encrypt this borg repository. It will be stored in your OS keychain.</p>
+      {/if}
       <form onsubmit={(e) => { e.preventDefault(); savePassphrase(); }}>
         <div class="field">
           <label for="pass-input">Passphrase</label>
@@ -202,6 +248,12 @@
           <label for="pass-confirm">Confirm</label>
           <input id="pass-confirm" type="password" autocomplete="new-password" bind:value={passphraseConfirm} />
         </div>
+        {#if hasPassphrase}
+          <label class="store-only">
+            <input type="checkbox" bind:checked={storeOnly} />
+            <span>Only update the stored copy — use this if the saved passphrase is wrong and backups fail to unlock. The repository's own passphrase is not changed.</span>
+          </label>
+        {/if}
         {#if passphraseResult}
           <div class="test-result error">
             {passphraseResult}
@@ -388,6 +440,14 @@
     color: var(--color-text-muted);
     font-size: var(--text-sm);
     line-height: 1.5;
+  }
+
+  /* Caveats that survive a skim — rotation is irreversible, so the keyfile and
+     stale-recovery-key notes must not read as body copy. */
+  .modal-note {
+    margin-top: var(--space-2);
+    padding-left: var(--space-3);
+    border-left: 2px solid var(--color-border);
   }
 
   .modal-actions {
