@@ -40,9 +40,10 @@ pnpm with a vitest gate.
 ## Tracked follow-up issues
 
 - [#64](https://github.com/bearyjd/borg-ui/issues/64) — enable production Authenticode signing after Azure/OIDC configuration (blocked on cert provisioning).
-- Passphrase-change desync: `set_repo_passphrase` overwrites Credential Manager
-  without `borg key change-passphrase` (HANDOFF audit, still open).
-- Keyboard `:focus-visible` styles missing app-wide (WCAG; HANDOFF audit, still open).
+
+Closed since: passphrase-change desync (the change flow now rotates via
+`borg key change-passphrase` before touching Credential Manager) and the
+app-wide keyboard `:focus-visible` styles (#97).
 
 Provider-specific SSH examples and Windows archive mounting were evaluated in
 [#67](https://github.com/bearyjd/borg-ui/issues/67). There is no recorded user
