@@ -40,10 +40,18 @@ pnpm with a vitest gate.
 ## Tracked follow-up issues
 
 - [#64](https://github.com/bearyjd/borg-ui/issues/64) — enable production Authenticode signing after Azure/OIDC configuration (blocked on cert provisioning).
+- [#100](https://github.com/bearyjd/borg-ui/issues/100) — a passphrase rotation invalidates an earlier recovery-key export, but `recovery_readiness` still reports "ready".
+- [#101](https://github.com/bearyjd/borg-ui/issues/101) — the support bundle can now carry source file paths, since borg-core warnings reach the log file.
+- [#102](https://github.com/bearyjd/borg-ui/issues/102) — a stored passphrase is never verified against the repository, including on the store-only repair path.
+- [#103](https://github.com/bearyjd/borg-ui/issues/103) — `"csp": null`; no Content-Security-Policy on the webview.
+- [#104](https://github.com/bearyjd/borg-ui/issues/104) — `authenticated` repos are created with an empty passphrase; `none`-mode gives a raw borg error.
 
-Closed since: passphrase-change desync (the change flow now rotates via
-`borg key change-passphrase` before touching Credential Manager) and the
-app-wide keyboard `:focus-visible` styles (#97).
+Closed since: passphrase-change desync ([#99](https://github.com/bearyjd/borg-ui/pull/99) — the
+change flow now rotates via `borg key change-passphrase` before touching Credential Manager),
+the app-wide keyboard `:focus-visible` styles (#97), and borg-core log events being dropped
+below ERROR ([#94](https://github.com/bearyjd/borg-ui/pull/94)).
+
+#100–#104 were all raised by the security and adversarial review passes on #99.
 
 Provider-specific SSH examples and Windows archive mounting were evaluated in
 [#67](https://github.com/bearyjd/borg-ui/issues/67). There is no recorded user

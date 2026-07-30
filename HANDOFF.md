@@ -199,9 +199,10 @@ well-built (complete v0.3 feature set, parameterized SQL, secrets in Credential
 Manager, correct `unsafe` FFI, signed updater, minimal capabilities). At the time
 this section was written, two findings were flagged as **candidate release
 blockers** on par with #85/#86, plus a HIGH tier below them. **All of those items
-have since been fixed except one; status below verified against `git log` on
-2026-07-07 — see `.agent_native/agent_roadmap.md` item 1 for the full
-cross-check.**
+have since been fixed; status below re-verified against `git log` on 2026-07-30
+— see `.agent_native/agent_roadmap.md` item 1 for the full cross-check.** The
+last two stragglers were the passphrase-rotation desync (#99) and the missing
+keyboard focus ring (#97).
 
 **Note for future readers:** before trusting any "still open" claim below,
 run `git log --oneline -- <the cited file>` for the referenced path/line range —
@@ -229,13 +230,15 @@ Former HIGH tier:
   part of `9257b75` (same commit as #1 above) — every borg subcommand now calls
   `.end_options()` before positional args (`crates/borg-core/src/borg.rs:123-137`,
   the `EndOfOptions` trait).
-- **🟡 STILL OPEN — no passphrase rotation + `set_repo_passphrase` can desync
-  Credential Manager from the repo** (`app-tauri/src-tauri/src/commands.rs:1798`).
-  `set_repo_passphrase` only overwrites the Credential Manager entry; there is
-  still no `borg key change-passphrase` (or equivalent) call anywhere in the
-  codebase, so calling it without also rotating the repo's actual passphrase
-  desyncs the two. Confirmed still absent via `grep -rn
-  "change-passphrase\|change_passphrase" crates/ app-tauri/` on 2026-07-07.
+- **✅ FIXED — no passphrase rotation + `set_repo_passphrase` can desync
+  Credential Manager from the repo.** Fixed by `ba5e0f3` (#99). The change flow
+  now runs `borg key change-passphrase` via `BorgClient::change_passphrase`
+  (`crates/borg-core/src/borg.rs`) and writes Credential Manager only after the
+  repository accepts the rotation; first-time set still just stores. Both
+  partial-failure states (keychain write failed after a successful rotation, and
+  a timed-out rotation whose outcome is unknown) are reported as such instead of
+  as a plain failure. Verified against real borg 1.4.4 for `repokey` and
+  `keyfile`.
 - **✅ FIXED — generated SSH key not ACL-restricted on Windows.** Fixed by
   `a5a8bf0` (fail-closed ACL restriction on generated SSH private keys).
 - **✅ FIXED — no missed-backup catch-up** (`<StartWhenAvailable>` missing).
@@ -245,12 +248,10 @@ Former HIGH tier:
 - **✅ FIXED — undefined `--color-error` CSS token** (failed integrity check
   rendered gray not red). Fixed by `61d0bc4` (defines `--color-error`,
   `--space-5`, `--color-surface-raised`).
-- **🟡 STILL OPEN — no keyboard focus styles anywhere (WCAG).** No
-  `:focus-visible` rule found in `app-tauri/src/app.css`; the only `:focus`
-  selector in the frontend is a single `.profile-picker select:focus` rule in
-  `app-tauri/src/routes/+layout.svelte:198`, which doesn't cover the rest of the
-  interactive surface. Not part of the original two-item "still open" tally
-  below — added here since this pass found it unresolved too.
+- **✅ FIXED — no keyboard focus styles anywhere (WCAG 2.4.7).** Fixed by
+  `04a563a` (#97), which adds a global `:focus-visible` ring in
+  `app-tauri/src/app.css`. Not part of the original two-item "still open" tally
+  below — added here because the 2026-07-07 pass found it unresolved.
 
 Full Top-10 + detail in the `borgui-audit-2026-07` memory.
 
