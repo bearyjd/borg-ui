@@ -1,6 +1,6 @@
 # BorgUI handoff
 
-Last updated: 2026-07-03.
+Last updated: 2026-07-31.
 
 ## Current state
 
@@ -63,6 +63,57 @@ Windows build since #71–#80 merged. Linux CI only compiles the
 passed every PR and only surfaced at the release gate. The new #83 Windows CI job
 closes that structural gap — expect it to be stricter than the Release
 `cargo build` (`-D warnings` + `--all-targets`).
+
+### Update (2026-07-31)
+
+`master` is at `fa2d955`. **Every open issue except #64 is closed and there are
+no open PRs.** Landed since the section above:
+
+- **Passphrase rotation** (#99). "Change passphrase" only overwrote the
+  Credential Manager copy, silently desyncing it from the repository; the change
+  flow now runs `borg key change-passphrase` first and writes the keychain only
+  after the repo accepts. Both partial-failure states are reported honestly —
+  keychain write failed after a successful rotation, and a timeout whose outcome
+  is genuinely unknown (borg is deliberately *not* killed, since killing it
+  mid-key-write risks destroying the key).
+- **Recovery readiness follows rotations** (#106, #110) — an exported key
+  carries the passphrase current at export time, so readiness no longer counts
+  one that predates the latest rotation.
+- **Passphrase verification + encryption modes** (#107, #110) — a stored
+  passphrase is probed with `borg info` and rejected only on a definite
+  wrong-passphrase verdict; `authenticated` repos are no longer created with an
+  empty passphrase.
+- **Diagnostics privacy** (#108, #110) — account names are scrubbed from paths
+  in logs *and* the bundle's `configuration.json`; the help text no longer
+  overclaims.
+- **Webview CSP** (#109) — the webview ran with no policy at all. Emitted via
+  SvelteKit hash mode, not `tauri.conf.json`, because SvelteKit's inline
+  bootstrap hash changes every build; `csp.test.ts` guards it and CI now builds
+  the frontend (it previously never did).
+
+**Windows runtime verified (2026-07-31)** against a production `tauri build`
+installer on the KVM guest: the Dashboard renders and shows live `invoke()`
+results (`borg.exe 1.4.4+win7`, last-backup age), so the CSP breaks neither
+rendering nor the IPC bridge. Note the harness calls GUI rendering a manual VNC
+check — it is scriptable via `schtasks /IT` plus a screenshot taken inside
+session 1; SSH sits in session 0 and always reports `MainWindowHandle=0`.
+
+**History was rewritten on 2026-07-31.** ~48 MB of installer binaries were
+committed by mistake in #110 and purged with `git filter-repo`, so **every commit
+SHA in this repo changed** (filter-repo must strip GitHub's merge signatures,
+which cascades) and the `v0.1.0`/`v0.2.0`/`v0.3.0` tags were repointed. Release
+*assets* are untouched and the updater still works. Any clone predating
+`fa2d955` must be re-cloned. SHAs cited earlier in this file therefore refer to
+the pre-rewrite history.
+
+Two fixes in this batch shipped broken and needed a second pass — worth
+remembering when reviewing this class of change. #106 was a **silent no-op**: a
+SQLite CHECK constraint rejected the new readiness kind and the failure was
+swallowed by a `warn!`. #107 made both `authenticated` modes **impossible to
+create**: the passphrase rule was duplicated in the frontend and only the backend
+was updated. Neither was visible to unit tests over pure functions; catching this
+class requires tests that cross a boundary (the database, or Rust↔TypeScript
+parity).
 
 ## Delivered roadmap
 
