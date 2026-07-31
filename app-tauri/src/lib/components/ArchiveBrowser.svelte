@@ -151,13 +151,33 @@
     };
 
     try {
-      await invoke<number>('stream_archive_contents', {
+      const total = await invoke<number>('stream_archive_contents', {
         repo,
         archiveName,
         requestId,
         onBatch: channel,
       });
       if (gen !== loadGen || requestId !== activeRequestId) return;
+
+      // The command resolving does NOT mean every batch has been delivered:
+      // Channel messages reach `onmessage` independently of the command's own
+      // return, so the last one can still be in flight here. Building the tree
+      // immediately dropped the final partial batch — on a 100k archive
+      // (100,201 entries at 5,000 per batch) that silently lost the trailing
+      // 201, and both the "N / total files" header and Select all reported
+      // 99,799. Intermittent by nature: it depended on which side won the race.
+      //
+      // `total` is the count borg actually streamed, so wait for the tail
+      // rather than guessing. Bounded, so a genuinely lost message degrades to
+      // a slightly short tree instead of leaving the browser loading forever.
+      if (incoming.length < total) {
+        const deadline = Date.now() + 5000;
+        while (incoming.length < total && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          if (gen !== loadGen || requestId !== activeRequestId) return;
+        }
+      }
+
       isEmpty = incoming.length === 0;
       const built = buildTree(incoming);
       tree = built;
