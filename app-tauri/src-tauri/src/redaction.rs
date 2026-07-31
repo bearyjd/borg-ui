@@ -32,6 +32,11 @@ pub fn redact(input: &str) -> String {
     output = url_credentials_pattern()
         .replace_all(&output, "${scheme}${user}:[REDACTED]@")
         .into_owned();
+    for (pattern, prefix) in user_path_patterns() {
+        output = pattern
+            .replace_all(&output, format!("{prefix}{REDACTED}"))
+            .into_owned();
+    }
     for name in SENSITIVE_ENV_NAMES {
         if let Ok(value) = std::env::var(name)
             && !value.is_empty()
@@ -66,6 +71,37 @@ fn private_key_pattern() -> &'static Regex {
     })
 }
 
+/// Account names inside home-directory paths.
+///
+/// borg's warnings name the file they are about (`C:\Users\alice\Documents\
+/// tax.pdf: Permission denied`), and those warnings now reach the log file and
+/// therefore the support bundle. Scrubbing the *whole* path would destroy the
+/// diagnostic value that makes the log worth exporting at all, but the account
+/// name is the part that identifies a person rather than a problem, so it goes.
+///
+/// This is a reduction, not a guarantee: a bundle can still contain file and
+/// folder names from backed-up sources. `export_diagnostics` says so explicitly
+/// rather than implying otherwise.
+fn user_path_patterns() -> &'static [(Regex, &'static str)] {
+    static PATTERNS: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        vec![
+            (
+                // C:\Users\alice, D:/Users/alice — stop at the next separator.
+                Regex::new(r#"(?i)(?P<prefix>[a-z]:[\\/]Users[\\/])(?P<user>[^\\/:*?"<>|\r\n]+)"#)
+                    .expect("valid windows home pattern"),
+                "$prefix",
+            ),
+            (
+                // /home/alice, /Users/alice (macOS), /root stays as-is.
+                Regex::new(r"(?P<prefix>/(?:home|Users)/)(?P<user>[^/\s:]+)")
+                    .expect("valid unix home pattern"),
+                "$prefix",
+            ),
+        ]
+    })
+}
+
 fn url_credentials_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
@@ -95,6 +131,46 @@ mod tests {
         let redacted = redact("BORG_NEW_PASSPHRASE=rotated-secret");
         assert!(!redacted.contains("rotated-secret"), "{redacted}");
         assert!(redacted.contains(REDACTED), "{redacted}");
+    }
+
+    /// borg warnings name the file they are about, and those reach the log file
+    /// and the support bundle. The account name identifies a person rather than
+    /// a problem, so it is scrubbed — while the rest of the path stays, because
+    /// a log with no paths is not worth exporting.
+    #[test]
+    fn redacts_account_names_from_home_paths() {
+        let cases = [
+            (
+                r"C:\Users\alice\Documents\tax.pdf: Permission denied",
+                r"C:\Users\[REDACTED]\Documents\tax.pdf",
+            ),
+            (
+                "/home/bob/photos/img.jpg: Permission denied",
+                "/home/[REDACTED]/photos/img.jpg",
+            ),
+            ("/Users/carol/Desktop/x", "/Users/[REDACTED]/Desktop/x"),
+        ];
+        for (input, expected) in cases {
+            let redacted = redact(input);
+            assert!(redacted.contains(expected), "{redacted}");
+        }
+        let redacted = redact(r"C:\Users\alice\Documents\tax.pdf");
+        assert!(!redacted.contains("alice"), "{redacted}");
+        // The diagnostic part survives — that is the whole point of the log.
+        assert!(redacted.contains("tax.pdf"), "{redacted}");
+    }
+
+    /// Only the account segment goes. A path that merely contains "users"
+    /// elsewhere, or a drive root, must survive intact.
+    #[test]
+    fn account_redaction_leaves_unrelated_paths_alone() {
+        for untouched in [
+            r"D:\Photos\2026\img.jpg",
+            "/var/backups/repo",
+            r"C:\Program Files\BorgUI\borg.exe",
+        ] {
+            assert_eq!(redact(untouched), untouched);
+        }
     }
 
     #[test]

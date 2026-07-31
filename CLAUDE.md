@@ -77,6 +77,16 @@ it manually on any change touching diagnostics, exports, or logging:
 - source listings and archive filenames
 - temporary restore paths
 
+**One deliberate exception, decided in #101:** a borg *warning* that names the
+single file it failed on (`C:\Users\alice\Documents\tax.pdf: Permission denied`)
+does reach `borgui.log` and therefore the support bundle, because that is the
+diagnostic content the log exists for. The line above still holds for
+*listings* — the file-by-file `archive_progress` stream is never logged. What is
+scrubbed on that path is the account name (`redaction.rs` rewrites
+`C:\Users\<name>` and `/home/<name>`), and the Diagnostics section says plainly
+that a bundle can still name individual files. Do not "fix" this by scrubbing
+whole paths without replacing the diagnostic value some other way.
+
 Credential Manager (via the `keyring` crate) is the sole authority for
 passphrases/secrets — never persist them to `profiles.rs` config or SQLite
 (`history.rs`).
