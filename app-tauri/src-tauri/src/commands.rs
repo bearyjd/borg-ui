@@ -612,6 +612,8 @@ pub async fn recovery_readiness(
         .ok_or_else(|| "no active profile".to_string())?;
     let dir = config_dir(&app).await?;
     let key_export = history::latest_readiness_event(&dir, &profile.id, "key_export").await?;
+    let rotation =
+        history::latest_readiness_event(&dir, &profile.id, "passphrase_rotation").await?;
     let integrity = history::latest_integrity(&dir, &profile.id).await?;
     let drill = history::latest_restore_drill(&dir, &profile.id).await?;
     let passphrase_available = keychain::get_passphrase(&profile.repo.ssh_url())
@@ -622,6 +624,7 @@ pub async fn recovery_readiness(
         profile.recovery.encrypted_repository,
         passphrase_available,
         key_export.as_ref(),
+        rotation.as_ref(),
         integrity.as_ref(),
         drill.as_ref(),
         chrono::Utc::now(),
@@ -1849,6 +1852,7 @@ fn rotation_indeterminate_error(cause: &str) -> String {
 /// stored copy and would otherwise silently desync it from the repository.
 #[tauri::command]
 pub async fn change_repo_passphrase(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     repo: RepoConfig,
     new_passphrase: String,
@@ -1886,7 +1890,44 @@ pub async fn change_repo_passphrase(
     // this write fails the two are now out of sync in the most dangerous
     // direction, so say so explicitly rather than reporting a plain failure.
     keychain::set_passphrase(&repo.ssh_url(), &new_passphrase)
-        .map_err(|e| rotated_unsaved_error(&e))
+        .map_err(|e| rotated_unsaved_error(&e))?;
+    // Any recovery key exported before now still carries the OLD passphrase,
+    // so recovery readiness must stop counting it. Recorded after the keychain
+    // write so a rotation only invalidates the export once the whole flow has
+    // actually succeeded. A failure to record must not fail the rotation — the
+    // passphrase really did change — so it degrades to a warning.
+    if let Err(e) = record_passphrase_rotation(&app, &repo).await {
+        tracing::warn!("could not record passphrase rotation for recovery readiness: {e}");
+    }
+    Ok(())
+}
+
+/// Record a `passphrase_rotation` readiness event against whichever profile
+/// points at this repository. The passphrase dialog runs against the live repo
+/// form, which need not be the active profile, so match on the repo rather than
+/// assuming.
+async fn record_passphrase_rotation(
+    app: &tauri::AppHandle,
+    repo: &RepoConfig,
+) -> Result<(), String> {
+    let data = read_profiles(app).await?;
+    let url = repo.ssh_url();
+    let Some(profile) = data.profiles.iter().find(|p| p.repo.ssh_url() == url) else {
+        // A repo configured in the form but not yet saved as a profile has no
+        // readiness to invalidate.
+        return Ok(());
+    };
+    let dir = config_dir(app).await?;
+    history::append_readiness_event(
+        &dir,
+        history::ReadinessEvent {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            profile_id: profile.id.clone(),
+            kind: "passphrase_rotation".into(),
+            outcome: "success".into(),
+        },
+    )
+    .await
 }
 
 #[tauri::command]
