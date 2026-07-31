@@ -5,6 +5,67 @@ All notable changes to BorgUI are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-08-01
+
+### Security
+
+- **The repository passphrase can now actually be changed.** "Change passphrase"
+  previously overwrote only the copy in Windows Credential Manager and never
+  told the repository, so the two silently diverged and every later backup and
+  restore failed to unlock it. The change flow now runs
+  `borg key change-passphrase` first and updates the stored copy only after the
+  repository accepts the rotation. Both partial-failure states are reported
+  honestly rather than guessed at: a keychain write that fails after a
+  successful rotation, and a rotation that timed out and may still be applied.
+  (#99)
+- **The webview now has a Content-Security-Policy.** It previously ran with no
+  policy at all. Nothing in the app injects HTML, so this was not exploitable,
+  but every Tauri command is callable from any script in the webview — and
+  those now include changing a repository's encryption passphrase. (#109)
+- **`BORG_NEW_PASSPHRASE` is redacted** from logs and support bundles. The
+  existing pattern could not match it, so the passphrase used during a rotation
+  was not covered. (#99)
+- **Account names are removed from paths** in logs and in the support bundle's
+  `configuration.json`. Bundles can still name individual files a backup failed
+  to read — that is what makes the logs useful — and the Diagnostics section now
+  says so instead of claiming otherwise. (#108, #110)
+- **A stored passphrase is verified against the repository** before being saved,
+  and is rejected only on a definite wrong-passphrase verdict, so a passphrase
+  can still be stored before the repository exists. (#107)
+
+### Fixed
+
+- **`authenticated` repositories were created with an empty passphrase.** These
+  modes do not encrypt file contents but still have a passphrase-protected key,
+  so the first "Set passphrase" stored a value the repository would never
+  accept. (#107, #110)
+- **Recovery readiness follows passphrase changes.** An exported recovery key
+  carries the passphrase current at export time, so rotating afterwards makes it
+  stale — readiness previously kept reporting "ready" against a key that would
+  lock you out. Importing a key counts as proof again, since an import reverts
+  the repository to that key's passphrase. (#106, #110, #113)
+- **Importing a recovery key warns when it reverts the passphrase.** The import
+  can leave the saved passphrase unable to open the repository, which is the
+  worst possible moment to discover it by watching backups fail. (#113)
+- **The archive browser could under-report a large archive.** The file tree was
+  built before the last batch of entries had arrived, so counts and "Select all"
+  could be short — a restore would then quietly write fewer files than asked
+  for. An incomplete listing is now called out instead of looking authoritative.
+  (#116)
+- **borg-core log output reaches the log file.** Without `RUST_LOG` set, only
+  errors were recorded, so exported support bundles were effectively empty.
+  (#94)
+- **A scheduled backup that does not run says why.** Every pre-flight bail-out
+  was previously silent — no history event and no log line. (#113)
+- A corrupted repository is no longer reported as a wrong passphrase, which
+  could have led to discarding a passphrase that was correct. (#110)
+
+### Changed
+
+- Creating an `authenticated` or `authenticated-blake2` repository now requires
+  a passphrase. Previously the field was hidden for these modes, which is what
+  produced the empty-passphrase repositories above. (#107, #110)
+
 ## [0.3.0] - 2026-07-04
 
 ### Security
