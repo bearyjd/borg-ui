@@ -12,7 +12,7 @@
 #   Tier B (interactive launch, file-checkable result):
 #     3. scheduled -> a registered Task Scheduler entry running
 #                     `borg-ui.exe --scheduled-backup` actually produces a backup
-#                     (a history.json success event + a new archive in the repo).
+#                     (a new archive in the repo — history lives in SQLite now).
 #   Tier C (interactive launch + visual confirm -> SIGNAL only, never gates):
 #     1. window/tray, 2. --minimized, 4. console flash -> best-effort process /
 #                     window-handle signals; the verdict is the VNC checklist in
@@ -275,12 +275,15 @@ if (-not $script:BorgUiExe) {
                     post_backup     = $null
                 })
         }
-        # Clear any stale history so the success we assert is THIS run's. A
-        # swallowed delete (locked file) would let a prior success false-pass, so
-        # verify it is actually gone.
-        $historyPath = Join-Path $configDir "history.json"
-        Remove-Item -Force $historyPath -EA SilentlyContinue
-        if (Test-Path $historyPath) { throw "could not clear stale history.json (file locked?)" }
+        # The repo is created empty above, so "an archive exists" is by itself
+        # proof that THIS run produced it -- no stale state to clear.
+        #
+        # Deliberately NOT asserting on history.json: the app moved its history
+        # to SQLite (borgui.sqlite3), so that file is never written any more and
+        # this check could not pass on any build after the migration. Polling the
+        # repository for the archive tests the outcome that actually matters and
+        # does not couple the smoke suite to a storage format.
+        $appLogDir = Join-Path $env:LOCALAPPDATA "com.borgui.app\logs"
         # -InputObject (not the pipeline) so a single-element nested array isn't
         # unwrapped to a scalar by PowerShell 5.1's ConvertTo-Json.
         $profilesJson = ConvertTo-Json -InputObject $profiles -Depth 8
@@ -294,47 +297,41 @@ if (-not $script:BorgUiExe) {
         & schtasks.exe /Run /TN $taskName 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "schtasks /Run failed (rc=$LASTEXITCODE)" }
 
-        # Poll (bounded) for the runner to record a success event. Never hang.
-        # ($successEvt, not $event: $event is a PowerShell automatic variable.)
+        # Poll (bounded) for an archive to appear in the repo. Never hang.
         $deadline = (Get-Date).AddSeconds($ScheduledPollSec)
-        $successEvt = $null
+        $archiveName = $null
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 5
-            if (Test-Path $historyPath) {
-                try {
-                    $events = Get-Content $historyPath -Raw | ConvertFrom-Json
-                    $successEvt = @($events) | Where-Object { $_.kind -eq "backup" -and $_.outcome -eq "success" } | Select-Object -First 1
-                    if ($successEvt) { break }
-                    $failEvt = @($events) | Where-Object { $_.outcome -eq "failure" } | Select-Object -First 1
-                    if ($failEvt) { break }
-                } catch {}
+            $listOut = Invoke-Borg @("list", "--short", $repoUnc) 30
+            if (-not $listOut.TimedOut) {
+                $names = @("$($listOut.Stdout)".Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                if ($names.Count -gt 0) { $archiveName = $names[0]; break }
             }
         }
 
         # LastTaskResult via the cmdlet (an int; 0 = success) is locale-independent,
         # unlike grepping schtasks' localized "Last Result" label.
         $lastResult = try { "LastTaskResult=" + (Get-ScheduledTaskInfo -TaskName $taskName -EA Stop).LastTaskResult } catch { "LastTaskResult=unknown" }
-        if ($successEvt) {
-            # Confirm the archive really exists by matching its name in the repo's
-            # archive list. Literal .Contains (not -match) -- the name needs no
-            # regex and this avoids the regex engine + $matches side effect.
-            $listOut = Invoke-Borg @("list", "--short", $repoUnc) 30
-            $archiveOk = (-not $listOut.TimedOut) -and ("$($listOut.Stdout)").Contains($successEvt.archive_name)
-            if ($archiveOk) {
-                Pass "scheduled_task_fires" "task fired -> backup '$($successEvt.archive_name)' succeeded and is listable in the repo ($lastResult)"
-            } else {
-                Fail "scheduled_task_fires" "history shows success '$($successEvt.archive_name)' but borg could not list it (rc=$($listOut.ExitCode))"
-            }
+        if ($archiveName) {
+            Pass "scheduled_task_fires" "task fired -> backup '$archiveName' succeeded and is listable in the repo ($lastResult)"
         } else {
-            $failEvt = $null
-            if (Test-Path $historyPath) {
-                try { $failEvt = @((Get-Content $historyPath -Raw | ConvertFrom-Json)) | Where-Object { $_.outcome -eq "failure" } | Select-Object -First 1 } catch {}
-            }
-            if ($failEvt) {
-                Fail "scheduled_task_fires" "runner recorded a FAILURE: $($failEvt.error_message)"
+            # The runner logs every preflight bail-out ("scheduled backup did not
+            # run: ...") and every skip, so quote it instead of guessing. Before
+            # that logging existed this branch could only speculate about
+            # WebView2 and session 0, which sent a real investigation down the
+            # wrong path -- the actual cause was a silent preflight bail-out.
+            $why = ""
+            $latestLog = Get-ChildItem $appLogDir -EA SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
+            if ($latestLog) {
+                $lines = @(Get-Content $latestLog.FullName -EA SilentlyContinue |
+                    Where-Object { $_ -match 'scheduled backup (did not run|skipped)' } |
+                    Select-Object -Last 3)
+                if ($lines.Count -gt 0) { $why = " Runner said: " + ($lines -join ' | ') }
+                else { $why = " No preflight message in $($latestLog.Name) (log is " + $latestLog.Length + " bytes)." }
             } else {
-                Fail "scheduled_task_fires" "no history event within ${ScheduledPollSec}s ($lastResult). App may not have launched (WebView2 missing? session 0?) -- run 'make build-env' and ensure borgtest is logged in."
+                $why = " No log file under $appLogDir."
             }
+            Fail "scheduled_task_fires" "no archive in the repo within ${ScheduledPollSec}s ($lastResult).$why"
         }
     } catch {
         Fail "scheduled_task_fires" "$_"
