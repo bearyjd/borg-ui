@@ -160,10 +160,18 @@ const HINTS: Hint[] = [
     contexts: ['repo'],
     hint: 'No repository exists at this destination yet. Use “Create Repository” in the Initialize section to set one up first.',
   },
+  // Must precede the wrong-passphrase hint: borg's unencrypted-repo refusal
+  // also mentions the passphrase, and the generic advice ("enter the passphrase
+  // it was created with") is nonsense for a repository that has none.
+  {
+    pattern: /not encrypted, cannot change the passphrase/i,
+    contexts: ['repo'],
+    hint: 'This repository was created without encryption, so it has no passphrase to change. Any passphrase stored for it is unused — clear it, or create an encrypted repository if you want one.',
+  },
   {
     pattern: /passphrase supplied.*incorrect|wrong passphrase|decryption failed|integrityerror/i,
     contexts: ['repo'],
-    hint: 'The stored passphrase doesn’t match this repository. Use the Repository Passphrase section to enter the passphrase this repository was created with.',
+    hint: 'The stored passphrase doesn’t match this repository. Open the Repository Passphrase section, choose Change passphrase, and tick “Only update the stored copy” to replace the saved copy with the passphrase this repository was actually created with.',
   },
 ];
 
