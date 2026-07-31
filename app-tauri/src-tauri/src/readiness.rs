@@ -28,18 +28,32 @@ pub struct RecoveryReadiness {
 /// "ready" with a key that would lock the user out.
 fn export_predates_rotation(
     key_export: Option<&ReadinessEvent>,
+    key_import: Option<&ReadinessEvent>,
     rotation: Option<&ReadinessEvent>,
 ) -> bool {
-    let (Some(export), Some(rotation)) = (key_export, rotation) else {
-        return false;
-    };
     let parse = |ts: &str| {
         DateTime::parse_from_rfc3339(ts)
             .ok()
             .map(|t| t.with_timezone(&Utc))
     };
-    match (parse(&export.timestamp), parse(&rotation.timestamp)) {
-        (Some(exported_at), Some(rotated_at)) => rotated_at > exported_at,
+    let Some(rotation) = rotation else {
+        return false;
+    };
+    // An *import* proves the key on hand opens the repository just as well as an
+    // export does — importing an old key reverts the repository to the
+    // passphrase that key was written under, so afterwards the key and the repo
+    // agree again. Take whichever happened last.
+    let latest_proof = [key_export, key_import]
+        .into_iter()
+        .flatten()
+        .filter(|event| event.outcome == "success")
+        .map(|event| parse(&event.timestamp))
+        .max();
+    match (latest_proof, parse(&rotation.timestamp)) {
+        // No export or import at all — nothing to invalidate; the missing-export
+        // requirement is handled separately by `export_complete`.
+        (None, _) => false,
+        (Some(Some(proved_at)), Some(rotated_at)) => rotated_at > proved_at,
         // An unparseable timestamp on either side means we cannot prove the
         // export is still current. Fail towards "re-export", never towards a
         // false "ready".
@@ -47,10 +61,12 @@ fn export_predates_rotation(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate(
     encrypted: bool,
     passphrase_available: bool,
     key_export: Option<&ReadinessEvent>,
+    key_import: Option<&ReadinessEvent>,
     passphrase_rotation: Option<&ReadinessEvent>,
     integrity: Option<&IntegrityEvent>,
     drill: Option<&RestoreDrillEvent>,
@@ -65,9 +81,12 @@ pub fn evaluate(
                 })
     };
     let passphrase_complete = !encrypted || passphrase_available;
-    let export_stale = export_predates_rotation(key_export, passphrase_rotation);
-    let export_complete =
-        !encrypted || (key_export.is_some_and(|event| event.outcome == "success") && !export_stale);
+    let export_stale = export_predates_rotation(key_export, key_import, passphrase_rotation);
+    let have_key_proof = [key_export, key_import]
+        .into_iter()
+        .flatten()
+        .any(|event| event.outcome == "success");
+    let export_complete = !encrypted || (have_key_proof && !export_stale);
     let integrity_complete =
         integrity.is_some_and(|event| recent_success(&event.timestamp, &event.outcome));
     let drill_complete =
@@ -159,10 +178,19 @@ mod tests {
         key_export: Option<&ReadinessEvent>,
         rotation: Option<&ReadinessEvent>,
     ) -> RecoveryReadiness {
+        fully_ready_with(key_export, None, rotation)
+    }
+
+    fn fully_ready_with(
+        key_export: Option<&ReadinessEvent>,
+        key_import: Option<&ReadinessEvent>,
+        rotation: Option<&ReadinessEvent>,
+    ) -> RecoveryReadiness {
         evaluate(
             true,
             true,
             key_export,
+            key_import,
             rotation,
             Some(&integrity("2026-07-02T00:00:00Z")),
             Some(&drill("2026-07-02T00:00:00Z")),
@@ -186,6 +214,7 @@ mod tests {
                 true,
                 None,
                 None,
+                None,
                 Some(&integrity("2026-07-02T00:00:00Z")),
                 Some(&drill("2026-07-02T00:00:00Z")),
                 now()
@@ -199,6 +228,7 @@ mod tests {
         let state = evaluate(
             false,
             false,
+            None,
             None,
             None,
             Some(&integrity("2025-01-01T00:00:00Z")),
@@ -288,6 +318,42 @@ mod tests {
         assert!(!key_export_step(&state).complete);
     }
 
+    /// Importing a recovery key reverts the repository to the passphrase that
+    /// key was exported under, so afterwards the key and the repo agree again
+    /// and the export must stop reading as stale. Without this, readiness told
+    /// a user mid-recovery to re-export the key they had just successfully used.
+    #[test]
+    fn importing_a_key_after_a_rotation_clears_the_stale_export() {
+        let export = readiness("key_export", "2026-07-01T00:00:00Z");
+        let rotation = readiness("passphrase_rotation", "2026-07-02T00:00:00Z");
+        let import = readiness("key_import", "2026-07-02T12:00:00Z");
+        let state = fully_ready_with(Some(&export), Some(&import), Some(&rotation));
+        assert!(state.ready);
+        assert!(key_export_step(&state).complete);
+    }
+
+    /// An import that predates the rotation proves nothing about the current
+    /// passphrase — the export is still stale.
+    #[test]
+    fn an_import_older_than_the_rotation_does_not_clear_it() {
+        let export = readiness("key_export", "2026-07-01T00:00:00Z");
+        let import = readiness("key_import", "2026-07-01T06:00:00Z");
+        let rotation = readiness("passphrase_rotation", "2026-07-02T00:00:00Z");
+        let state = fully_ready_with(Some(&export), Some(&import), Some(&rotation));
+        assert!(!state.ready);
+        assert!(!key_export_step(&state).complete);
+    }
+
+    /// A user who only ever imported a key (restored onto a new machine, never
+    /// re-exported) still has a key in hand — that satisfies the step.
+    #[test]
+    fn an_import_alone_satisfies_the_key_requirement() {
+        let import = readiness("key_import", "2026-07-01T00:00:00Z");
+        let state = fully_ready_with(None, Some(&import), None);
+        assert!(state.ready);
+        assert!(key_export_step(&state).complete);
+    }
+
     /// An unencrypted repo has no key to export, so a rotation event (which
     /// should not happen there anyway) must not make it un-ready.
     #[test]
@@ -298,6 +364,7 @@ mod tests {
             false,
             false,
             Some(&export),
+            None,
             Some(&rotation),
             Some(&integrity("2026-07-02T00:00:00Z")),
             Some(&drill("2026-07-02T00:00:00Z")),

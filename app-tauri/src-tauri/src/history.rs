@@ -4,8 +4,21 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 const MAX_EVENTS: usize = 200;
-/// 8 widened `readiness_events.kind` to accept `passphrase_rotation`.
-pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 8;
+/// 8 widened `readiness_events.kind` to accept `passphrase_rotation`;
+/// 9 added `key_import`.
+pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 9;
+
+/// Every `readiness_events.kind` the app writes. The column has a CHECK
+/// constraint, so a kind added at a call site without being listed here is
+/// rejected by SQLite at runtime — which is exactly how the rotation event
+/// shipped as a silent no-op. Keep this the single source of truth: the CREATE
+/// statement, the migration, and the tests all derive from it.
+pub(crate) const READINESS_KINDS: &[&str] = &[
+    "passphrase",
+    "key_export",
+    "passphrase_rotation",
+    "key_import",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RepositoryMetric {
@@ -777,14 +790,21 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
              duration_seconds INTEGER NOT NULL,
              transfer_rate REAL NOT NULL
          );
-         CREATE TABLE IF NOT EXISTS readiness_events (
+         ",
+    )
+    .map_err(|e| e.to_string())?;
+    // Built from READINESS_KINDS rather than spelled out, so the constraint and
+    // the kinds the app writes cannot drift apart.
+    conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS readiness_events (
              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
              timestamp TEXT NOT NULL,
              profile_id TEXT NOT NULL,
-             kind TEXT NOT NULL CHECK(kind IN ('passphrase', 'key_export', 'passphrase_rotation')),
+             kind TEXT NOT NULL CHECK(kind IN ({kinds})),
              outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure'))
          );",
-    )
+        kinds = readiness_kinds_sql()
+    ))
     .map_err(|e| e.to_string())?;
     migrate_readiness_kinds(&conn)?;
     conn.execute(
@@ -815,16 +835,18 @@ fn migrate_readiness_kinds(conn: &Connection) -> Result<(), String> {
     let Some(definition) = definition else {
         return Ok(());
     };
-    if definition.contains("passphrase_rotation") {
+    // Rebuild whenever the stored constraint is missing any kind we now write,
+    // so adding a kind to READINESS_KINDS is all a future change has to do.
+    if READINESS_KINDS.iter().all(|kind| definition.contains(kind)) {
         return Ok(());
     }
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "BEGIN;
          CREATE TABLE readiness_events_migrated (
              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
              timestamp TEXT NOT NULL,
              profile_id TEXT NOT NULL,
-             kind TEXT NOT NULL CHECK(kind IN ('passphrase', 'key_export', 'passphrase_rotation')),
+             kind TEXT NOT NULL CHECK(kind IN ({kinds})),
              outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure'))
          );
          INSERT INTO readiness_events_migrated (sequence, timestamp, profile_id, kind, outcome)
@@ -832,8 +854,19 @@ fn migrate_readiness_kinds(conn: &Connection) -> Result<(), String> {
          DROP TABLE readiness_events;
          ALTER TABLE readiness_events_migrated RENAME TO readiness_events;
          COMMIT;",
-    )
+        kinds = readiness_kinds_sql()
+    ))
     .map_err(|e| e.to_string())
+}
+
+/// `'a', 'b', …` for embedding in a CHECK constraint. The values are compile-time
+/// constants from [`READINESS_KINDS`], never user input.
+fn readiness_kinds_sql() -> String {
+    READINESS_KINDS
+        .iter()
+        .map(|kind| format!("'{kind}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn insert_event(conn: &Connection, event: &BackupEvent) -> Result<(), String> {
@@ -973,11 +1006,13 @@ mod tests {
     #[tokio::test]
     async fn every_readiness_kind_the_app_writes_is_accepted() {
         let dir = tempfile::tempdir().unwrap();
-        for kind in ["passphrase", "key_export", "passphrase_rotation"] {
+        // Iterates the constant rather than a hand-written list, so adding a
+        // kind without widening the CHECK fails here instead of at runtime.
+        for kind in READINESS_KINDS {
             let event = ReadinessEvent {
                 timestamp: "2026-07-31T00:00:00Z".into(),
                 profile_id: "work".into(),
-                kind: kind.into(),
+                kind: (*kind).into(),
                 outcome: "success".into(),
             };
             append_readiness_event(dir.path(), event.clone())

@@ -161,7 +161,15 @@ impl RunReport {
     /// A failure before borg ran (misconfiguration). No history is recorded for
     /// these — there is no archive to key an event on; the notification surfaces
     /// the reason.
+    ///
+    /// Logged here rather than at each call site so no bail-out can be added
+    /// without one. A scheduled run is headless: with no history event and no
+    /// log line, a backup that silently never happened left the user nothing to
+    /// find but a toast they may never have seen — and left the Windows smoke
+    /// check guessing at "WebView2 missing? session 0?" when the real cause was
+    /// a preflight bail-out.
     fn preflight(error: String) -> Self {
+        tracing::warn!("scheduled backup did not run: {error}");
         Self {
             archive_name: None,
             warnings: Vec::new(),
@@ -172,7 +180,11 @@ impl RunReport {
         }
     }
 
+    /// A deliberate no-op (metered network, on battery, destination absent).
+    /// Not a failure, but still invisible without this — "my backups stopped
+    /// running" is the same symptom either way, so it has to be findable.
     fn skipped(reason: String) -> Self {
+        tracing::info!("scheduled backup skipped: {reason}");
         Self {
             archive_name: None,
             warnings: Vec::new(),
