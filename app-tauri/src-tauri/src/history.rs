@@ -4,7 +4,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 const MAX_EVENTS: usize = 200;
-pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 7;
+/// 8 widened `readiness_events.kind` to accept `passphrase_rotation`.
+pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RepositoryMetric {
@@ -780,11 +781,12 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
              timestamp TEXT NOT NULL,
              profile_id TEXT NOT NULL,
-             kind TEXT NOT NULL CHECK(kind IN ('passphrase', 'key_export')),
+             kind TEXT NOT NULL CHECK(kind IN ('passphrase', 'key_export', 'passphrase_rotation')),
              outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure'))
          );",
     )
     .map_err(|e| e.to_string())?;
+    migrate_readiness_kinds(&conn)?;
     conn.execute(
         "INSERT INTO schema_metadata(key, value) VALUES ('database_schema_version', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -792,6 +794,46 @@ fn open(config_dir: &Path) -> Result<Connection, String> {
     )
     .map_err(|e| e.to_string())?;
     Ok(conn)
+}
+
+/// Widen `readiness_events.kind` to accept `passphrase_rotation`.
+///
+/// The table is created with `IF NOT EXISTS`, so an existing database keeps
+/// whatever CHECK constraint it was born with — and SQLite cannot `ALTER` a
+/// CHECK, so the table has to be rebuilt. Without this, every rotation event is
+/// silently rejected on an upgraded install and recovery readiness never learns
+/// that an exported key went stale.
+fn migrate_readiness_kinds(conn: &Connection) -> Result<(), String> {
+    let definition: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'readiness_events'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(definition) = definition else {
+        return Ok(());
+    };
+    if definition.contains("passphrase_rotation") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE readiness_events_migrated (
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+             timestamp TEXT NOT NULL,
+             profile_id TEXT NOT NULL,
+             kind TEXT NOT NULL CHECK(kind IN ('passphrase', 'key_export', 'passphrase_rotation')),
+             outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure'))
+         );
+         INSERT INTO readiness_events_migrated (sequence, timestamp, profile_id, kind, outcome)
+             SELECT sequence, timestamp, profile_id, kind, outcome FROM readiness_events;
+         DROP TABLE readiness_events;
+         ALTER TABLE readiness_events_migrated RENAME TO readiness_events;
+         COMMIT;",
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn insert_event(conn: &Connection, event: &BackupEvent) -> Result<(), String> {
@@ -919,6 +961,76 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    /// The kinds the app actually writes must survive the CHECK constraint.
+    /// `passphrase_rotation` did not: it was added at the call site without
+    /// widening the schema, so every rotation event was rejected by SQLite and
+    /// swallowed by a `warn!`, leaving recovery readiness permanently unaware
+    /// that an exported key had gone stale. Unit tests over `evaluate()` could
+    /// not see it — only a test that crosses the database boundary can.
+    #[tokio::test]
+    async fn every_readiness_kind_the_app_writes_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        for kind in ["passphrase", "key_export", "passphrase_rotation"] {
+            let event = ReadinessEvent {
+                timestamp: "2026-07-31T00:00:00Z".into(),
+                profile_id: "work".into(),
+                kind: kind.into(),
+                outcome: "success".into(),
+            };
+            append_readiness_event(dir.path(), event.clone())
+                .await
+                .unwrap_or_else(|e| panic!("kind {kind} rejected: {e}"));
+            assert_eq!(
+                latest_readiness_event(dir.path(), "work", kind)
+                    .await
+                    .unwrap(),
+                Some(event),
+                "{kind}"
+            );
+        }
+    }
+
+    /// An install created before the rotation kind existed keeps its original
+    /// CHECK constraint, because the table is created with `IF NOT EXISTS` and
+    /// SQLite cannot `ALTER` a CHECK. Existing rows must survive the rebuild.
+    #[tokio::test]
+    async fn upgrading_an_old_database_accepts_rotation_events_and_keeps_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let conn = Connection::open(database_path(dir.path())).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE readiness_events (
+                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                     timestamp TEXT NOT NULL,
+                     profile_id TEXT NOT NULL,
+                     kind TEXT NOT NULL CHECK(kind IN ('passphrase', 'key_export')),
+                     outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure'))
+                 );
+                 INSERT INTO readiness_events (timestamp, profile_id, kind, outcome)
+                     VALUES ('2026-07-01T00:00:00Z', 'work', 'key_export', 'success');",
+            )
+            .unwrap();
+        }
+        append_readiness_event(
+            dir.path(),
+            ReadinessEvent {
+                timestamp: "2026-07-02T00:00:00Z".into(),
+                profile_id: "work".into(),
+                kind: "passphrase_rotation".into(),
+                outcome: "success".into(),
+            },
+        )
+        .await
+        .expect("rotation event rejected on an upgraded database");
+        // The pre-existing export must not be lost by the table rebuild.
+        assert!(
+            latest_readiness_event(dir.path(), "work", "key_export")
+                .await
+                .unwrap()
+                .is_some()
         );
     }
 

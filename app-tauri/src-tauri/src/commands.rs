@@ -1835,11 +1835,23 @@ enum PassphraseCheck {
 /// borg's wrong-passphrase wording. Anything else — connection refused, no such
 /// repository, borg not found — is deliberately *not* treated as a wrong
 /// passphrase.
+///
+/// Integrity failures are excluded on purpose. borg reports a damaged or
+/// tampered repository as an `IntegrityError`, and its wording can mention
+/// decryption, which is ambiguous between "wrong key" and "corrupt data". A
+/// user repairing a damaged repo would enter their genuinely correct passphrase,
+/// be told it "does not open this repository", and might then discard the only
+/// copy they have. Everywhere else this check fails open; this is the one place
+/// it could fail closed, so it must not guess.
 fn looks_like_wrong_passphrase(detail: &str) -> bool {
     let lower = detail.to_ascii_lowercase();
+    if lower.contains("integrityerror") || lower.contains("integrity error") {
+        return false;
+    }
+    // Confirmed against borg 1.4.4: "Passphrase supplied in BORG_PASSPHRASE, by
+    // BORG_PASSCOMMAND, or via BORG_PASSPHRASE_FD is incorrect."
     (lower.contains("passphrase") && lower.contains("incorrect"))
         || lower.contains("wrong passphrase")
-        || lower.contains("decryption error")
 }
 
 async fn check_passphrase(
@@ -1958,29 +1970,32 @@ pub async fn change_repo_passphrase(
         }
         Err(e) => return Err(format!("could not read the stored passphrase: {e}")),
     };
-    state
+    let rotation = state
         .borg
         .change_passphrase(&repo, &old, &new_passphrase)
-        .await
-        .map_err(|e| match e {
-            BorgError::Timeout { .. } => rotation_indeterminate_error(&e.to_string()),
-            other => other.to_string(),
-        })?;
+        .await;
+    // Record BEFORE reacting to the outcome. What makes an exported recovery key
+    // stale is the *repository* accepting the new passphrase — not the keychain
+    // write that follows it. Recording afterwards meant the two paths where the
+    // repo has (or may have) rotated but we still return Err — a failed keychain
+    // write, and a timeout that borg may yet commit — left readiness green
+    // against a key that no longer opens the repository. Over-recording only
+    // costs a spurious "re-export", which is the direction this must fail.
+    if !matches!(rotation, Err(BorgError::ProcessFailed { .. }))
+        && let Err(e) = record_passphrase_rotation(&app, &repo).await
+    {
+        tracing::warn!("could not record passphrase rotation for recovery readiness: {e}");
+    }
+    rotation.map_err(|e| match e {
+        BorgError::Timeout { .. } => rotation_indeterminate_error(&e.to_string()),
+        other => other.to_string(),
+    })?;
     // Only after the repository accepted the rotation — keeping the stored
     // copy in lockstep with the repo is the entire point of this command. If
     // this write fails the two are now out of sync in the most dangerous
     // direction, so say so explicitly rather than reporting a plain failure.
     keychain::set_passphrase(&repo.ssh_url(), &new_passphrase)
-        .map_err(|e| rotated_unsaved_error(&e))?;
-    // Any recovery key exported before now still carries the OLD passphrase,
-    // so recovery readiness must stop counting it. Recorded after the keychain
-    // write so a rotation only invalidates the export once the whole flow has
-    // actually succeeded. A failure to record must not fail the rotation — the
-    // passphrase really did change — so it degrades to a warning.
-    if let Err(e) = record_passphrase_rotation(&app, &repo).await {
-        tracing::warn!("could not record passphrase rotation for recovery readiness: {e}");
-    }
-    Ok(())
+        .map_err(|e| rotated_unsaved_error(&e))
 }
 
 /// Record a `passphrase_rotation` readiness event against whichever profile
@@ -1993,22 +2008,36 @@ async fn record_passphrase_rotation(
 ) -> Result<(), String> {
     let data = read_profiles(app).await?;
     let url = repo.ssh_url();
-    let Some(profile) = data.profiles.iter().find(|p| p.repo.ssh_url() == url) else {
+    // Every matching profile, not the first. Nothing forbids two profiles
+    // targeting one repository — the keychain is itself keyed on `ssh_url()`, so
+    // sharing one is by design — and stopping at the first would leave the rest
+    // counting a key export that is now stale.
+    let matching: Vec<String> = data
+        .profiles
+        .iter()
+        .filter(|p| p.repo.ssh_url() == url)
+        .map(|p| p.id.clone())
+        .collect();
+    if matching.is_empty() {
         // A repo configured in the form but not yet saved as a profile has no
         // readiness to invalidate.
         return Ok(());
-    };
+    }
     let dir = config_dir(app).await?;
-    history::append_readiness_event(
-        &dir,
-        history::ReadinessEvent {
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            profile_id: profile.id.clone(),
-            kind: "passphrase_rotation".into(),
-            outcome: "success".into(),
-        },
-    )
-    .await
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    for profile_id in matching {
+        history::append_readiness_event(
+            &dir,
+            history::ReadinessEvent {
+                timestamp: timestamp.clone(),
+                profile_id,
+                kind: "passphrase_rotation".into(),
+                outcome: "success".into(),
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -2575,7 +2604,6 @@ mod tests {
         for wrong in [
             "passphrase supplied in BORG_PASSPHRASE, by BORG_PASSCOMMAND, or via BORG_PASSPHRASE_FD is incorrect.",
             "Wrong passphrase",
-            "Decryption error",
         ] {
             assert!(looks_like_wrong_passphrase(wrong), "{wrong}");
         }
@@ -2590,6 +2618,20 @@ mod tests {
             "This repository is not encrypted, cannot change the passphrase.",
         ] {
             assert!(!looks_like_wrong_passphrase(unrelated), "{unrelated}");
+        }
+    }
+
+    /// A damaged repository must never be reported as a wrong passphrase. The
+    /// user would be repairing it with the correct passphrase in hand, be told
+    /// it is wrong, and could discard the only copy they have.
+    #[test]
+    fn a_damaged_repository_is_not_reported_as_a_wrong_passphrase() {
+        for corrupt in [
+            "borgbackup.helpers.IntegrityError: Data integrity error: Decryption error",
+            "Remote Exception (IntegrityError)",
+            "Data integrity error: chunk id verification failed",
+        ] {
+            assert!(!looks_like_wrong_passphrase(corrupt), "{corrupt}");
         }
     }
 

@@ -105,7 +105,7 @@ pub async fn export_support_bundle(
     log_dir: &Path,
     destination: &Path,
 ) -> Result<(), String> {
-    let profiles = sanitized_profiles(profiles::load(config_dir).await?);
+    let profiles = bundle_profiles(profiles::load(config_dir).await?);
     let mut events = history::load(config_dir).await?;
     for event in &mut events {
         event.archive_name = "[redacted]".into();
@@ -165,11 +165,47 @@ pub async fn export_support_bundle(
     .map_err(|e| e.to_string())?
 }
 
+/// Strip secrets from a configuration that is meant to be **re-imported**.
+///
+/// Deliberately leaves paths intact: `import_configuration` has to reproduce a
+/// working profile, and a redacted `repo_path` or source list would not round
+/// trip. Use [`bundle_profiles`] for anything the user is expected to *share*.
 fn sanitized_profiles(mut data: ProfilesData) -> ProfilesData {
     for profile in &mut data.profiles {
         profile.repo.ssh_key_path = None;
         profile.pre_backup = profile.pre_backup.take().map(|v| redaction::redact(&v));
         profile.post_backup = profile.post_backup.take().map(|v| redaction::redact(&v));
+    }
+    data
+}
+
+/// [`sanitized_profiles`] plus path redaction, for the support bundle.
+///
+/// The bundle ships this JSON next to the scrubbed log, so the two must agree:
+/// scrubbing the account name out of `borgui.log` achieves nothing if
+/// `configuration.json` in the same zip lists `C:\Users\alice\Documents` as a
+/// source path. The Diagnostics section promises the account name is removed,
+/// and this is what makes that true for the whole bundle rather than one file.
+///
+/// Not applied to the re-importable export — see [`sanitized_profiles`].
+fn bundle_profiles(data: ProfilesData) -> ProfilesData {
+    let mut data = sanitized_profiles(data);
+    for profile in &mut data.profiles {
+        profile.repo.repo_path = redaction::redact(&profile.repo.repo_path);
+        // Frequently the same identifier as the Windows account name.
+        profile.repo.ssh_user = redaction::redact(&profile.repo.ssh_user);
+        profile.backup_selection.source_paths = profile
+            .backup_selection
+            .source_paths
+            .iter()
+            .map(|path| redaction::redact(path))
+            .collect();
+        profile.backup_selection.excludes = profile
+            .backup_selection
+            .excludes
+            .iter()
+            .map(|pattern| redaction::redact(pattern))
+            .collect();
     }
     data
 }
