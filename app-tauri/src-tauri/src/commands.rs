@@ -1981,10 +1981,10 @@ pub async fn change_repo_passphrase(
     // write, and a timeout that borg may yet commit — left readiness green
     // against a key that no longer opens the repository. Over-recording only
     // costs a spurious "re-export", which is the direction this must fail.
-    if !matches!(rotation, Err(BorgError::ProcessFailed { .. })) {
-        if let Err(e) = record_passphrase_rotation(&app, &repo).await {
-            tracing::warn!("could not record passphrase rotation for recovery readiness: {e}");
-        }
+    if !matches!(rotation, Err(BorgError::ProcessFailed { .. }))
+        && let Err(e) = record_passphrase_rotation(&app, &repo).await
+    {
+        tracing::warn!("could not record passphrase rotation for recovery readiness: {e}");
     }
     rotation.map_err(|e| match e {
         BorgError::Timeout { .. } => rotation_indeterminate_error(&e.to_string()),
