@@ -31,6 +31,8 @@
   let error = $state('');
   let loadedCount = $state(0);
   let isEmpty = $state(false);
+  /// Set when the stream delivered fewer entries than borg reported sending.
+  let incomplete = $state('');
   let expanded = $state(new Set<string>());
   // Selection mutates `selection` in place; bump this to re-derive views.
   let selVersion = $state(0);
@@ -133,6 +135,7 @@
     error = '';
     loadedCount = 0;
     isEmpty = false;
+    incomplete = '';
     tree = null;
     selection = null;
     expanded = new Set();
@@ -177,6 +180,18 @@
           if (gen !== loadGen || requestId !== activeRequestId) return;
         }
       }
+
+      // If entries are still missing after waiting, the listing is genuinely
+      // incomplete and every count shown below is wrong. Say so: the old
+      // behaviour was to render a short tree that looked authoritative, so a
+      // user could "Select all" and restore fewer files than they asked for
+      // with nothing indicating anything was missing. A visible warning also
+      // means this reports itself in the field, which matters because the
+      // underlying race reproduces only ~1 run in 6.
+      incomplete =
+        incoming.length < total
+          ? `Showing ${incoming.length.toLocaleString()} of ${total.toLocaleString()} entries — the listing did not finish streaming. Close and re-open to load the full archive before restoring.`
+          : '';
 
       isEmpty = incoming.length === 0;
       const built = buildTree(incoming);
@@ -244,6 +259,10 @@
         {/if}
       </div>
     </header>
+
+    {#if incomplete && !loading && !error}
+      <div class="browser-incomplete" role="alert">{incomplete}</div>
+    {/if}
 
     {#if loading}
       <div class="browser-state">
@@ -384,6 +403,18 @@
     border-radius: var(--radius-sm);
     display: inline-block;
     margin-top: var(--space-1);
+  }
+
+  /* Data-loss warning: the listing is short, so every count on screen is
+     wrong. Uses the shared warning tokens, no hardcoded colours. */
+  .browser-incomplete {
+    margin: var(--space-2) var(--space-4) 0;
+    padding: var(--space-3);
+    border-radius: var(--radius-sm);
+    background: var(--color-danger-muted);
+    color: var(--color-danger);
+    font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
   .browser-stats {
