@@ -24,6 +24,15 @@ describe('explainConnectionError', () => {
     // hit the lock hint, not the network-timeout hint.
     ['Failed to create/acquire the lock /b/lock.exclusive (timeout).', SSH_REPO, /stale lock/],
     ['passphrase supplied in ... is incorrect.', REPO, /Repository Passphrase section/],
+    // A repository created with `-e none` has no passphrase at all, so the
+    // generic "enter the passphrase it was created with" advice is nonsense.
+    // This message also contains the word "passphrase", so it must win over the
+    // wrong-passphrase hint by being matched first.
+    [
+      'Command Error: This repository is not encrypted, cannot change the passphrase.',
+      REPO,
+      /created without encryption/
+    ],
     ["bash: borg: command not found", SSH_REPO, /install BorgBackup/],
     // Backup/restore-specific hints.
     ['Error: VSS snapshot creation failed', SSH_BACKUP, /Volume Shadow Copy/],
