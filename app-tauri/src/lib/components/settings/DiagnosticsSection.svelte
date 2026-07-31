@@ -95,7 +95,7 @@
 <form class="settings-form" onsubmit={(event) => event.preventDefault()}>
   <fieldset class="form-group">
     <legend>Diagnostics</legend>
-    <FieldHelp text="Diagnostics stay on this computer unless you explicitly export them. Exports never include saved passphrases, SSH private keys, archive contents, or source file listings." />
+    <FieldHelp text="Diagnostics stay on this computer unless you explicitly export them. Exports never include saved passphrases, SSH private keys, or archive contents, and your Windows account name is removed from any paths. They can still name individual files that a backup failed to read — that is what makes the logs useful — so have a look before sharing a bundle." />
 
     <div class="actions">
       <button class="btn btn-secondary" type="button" disabled={busy} onclick={() => run(
