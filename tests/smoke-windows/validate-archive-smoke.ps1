@@ -40,7 +40,7 @@
 # dot-sourced smoke-uia.ps1 shared by all four. Kept self-contained here for now so
 # run.sh can scp + run each script standalone with no on-VM module resolution.
 
-param([switch]$InSession1, [int]$WinWaitSec = 30, [int]$FileCount = 100000, [int]$DirCount = 200, [int]$LoadWaitSec = 240)
+param([switch]$InSession1, [switch]$KeepStaging, [int]$WinWaitSec = 30, [int]$FileCount = 100000, [int]$DirCount = 200, [int]$LoadWaitSec = 240)
 $ErrorActionPreference = "Continue"
 
 # ----------------------------------------------------------------------------
@@ -176,10 +176,20 @@ if (-not $InSession1) {
     # live borg extract.
     $timedOut = -not (Test-Path $sentinel)
     & $restoreProfile
-    if (-not $timedOut) { & $cleanupStaging } else { Write-Host "WARN: session-1 overran 900s; leaving $ROOT in place (app may still be using it)." }
-    if ($timedOut) { Write-Host "`nSKIP: session-1 task did not finish (no desktop?)."; Write-Host "Failed: 0"; exit 0 }
+    # Count failures BEFORE deciding to clean up. Cleanup used to run first, so a
+    # failing run deleted the repo, the archive and the restore destination — the
+    # exact evidence needed to diagnose it — and post-hoc inspection could only
+    # see an empty disk, which reads identically to "nothing was ever written".
     $failed = 0
     if (Test-Path $resJson) { try { $failed = @((Get-Content $resJson -Raw | ConvertFrom-Json) | Where-Object { $_.Status -eq "FAIL" }).Count } catch {} }
+    if ($timedOut) {
+        Write-Host "WARN: session-1 overran 900s; leaving $ROOT in place (app may still be using it)."
+    }
+    elseif ($failed -gt 0 -or $KeepStaging) {
+        Write-Host "NOTE: leaving $ROOT in place for diagnosis (failures: $failed). Inspect it, then delete it manually."
+    }
+    else { & $cleanupStaging }
+    if ($timedOut) { Write-Host "`nSKIP: session-1 task did not finish (no desktop?)."; Write-Host "Failed: 0"; exit 0 }
     if ($failed -gt 0) { exit 1 } else { exit 0 }
 }
 
@@ -587,15 +597,34 @@ try {
                                 $dlg = Set-FolderDialog $OUT
                                 if ($dlg -ne "ok") { Fail "browser_selective_restore" "restore destination dialog: $dlg" }
                                 else {
-                                    $restoredDir = Join-Path $OUT "data\$MARKERDIR"
+                                    # Search RECURSIVELY under $OUT, not at a fixed
+                                    # depth. Unless "overwrite" is set, the app
+                                    # extracts into a timestamped subfolder --
+                                    # "<dest>\BorgUI Restore <yyyy-MM-dd HHmmss>\"
+                                    # (commands.rs, restore_archive). Polling
+                                    # "$OUT\data\d0000" therefore looked one level
+                                    # too shallow and reported "no files restored"
+                                    # for a restore that had in fact succeeded.
+                                    $restoredDir = Join-Path $OUT "**\data\$MARKERDIR"
                                     $files = @(); $deadline = (Get-Date).AddSeconds(90)
                                     while ((Get-Date) -lt $deadline) {
-                                        $files = @(Get-ChildItem -Path $restoredDir -Filter "f*.txt" -EA SilentlyContinue)
-                                        if ($files.Count -ge 1) { Start-Sleep -Seconds 2; $files = @(Get-ChildItem -Path $restoredDir -Filter "f*.txt" -EA SilentlyContinue); break }
+                                        $files = @(Get-ChildItem -Path $OUT -Recurse -Filter "f*.txt" -EA SilentlyContinue |
+                                            Where-Object { $_.DirectoryName -like "*\data\$MARKERDIR" })
+                                        if ($files.Count -ge 1) {
+                                            Start-Sleep -Seconds 2
+                                            $files = @(Get-ChildItem -Path $OUT -Recurse -Filter "f*.txt" -EA SilentlyContinue |
+                                                Where-Object { $_.DirectoryName -like "*\data\$MARKERDIR" })
+                                            break
+                                        }
                                         Start-Sleep -Seconds 2
                                     }
+                                    if ($files.Count -ge 1) { $restoredDir = $files[0].DirectoryName }
                                     $perDir = [math]::Ceiling($FileCount / $DirCount)
-                                    if ($files.Count -lt 1) { Fail "browser_selective_restore" "no files restored under $restoredDir after 90s" }
+                                    if ($files.Count -lt 1) {
+                                        $seen = @(Get-ChildItem -Path $OUT -Recurse -EA SilentlyContinue |
+                                            Select-Object -First 5 -Expand FullName) -join '; '
+                                        Fail "browser_selective_restore" "no files restored under $restoredDir after 90s. Present under ${OUT}: $(if ($seen) { $seen } else { '(nothing)' })"
+                                    }
                                     else {
                                         $content = (Get-Content $files[0].FullName -Raw -EA SilentlyContinue)
                                         $byteOk = ($content -eq $MARKER)
