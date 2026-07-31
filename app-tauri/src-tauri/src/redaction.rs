@@ -93,8 +93,23 @@ fn user_path_patterns() -> &'static [(Regex, &'static str)] {
                 "$prefix",
             ),
             (
+                // \\nas\share\Users\bob, \\localhost\C$\Users\alice. Backing up
+                // from a NAS or mapped drive is ordinary on Windows, and the
+                // drive-letter pattern above cannot see those paths at all.
+                Regex::new(
+                    r#"(?i)(?P<prefix>\\\\[^\\/:*?"<>|\r\n]+\\[^\\/:*?"<>|\r\n]+\\Users\\)(?P<user>[^\\/:*?"<>|\r\n]+)"#,
+                )
+                .expect("valid UNC home pattern"),
+                "$prefix",
+            ),
+            (
                 // /home/alice, /Users/alice (macOS), /root stays as-is.
-                Regex::new(r"(?P<prefix>/(?:home|Users)/)(?P<user>[^/\s:]+)")
+                //
+                // Anchored to a path start (line start, whitespace, or a quote)
+                // so a URL path segment like https://docs.example/home/setup is
+                // left alone — over-redacting eats the diagnostic value this
+                // whole approach is trying to preserve.
+                Regex::new(r#"(?m)(?P<prefix>(?:^|[\s"'=(\[])/(?:home|Users)/)(?P<user>[^/\s:]+)"#)
                     .expect("valid unix home pattern"),
                 "$prefix",
             ),
@@ -168,9 +183,33 @@ mod tests {
             r"D:\Photos\2026\img.jpg",
             "/var/backups/repo",
             r"C:\Program Files\BorgUI\borg.exe",
+            // A URL path segment is not a home directory. Over-redacting eats
+            // the diagnostic value the log exists for.
+            "see https://docs.example.test/home/setup-guide",
         ] {
             assert_eq!(redact(untouched), untouched);
         }
+    }
+
+    /// Backing up from a NAS or mapped network drive is ordinary on Windows,
+    /// and the drive-letter pattern cannot see those paths at all.
+    #[test]
+    fn redacts_account_names_from_unc_paths() {
+        let cases = [
+            (
+                r"\\nas\share\Users\bob\file.txt: Permission denied",
+                r"\\nas\share\Users\[REDACTED]\file.txt",
+            ),
+            (
+                r"\\localhost\C$\Users\alice\Backups",
+                r"\\localhost\C$\Users\[REDACTED]\Backups",
+            ),
+        ];
+        for (input, expected) in cases {
+            let redacted = redact(input);
+            assert!(redacted.contains(expected), "{redacted}");
+        }
+        assert!(!redact(r"\\nas\share\Users\bob\f.txt").contains("bob"));
     }
 
     #[test]

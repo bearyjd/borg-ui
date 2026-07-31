@@ -1835,11 +1835,23 @@ enum PassphraseCheck {
 /// borg's wrong-passphrase wording. Anything else — connection refused, no such
 /// repository, borg not found — is deliberately *not* treated as a wrong
 /// passphrase.
+///
+/// Integrity failures are excluded on purpose. borg reports a damaged or
+/// tampered repository as an `IntegrityError`, and its wording can mention
+/// decryption, which is ambiguous between "wrong key" and "corrupt data". A
+/// user repairing a damaged repo would enter their genuinely correct passphrase,
+/// be told it "does not open this repository", and might then discard the only
+/// copy they have. Everywhere else this check fails open; this is the one place
+/// it could fail closed, so it must not guess.
 fn looks_like_wrong_passphrase(detail: &str) -> bool {
     let lower = detail.to_ascii_lowercase();
+    if lower.contains("integrityerror") || lower.contains("integrity error") {
+        return false;
+    }
+    // Confirmed against borg 1.4.4: "Passphrase supplied in BORG_PASSPHRASE, by
+    // BORG_PASSCOMMAND, or via BORG_PASSPHRASE_FD is incorrect."
     (lower.contains("passphrase") && lower.contains("incorrect"))
         || lower.contains("wrong passphrase")
-        || lower.contains("decryption error")
 }
 
 async fn check_passphrase(
@@ -2575,7 +2587,6 @@ mod tests {
         for wrong in [
             "passphrase supplied in BORG_PASSPHRASE, by BORG_PASSCOMMAND, or via BORG_PASSPHRASE_FD is incorrect.",
             "Wrong passphrase",
-            "Decryption error",
         ] {
             assert!(looks_like_wrong_passphrase(wrong), "{wrong}");
         }
@@ -2590,6 +2601,20 @@ mod tests {
             "This repository is not encrypted, cannot change the passphrase.",
         ] {
             assert!(!looks_like_wrong_passphrase(unrelated), "{unrelated}");
+        }
+    }
+
+    /// A damaged repository must never be reported as a wrong passphrase. The
+    /// user would be repairing it with the correct passphrase in hand, be told
+    /// it is wrong, and could discard the only copy they have.
+    #[test]
+    fn a_damaged_repository_is_not_reported_as_a_wrong_passphrase() {
+        for corrupt in [
+            "borgbackup.helpers.IntegrityError: Data integrity error: Decryption error",
+            "Remote Exception (IntegrityError)",
+            "Data integrity error: chunk id verification failed",
+        ] {
+            assert!(!looks_like_wrong_passphrase(corrupt), "{corrupt}");
         }
     }
 
