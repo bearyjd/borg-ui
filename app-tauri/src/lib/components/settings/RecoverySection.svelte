@@ -72,13 +72,17 @@
     if (!importPath || !importPassphrase || !importConfirmed) return;
     busy = true;
     try {
-      await invoke('import_recovery_key', {
+      // The command returns its own status: an import can succeed and still
+      // leave the stored passphrase unable to open the repository, because the
+      // imported key reverts the repo to whatever passphrase it was exported
+      // under. Reporting a flat success there would hide it at the worst moment.
+      const status = await invoke<string>('import_recovery_key', {
         path: importPath,
         recoveryPassphrase: importPassphrase,
       });
       importPassphrase = '';
       importConfirmed = false;
-      result = 'Repository key imported and validated by Borg.';
+      result = status;
     } catch (error) {
       result = `Recovery-key import failed: ${error}`;
     } finally {
