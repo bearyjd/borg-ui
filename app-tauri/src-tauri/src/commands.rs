@@ -547,6 +547,19 @@ pub async fn prune_repo(
     .map_err(|e| e.to_string())
 }
 
+/// Whether creating a repository in this mode requires a passphrase.
+///
+/// Only `none` is genuinely passphrase-free. The `authenticated` modes do not
+/// encrypt the *data*, but they still have a key protected by a passphrase —
+/// verified against borg 1.4.4: a repo created with an empty passphrase opens
+/// ONLY with the empty one, and `key change-passphrase` works there. Treating
+/// them as passphrase-free created repositories with a silently empty
+/// passphrase, so the first "Set passphrase" stored something the repository
+/// would never accept.
+fn encryption_needs_passphrase(mode: &str) -> bool {
+    mode != "none"
+}
+
 #[tauri::command]
 pub async fn init_repo(
     app: tauri::AppHandle,
@@ -558,9 +571,11 @@ pub async fn init_repo(
     precheck_repo(&repo).await?;
     borg_core::config::validate_encryption_mode(&encryption).map_err(|e| e.to_string())?;
 
-    let needs_pass = encryption != "none"
-        && encryption != "authenticated"
-        && encryption != "authenticated-blake2";
+    // Also drives `recovery.encrypted_repository` below: the readiness steps it
+    // gates are "a passphrase is stored" and "the key was exported", both of
+    // which apply to the `authenticated` modes even though those do not encrypt
+    // the data — they still have a key, and it still has a passphrase.
+    let needs_pass = encryption_needs_passphrase(&encryption);
     if needs_pass && passphrase.as_deref().unwrap_or("").is_empty() {
         return Err("passphrase required for this encryption mode".into());
     }
@@ -612,6 +627,8 @@ pub async fn recovery_readiness(
         .ok_or_else(|| "no active profile".to_string())?;
     let dir = config_dir(&app).await?;
     let key_export = history::latest_readiness_event(&dir, &profile.id, "key_export").await?;
+    let rotation =
+        history::latest_readiness_event(&dir, &profile.id, "passphrase_rotation").await?;
     let integrity = history::latest_integrity(&dir, &profile.id).await?;
     let drill = history::latest_restore_drill(&dir, &profile.id).await?;
     let passphrase_available = keychain::get_passphrase(&profile.repo.ssh_url())
@@ -622,6 +639,7 @@ pub async fn recovery_readiness(
         profile.recovery.encrypted_repository,
         passphrase_available,
         key_export.as_ref(),
+        rotation.as_ref(),
         integrity.as_ref(),
         drill.as_ref(),
         chrono::Utc::now(),
@@ -1796,11 +1814,77 @@ pub async fn set_autostart(enabled: bool) -> Result<(), String> {
     }
 }
 
+/// How long to spend proving a passphrase before storing it. Deliberately far
+/// below `QUICK_OP_TIMEOUT_SECS`: this check runs while the user waits on a
+/// dialog, and a repository that is merely unreachable must not stall them for
+/// two minutes — it falls through to `Undetermined` and stores anyway.
+const PASSPHRASE_CHECK_TIMEOUT_SECS: u64 = 20;
+
+/// Whether a passphrase actually opens the repository.
+#[derive(Debug, PartialEq, Eq)]
+enum PassphraseCheck {
+    Opens,
+    /// borg said the passphrase is wrong — the one case worth blocking on.
+    Wrong,
+    /// No verdict: repo unreachable, not initialised yet, borg missing, timed
+    /// out. Storing must still be allowed, or a passphrase could never be saved
+    /// before the repository exists (the first-run setup flow depends on that).
+    Undetermined,
+}
+
+/// borg's wrong-passphrase wording. Anything else — connection refused, no such
+/// repository, borg not found — is deliberately *not* treated as a wrong
+/// passphrase.
+fn looks_like_wrong_passphrase(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    (lower.contains("passphrase") && lower.contains("incorrect"))
+        || lower.contains("wrong passphrase")
+        || lower.contains("decryption error")
+}
+
+async fn check_passphrase(
+    borg: &borg_core::borg::BorgClient,
+    repo: &RepoConfig,
+    passphrase: &str,
+) -> PassphraseCheck {
+    let probe = borg.info(repo, Some(passphrase));
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(PASSPHRASE_CHECK_TIMEOUT_SECS),
+        probe,
+    )
+    .await
+    {
+        Ok(Ok(_)) => PassphraseCheck::Opens,
+        // `detail()` rather than `to_string()`: the wrong-passphrase wording is
+        // in borg's stderr, which `Display` deliberately omits. Used only for
+        // matching — never surfaced, so no stderr reaches the UI from here.
+        Ok(Err(e)) if looks_like_wrong_passphrase(&e.detail()) => PassphraseCheck::Wrong,
+        Ok(Err(_)) | Err(_) => PassphraseCheck::Undetermined,
+    }
+}
+
 #[tauri::command]
-pub async fn set_repo_passphrase(repo: RepoConfig, passphrase: String) -> Result<(), String> {
+pub async fn set_repo_passphrase(
+    state: State<'_, AppState>,
+    repo: RepoConfig,
+    passphrase: String,
+) -> Result<(), String> {
     repo.validate().map_err(|e| e.to_string())?;
     if passphrase.is_empty() {
         return Err("passphrase cannot be empty".into());
+    }
+    // This command only writes the stored copy — it never changes what the
+    // repository wants. Storing a passphrase that does not open the repository
+    // is therefore silently useless, and it is exactly what the "Only update
+    // the stored copy" repair path is for, where a typo would leave the user
+    // just as locked out but with green confirmation. Verify when we can, and
+    // block only on a definite verdict.
+    if check_passphrase(&state.borg, &repo, &passphrase).await == PassphraseCheck::Wrong {
+        return Err(
+            "that passphrase does not open this repository — it was not saved. Enter the \
+             passphrase this repository was created with, or use Change passphrase to set a new one."
+                .into(),
+        );
     }
     keychain::set_passphrase(&repo.ssh_url(), &passphrase)
 }
@@ -1849,6 +1933,7 @@ fn rotation_indeterminate_error(cause: &str) -> String {
 /// stored copy and would otherwise silently desync it from the repository.
 #[tauri::command]
 pub async fn change_repo_passphrase(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     repo: RepoConfig,
     new_passphrase: String,
@@ -1886,7 +1971,44 @@ pub async fn change_repo_passphrase(
     // this write fails the two are now out of sync in the most dangerous
     // direction, so say so explicitly rather than reporting a plain failure.
     keychain::set_passphrase(&repo.ssh_url(), &new_passphrase)
-        .map_err(|e| rotated_unsaved_error(&e))
+        .map_err(|e| rotated_unsaved_error(&e))?;
+    // Any recovery key exported before now still carries the OLD passphrase,
+    // so recovery readiness must stop counting it. Recorded after the keychain
+    // write so a rotation only invalidates the export once the whole flow has
+    // actually succeeded. A failure to record must not fail the rotation — the
+    // passphrase really did change — so it degrades to a warning.
+    if let Err(e) = record_passphrase_rotation(&app, &repo).await {
+        tracing::warn!("could not record passphrase rotation for recovery readiness: {e}");
+    }
+    Ok(())
+}
+
+/// Record a `passphrase_rotation` readiness event against whichever profile
+/// points at this repository. The passphrase dialog runs against the live repo
+/// form, which need not be the active profile, so match on the repo rather than
+/// assuming.
+async fn record_passphrase_rotation(
+    app: &tauri::AppHandle,
+    repo: &RepoConfig,
+) -> Result<(), String> {
+    let data = read_profiles(app).await?;
+    let url = repo.ssh_url();
+    let Some(profile) = data.profiles.iter().find(|p| p.repo.ssh_url() == url) else {
+        // A repo configured in the form but not yet saved as a profile has no
+        // readiness to invalidate.
+        return Ok(());
+    };
+    let dir = config_dir(app).await?;
+    history::append_readiness_event(
+        &dir,
+        history::ReadinessEvent {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            profile_id: profile.id.clone(),
+            kind: "passphrase_rotation".into(),
+            outcome: "success".into(),
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2424,6 +2546,50 @@ mod tests {
             rotation_indeterminate_error("operation timed out after 120s"),
         ] {
             assert!(!message.contains("hunter2"), "{message}");
+        }
+    }
+
+    /// Verified against borg 1.4.4: `authenticated` repos created with an empty
+    /// passphrase open only with the empty one, so every mode but `none` must
+    /// demand a real passphrase at creation time.
+    #[test]
+    fn only_unencrypted_mode_skips_the_passphrase_requirement() {
+        assert!(!encryption_needs_passphrase("none"));
+        for mode in [
+            "authenticated",
+            "authenticated-blake2",
+            "repokey",
+            "keyfile",
+            "repokey-blake2",
+            "keyfile-blake2",
+        ] {
+            assert!(encryption_needs_passphrase(mode), "{mode}");
+        }
+    }
+
+    /// Only a definite wrong-passphrase verdict may block a save. Everything
+    /// else — unreachable repo, missing repo, missing borg — must fall through
+    /// so a passphrase can still be stored before the repository exists.
+    #[test]
+    fn wrong_passphrase_detection_ignores_unrelated_failures() {
+        for wrong in [
+            "passphrase supplied in BORG_PASSPHRASE, by BORG_PASSCOMMAND, or via BORG_PASSPHRASE_FD is incorrect.",
+            "Wrong passphrase",
+            "Decryption error",
+        ] {
+            assert!(looks_like_wrong_passphrase(wrong), "{wrong}");
+        }
+        for unrelated in [
+            "Repository /backups/pc does not exist.",
+            "connect to host tower port 22: Connection refused",
+            "bash: borg: command not found",
+            "Failed to create/acquire the lock (timeout).",
+            "operation timed out after 20s",
+            // The unencrypted-repo refusal mentions "passphrase" but is not a
+            // wrong-passphrase verdict — blocking on it would be nonsense.
+            "This repository is not encrypted, cannot change the passphrase.",
+        ] {
+            assert!(!looks_like_wrong_passphrase(unrelated), "{unrelated}");
         }
     }
 
