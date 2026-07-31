@@ -88,16 +88,25 @@ fn user_path_patterns() -> &'static [(Regex, &'static str)] {
         vec![
             (
                 // C:\Users\alice, D:/Users/alice — stop at the next separator.
-                Regex::new(r#"(?i)(?P<prefix>[a-z]:[\\/]Users[\\/])(?P<user>[^\\/:*?"<>|\r\n]+)"#)
+                //
+                // `\s` is excluded from the account segment on purpose. Without
+                // it the match is greedy across spaces, so a log line like
+                // "Backing up C:\Users\alice to the repository" collapsed to
+                // "Backing up C:\Users\[REDACTED]" — destroying the rest of the
+                // message, which is the exact diagnostic value this approach
+                // exists to preserve. The cost is that an account name
+                // containing a space is only partly scrubbed.
+                Regex::new(r#"(?i)(?P<prefix>[a-z]:[\\/]Users[\\/])(?P<user>[^\\/:*?"<>|\s]+)"#)
                     .expect("valid windows home pattern"),
                 "$prefix",
             ),
             (
                 // \\nas\share\Users\bob, \\localhost\C$\Users\alice. Backing up
                 // from a NAS or mapped drive is ordinary on Windows, and the
-                // drive-letter pattern above cannot see those paths at all.
+                // drive-letter pattern above cannot see those paths at all
+                // (`C$` has no colon).
                 Regex::new(
-                    r#"(?i)(?P<prefix>\\\\[^\\/:*?"<>|\r\n]+\\[^\\/:*?"<>|\r\n]+\\Users\\)(?P<user>[^\\/:*?"<>|\r\n]+)"#,
+                    r#"(?i)(?P<prefix>\\\\[^\\/:*?"<>|\s]+\\[^\\/:*?"<>|\s]+\\Users\\)(?P<user>[^\\/:*?"<>|\s]+)"#,
                 )
                 .expect("valid UNC home pattern"),
                 "$prefix",
@@ -173,6 +182,32 @@ mod tests {
         assert!(!redacted.contains("alice"), "{redacted}");
         // The diagnostic part survives — that is the whole point of the log.
         assert!(redacted.contains("tax.pdf"), "{redacted}");
+    }
+
+    /// A greedy account segment used to swallow everything after the username
+    /// when a space followed it, so "Backing up C:\Users\alice to the
+    /// repository" became "Backing up C:\Users\[REDACTED]" — deleting the very
+    /// message the log exists to carry. Every earlier test happened to put a
+    /// separator straight after the name, so none of them saw it.
+    #[test]
+    fn account_redaction_stops_at_the_username_and_keeps_the_rest_of_the_line() {
+        let cases = [
+            (
+                r"Backing up C:\Users\alice to the repository now",
+                r"Backing up C:\Users\[REDACTED] to the repository now",
+            ),
+            (
+                r"path=C:\Users\alice error=disk full",
+                r"path=C:\Users\[REDACTED] error=disk full",
+            ),
+            (
+                "/home/bob failed: disk full",
+                "/home/[REDACTED] failed: disk full",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(redact(input), expected);
+        }
     }
 
     /// Only the account segment goes. A path that merely contains "users"
