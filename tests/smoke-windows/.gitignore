@@ -8,3 +8,6 @@ validate-edge.log
 # Downloaded installer artifacts for validate-installer (INSTALLER_DIR default)
 installers/
 .bin/
+# Any local installer download dir, not just the INSTALLER_DIR default above —
+# `gh run download` into a new name must not commit ~50 MB of binaries.
+installers-*/
