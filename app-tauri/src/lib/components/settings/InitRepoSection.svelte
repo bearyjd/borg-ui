@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { repoForm } from '$lib/stores/repo-form.svelte';
   import { explainConnectionError, type HintContext } from '$lib/connection-hints';
+  import { encryptionNeedsPassphrase } from '$lib/encryption-modes';
   import FieldHelp from '$lib/components/FieldHelp.svelte';
 
   interface Props {
@@ -17,11 +18,7 @@
   let initing = $state(false);
   let initResult = $state('');
   let initHint = $state('');
-  let needsPassphrase = $derived(
-    initEncryption !== 'none' &&
-    initEncryption !== 'authenticated' &&
-    initEncryption !== 'authenticated-blake2'
-  );
+  let needsPassphrase = $derived(encryptionNeedsPassphrase(initEncryption));
 
   function hintFor(e: unknown): string {
     const contexts: HintContext[] = repoForm.repoType === 'ssh' ? ['ssh', 'repo'] : ['repo'];
@@ -99,6 +96,10 @@
       <div class="warning-box">
         <strong>Not encrypted:</strong> anyone with access to this repository can read
         your files. Use the recommended encryption for private data.
+        {#if initEncryption.startsWith('authenticated')}
+          This mode still needs a passphrase — it protects the key that detects
+          tampering, not the contents of your files.
+        {/if}
       </div>
     {/if}
 

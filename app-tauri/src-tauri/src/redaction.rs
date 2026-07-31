@@ -88,13 +88,37 @@ fn user_path_patterns() -> &'static [(Regex, &'static str)] {
         vec![
             (
                 // C:\Users\alice, D:/Users/alice — stop at the next separator.
-                Regex::new(r#"(?i)(?P<prefix>[a-z]:[\\/]Users[\\/])(?P<user>[^\\/:*?"<>|\r\n]+)"#)
+                //
+                // `\s` is excluded from the account segment on purpose. Without
+                // it the match is greedy across spaces, so a log line like
+                // "Backing up C:\Users\alice to the repository" collapsed to
+                // "Backing up C:\Users\[REDACTED]" — destroying the rest of the
+                // message, which is the exact diagnostic value this approach
+                // exists to preserve. The cost is that an account name
+                // containing a space is only partly scrubbed.
+                Regex::new(r#"(?i)(?P<prefix>[a-z]:[\\/]Users[\\/])(?P<user>[^\\/:*?"<>|\s]+)"#)
                     .expect("valid windows home pattern"),
                 "$prefix",
             ),
             (
+                // \\nas\share\Users\bob, \\localhost\C$\Users\alice. Backing up
+                // from a NAS or mapped drive is ordinary on Windows, and the
+                // drive-letter pattern above cannot see those paths at all
+                // (`C$` has no colon).
+                Regex::new(
+                    r#"(?i)(?P<prefix>\\\\[^\\/:*?"<>|\s]+\\[^\\/:*?"<>|\s]+\\Users\\)(?P<user>[^\\/:*?"<>|\s]+)"#,
+                )
+                .expect("valid UNC home pattern"),
+                "$prefix",
+            ),
+            (
                 // /home/alice, /Users/alice (macOS), /root stays as-is.
-                Regex::new(r"(?P<prefix>/(?:home|Users)/)(?P<user>[^/\s:]+)")
+                //
+                // Anchored to a path start (line start, whitespace, or a quote)
+                // so a URL path segment like https://docs.example/home/setup is
+                // left alone — over-redacting eats the diagnostic value this
+                // whole approach is trying to preserve.
+                Regex::new(r#"(?m)(?P<prefix>(?:^|[\s"'=(\[])/(?:home|Users)/)(?P<user>[^/\s:]+)"#)
                     .expect("valid unix home pattern"),
                 "$prefix",
             ),
@@ -160,6 +184,32 @@ mod tests {
         assert!(redacted.contains("tax.pdf"), "{redacted}");
     }
 
+    /// A greedy account segment used to swallow everything after the username
+    /// when a space followed it, so "Backing up C:\Users\alice to the
+    /// repository" became "Backing up C:\Users\[REDACTED]" — deleting the very
+    /// message the log exists to carry. Every earlier test happened to put a
+    /// separator straight after the name, so none of them saw it.
+    #[test]
+    fn account_redaction_stops_at_the_username_and_keeps_the_rest_of_the_line() {
+        let cases = [
+            (
+                r"Backing up C:\Users\alice to the repository now",
+                r"Backing up C:\Users\[REDACTED] to the repository now",
+            ),
+            (
+                r"path=C:\Users\alice error=disk full",
+                r"path=C:\Users\[REDACTED] error=disk full",
+            ),
+            (
+                "/home/bob failed: disk full",
+                "/home/[REDACTED] failed: disk full",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(redact(input), expected);
+        }
+    }
+
     /// Only the account segment goes. A path that merely contains "users"
     /// elsewhere, or a drive root, must survive intact.
     #[test]
@@ -168,9 +218,33 @@ mod tests {
             r"D:\Photos\2026\img.jpg",
             "/var/backups/repo",
             r"C:\Program Files\BorgUI\borg.exe",
+            // A URL path segment is not a home directory. Over-redacting eats
+            // the diagnostic value the log exists for.
+            "see https://docs.example.test/home/setup-guide",
         ] {
             assert_eq!(redact(untouched), untouched);
         }
+    }
+
+    /// Backing up from a NAS or mapped network drive is ordinary on Windows,
+    /// and the drive-letter pattern cannot see those paths at all.
+    #[test]
+    fn redacts_account_names_from_unc_paths() {
+        let cases = [
+            (
+                r"\\nas\share\Users\bob\file.txt: Permission denied",
+                r"\\nas\share\Users\[REDACTED]\file.txt",
+            ),
+            (
+                r"\\localhost\C$\Users\alice\Backups",
+                r"\\localhost\C$\Users\[REDACTED]\Backups",
+            ),
+        ];
+        for (input, expected) in cases {
+            let redacted = redact(input);
+            assert!(redacted.contains(expected), "{redacted}");
+        }
+        assert!(!redact(r"\\nas\share\Users\bob\f.txt").contains("bob"));
     }
 
     #[test]
