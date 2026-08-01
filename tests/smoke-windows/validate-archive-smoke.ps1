@@ -177,8 +177,8 @@ if (-not $InSession1) {
     $timedOut = -not (Test-Path $sentinel)
     & $restoreProfile
     # Count failures BEFORE deciding to clean up. Cleanup used to run first, so a
-    # failing run deleted the repo, the archive and the restore destination — the
-    # exact evidence needed to diagnose it — and post-hoc inspection could only
+    # failing run deleted the repo, the archive and the restore destination -- the
+    # exact evidence needed to diagnose it -- and post-hoc inspection could only
     # see an empty disk, which reads identically to "nothing was ever written".
     $failed = 0
     if (Test-Path $resJson) { try { $failed = @((Get-Content $resJson -Raw | ConvertFrom-Json) | Where-Object { $_.Status -eq "FAIL" }).Count } catch {} }

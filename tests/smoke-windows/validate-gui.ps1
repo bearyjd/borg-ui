@@ -12,7 +12,7 @@
 #   Tier B (interactive launch, file-checkable result):
 #     3. scheduled -> a registered Task Scheduler entry running
 #                     `borg-ui.exe --scheduled-backup` actually produces a backup
-#                     (a new archive in the repo — history lives in SQLite now).
+#                     (a new archive in the repo -- history lives in SQLite now).
 #   Tier C (interactive launch + visual confirm -> SIGNAL only, never gates):
 #     1. window/tray, 2. --minimized, 4. console flash -> best-effort process /
 #                     window-handle signals; the verdict is the VNC checklist in
@@ -236,10 +236,37 @@ if (-not (Test-Path $cargo)) {
         } elseif ($kc -match "SKIP: Windows-only") {
             Skip "keychain_credential_manager" "test self-skipped (BORGUI_KEYCHAIN_TEST not honored in session 1)"
         } elseif (-not $kc) {
-            Skip "keychain_credential_manager" "session-1 task produced no output (no interactive desktop? borgtest not logged in?) -- needs a desktop session"
+            Skip "keychain_credential_manager" "session-1 task produced no output -- the task did not run at all (no interactive desktop; log borgtest in at localhost:8006)"
         } else {
             $ktail = ($kc -split "`n" | Select-Object -Last 6) -join " | "
-            Fail "keychain_credential_manager" "session-1 keychain test did not pass: $ktail"
+            # Decode the batch exit code. A process that dies at LOAD time
+            # produces a bare negative integer and no test output, which reads
+            # exactly like "the test never ran" -- that ambiguity is why this
+            # check looked like a toolchain problem for a very long time.
+            $why = ""
+            if ($kc -match 'BATCH_EXIT=(-?\d+)') {
+                $code = [int]$matches[1]
+                $hex = '0x{0:X8}' -f ($code -band 0xFFFFFFFF)
+                $known = @{
+                    '0xC0000135' = 'STATUS_DLL_NOT_FOUND -- the exe could not load a DLL. It is GNU-built (needs C:\mingw64\bin) and needs WebView2Loader.dll, which cargo writes to target\debug while the exe lives in target\debug\deps.'
+                    '0xC0000139' = 'STATUS_ENTRYPOINT_NOT_FOUND -- a DLL was found but is the wrong build. cargo emits both arm64 and x64 WebView2Loader.dll under target\debug\build\webview2-com-sys-*\out\.'
+                    '0xC0000005' = 'STATUS_ACCESS_VIOLATION -- the test crashed.'
+                    '0xC0000142' = 'STATUS_DLL_INIT_FAILED -- a DLL loaded but failed to initialise.'
+                }
+                $why = if ($known.ContainsKey($hex)) { " Exit $hex: $($known[$hex])" }
+                       elseif ($code -lt 0) { " Exit $hex: the process died at load/startup, so no test ever ran." }
+                       else { " Exit $code: the test ran and reported failure." }
+            }
+            # Keep the batch + its output for inspection. They are normally
+            # deleted in cleanup, which left nothing to look at after a failure.
+            $kept = ""
+            if (Test-Path $kcBat) {
+                $keepBat = "$kcBat.failed"; $keepOut = "$kcOut.failed"
+                Copy-Item $kcBat $keepBat -Force -EA SilentlyContinue
+                Copy-Item $kcOut $keepOut -Force -EA SilentlyContinue
+                $kept = " Kept for inspection: $keepBat, $keepOut."
+            }
+            Fail "keychain_credential_manager" "session-1 keychain test did not pass: $ktail$why$kept"
         }
     } catch {
         Fail "keychain_credential_manager" "$_"

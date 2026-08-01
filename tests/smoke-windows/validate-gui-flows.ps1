@@ -310,7 +310,9 @@ function RunBorg($arglist, $cwd) {
     $env:BORG_RELOCATED_REPO_ACCESS_IS_OK = "yes"; $env:BORG_DISPLAY_PASSPHRASE = "no"
     $p = Start-Process -FilePath $script:BorgExe -ArgumentList $arglist -WindowStyle Hidden -PassThru -RedirectStandardOutput $o -RedirectStandardError $e -WorkingDirectory $cwd
     if (-not $p.WaitForExit(60000)) { try { $p.Kill() } catch {}; return @{ ok = $false; err = "timeout" } }
-    return @{ ok = ($p.ExitCode -le 1); code = $p.ExitCode; err = (Get-Content $e -Raw -EA SilentlyContinue) }
+    # Return stdout too: callers need to inspect borg's output (e.g. whether an
+    # archive exists) to tell a real failure from a timing artefact.
+    return @{ ok = ($p.ExitCode -le 1); code = $p.ExitCode; out = (Get-Content $o -Raw -EA SilentlyContinue); err = (Get-Content $e -Raw -EA SilentlyContinue) }
 }
 # Drive the native folder picker: type the path into its edit, click Select Folder.
 function Set-FolderDialog($path) {
@@ -462,7 +464,20 @@ try {
                             # the instant it appears, before the backup can finish.
                             $cancel = $null; $cd = (Get-Date).AddSeconds(20)
                             while ((Get-Date) -lt $cd) { $cancel = Find-El $win $CT::Button "Cancel"; if ($cancel) { break }; Start-Sleep -Milliseconds 250 }
-                            if (-not $cancel) { Fail "cancel_mid_backup" "no Cancel button appeared while backing up (backup finished too fast?)" }
+                            if (-not $cancel) {
+                                # "finished too fast?" was a guess, and it is
+                                # checkable: if an archive exists the backup
+                                # completed before Cancel could be clicked, which
+                                # is a test-pacing problem, not a broken Cancel.
+                                # Distinguish them instead of asking the reader to.
+                                $czList = RunBorg @("list", "--short", (To-Unc "$cz\repo")) $cz
+                                $czArchives = @("$($czList.out)".Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                                if ($czArchives.Count -gt 0) {
+                                    Skip "cancel_mid_backup" "backup completed before Cancel could be clicked (archive '$($czArchives[0])' exists) -- the source set is too small to catch mid-run, not a Cancel defect"
+                                } else {
+                                    Fail "cancel_mid_backup" "no Cancel button appeared within 20s and no archive was created -- the backup did not start"
+                                }
+                            }
                             else {
                                 [void](Invoke-El $cancel)
                                 # Confirm it returns to ready: 'Start Backup' enabled again and not 'Backing up'.
