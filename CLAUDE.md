@@ -21,8 +21,9 @@ cargo test -p borg-ui                                     # Tauri backend
 
 # Frontend — from app-tauri/
 pnpm install
-pnpm check          # Svelte + TS type check (CI: npx svelte-kit sync && npm run check)
-pnpm build           # frontend only
+pnpm check          # Svelte + TS type check
+pnpm test            # vitest suite — CI runs this and will fail without it
+pnpm build           # frontend only (CI does NOT run this; the release build does)
 pnpm tauri dev        # full app, dev server + Rust backend
 pnpm tauri build --no-bundle   # release binary WITHOUT dev-server fallback — see "dev-mode" pitfall below
 

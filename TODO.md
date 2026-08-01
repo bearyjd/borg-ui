@@ -22,16 +22,21 @@ The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 
 ## Current release posture
 
-- `v0.2.0` is published with MSI, NSIS, updater signatures, and `latest.json`.
-- Post-v0.2 follow-up PRs #61–#63 and #69 are merged on `master`.
-- The installed-app updater smoke passed against the updater-capable 0.1.0
-  baseline and published 0.2.0 target (3 passed, 0 failed, 0 skipped).
+- **`v0.3.0` is the published latest** (MSI, NSIS, updater signatures,
+  `latest.json`). `v0.3.1` is tagged and built but its release is still a DRAFT —
+  see the release-state note at the bottom of this file.
+- The installed-app updater smoke last passed in the v0.2.0 cycle (0.1.0
+  baseline → published 0.2.0 target: 3 passed, 0 failed, 0 skipped). It has
+  **not** been re-run for 0.3.0 or 0.3.1. It *can* be re-run now against the
+  published v0.3.0 (a 0.2.0 baseline → 0.3.0); `validate-updater.ps1` takes the
+  baseline and expected version as parameters. Only testing delivery of **0.3.1**
+  requires publishing the draft.
 - Borg-for-Windows 1.4.4+win7 fixes native drive-letter repositories; BorgUI now
   passes those paths directly, including for standard users.
 - Installers remain usable unsigned. Authenticode signing is prepared but intentionally disabled until Azure Trusted Signing repository configuration exists.
 - Updater signing is separate from Authenticode signing; keep the updater private key only in GitHub Actions secrets.
 
-Shipped since 2026-07-02 (see `HANDOFF.md` "Update (2026-07-29)"): Vorta-style
+Shipped since 2026-07-02 (see `HANDOFF.md` History → "0.3.0 line"): Vorta-style
 connection UX with paste-to-fill and repository summary, context-scoped
 plain-language error hints across Settings/Backup/Archives/dashboard, settings
 page decomposition, first-run setup wizard at `/setup`, frontend CI switched to
@@ -45,8 +50,10 @@ pnpm with a vitest gate.
 
 **Release state: `v0.3.1` is tagged and built but the GitHub release is a
 DRAFT.** `releases/latest` still resolves to v0.3.0, so nobody receives 0.3.1
-until it is published. Publishing is also the prerequisite for testing the
-updater path at all — the endpoint is hardcoded to `releases/latest`.
+until it is published. Publishing gates the **0.3.1-target** updater test, not
+the updater path in general — the endpoint is hardcoded to `releases/latest`,
+which today resolves to the published v0.3.0, so a 0.2.0 → 0.3.0 run is
+possible now.
 
 Closed in the 0.3.1 cycle: #100, #101, #102, #103, #104 (all raised by the
 security and adversarial review passes on #99), plus the passphrase-change
@@ -69,9 +76,13 @@ Run the relevant focused tests plus:
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
-cd app-tauri && pnpm check && pnpm build
+cd app-tauri && pnpm check && pnpm test && pnpm build
 git diff --check
 ```
+
+`pnpm test` is required — the frontend CI job runs it and will fail without it.
+That job does not run `pnpm build`; keep it here anyway to catch a broken
+production bundle before a release.
 
 For release-affecting changes, also run the applicable Windows smoke command from
 `tests/smoke-windows/README.md` and a Release workflow dry run.

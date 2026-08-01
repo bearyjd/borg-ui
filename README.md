@@ -101,7 +101,7 @@ borg-ui/
 cargo test --workspace          # unit + integration tests
 cargo clippy --workspace -- -D warnings
 cargo fmt --all -- --check
-cd app-tauri && pnpm check && pnpm build
+cd app-tauri && pnpm check && pnpm test && pnpm build
 ```
 
 ### End-to-end backup → restore tests
