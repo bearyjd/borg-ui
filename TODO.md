@@ -1,6 +1,6 @@
 # BorgUI Roadmap Status
 
-Last updated: 2026-07-31.
+Last updated: 2026-08-01.
 
 The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 
@@ -39,31 +39,19 @@ pnpm with a vitest gate.
 
 ## Tracked follow-up issues
 
-- [#64](https://github.com/bearyjd/borg-ui/issues/64) — enable production Authenticode signing after Azure/OIDC configuration (blocked on cert provisioning). The repo side is ready: `release.yml` carries the `enable_signing` input, Azure OIDC login and the signing action, and `scripts/validate-signing-config.ps1` exists. What is missing is external — an Azure Artifact Signing account, a certificate profile, a federated identity, and the repo secrets/variables.
+- [#64](https://github.com/bearyjd/borg-ui/issues/64) — production Authenticode signing. Repo side complete; blocked on Azure provisioning. Runbook + exact missing secrets/variables are in a comment on the issue.
+- [#114](https://github.com/bearyjd/borg-ui/issues/114) — archive browser intermittently under-counts (~1 run in 6). [#116](https://github.com/bearyjd/borg-ui/pull/116) fixes the race it is attributed to and makes an incomplete listing visible; deliberately left open because the fix is reasoned, not demonstrated.
+- [#119](https://github.com/bearyjd/borg-ui/issues/119) — `keychain_credential_manager` has never run, so **Credential Manager is unverified on Windows**. One blocker left: the wrong-architecture `WebView2Loader.dll` loads (`0xC0000139`).
 
-**No other open issues.** #100–#104, all raised by the security and adversarial
-review passes on #99, are closed:
+**Release state: `v0.3.1` is tagged and built but the GitHub release is a
+DRAFT.** `releases/latest` still resolves to v0.3.0, so nobody receives 0.3.1
+until it is published. Publishing is also the prerequisite for testing the
+updater path at all — the endpoint is hardcoded to `releases/latest`.
 
-| Issue | Shipped in |
-| --- | --- |
-| #100 rotation left a stale recovery-key export counting as "ready" | [#106](https://github.com/bearyjd/borg-ui/pull/106), repaired in [#110](https://github.com/bearyjd/borg-ui/pull/110) |
-| #102 a stored passphrase was never verified against the repository | [#107](https://github.com/bearyjd/borg-ui/pull/107) |
-| #104 `authenticated` repos were created with an empty passphrase | [#107](https://github.com/bearyjd/borg-ui/pull/107), frontend half in [#110](https://github.com/bearyjd/borg-ui/pull/110) |
-| #101 the support bundle could carry account names in paths | [#108](https://github.com/bearyjd/borg-ui/pull/108), extended to `configuration.json` in [#110](https://github.com/bearyjd/borg-ui/pull/110) |
-| #103 the webview had no Content-Security-Policy | [#109](https://github.com/bearyjd/borg-ui/pull/109) |
-
-Also closed earlier: the passphrase-change desync
-([#99](https://github.com/bearyjd/borg-ui/pull/99)), the app-wide keyboard
-`:focus-visible` styles (#97), and borg-core log events being dropped below
-ERROR ([#94](https://github.com/bearyjd/borg-ui/pull/94)).
-
-Two of those needed a second pass, which is worth remembering when reviewing
-this class of change: #106 shipped as a **silent no-op** because a SQLite CHECK
-constraint rejected the new event kind and the failure was swallowed by a
-`warn!`, and #107 made both `authenticated` modes impossible to create because
-the passphrase rule was duplicated in the frontend and only the backend was
-updated. Unit tests over pure functions saw neither — the tests that catch this
-class have to cross the boundary (database, or Rust↔TypeScript parity).
+Closed in the 0.3.1 cycle: #100, #101, #102, #103, #104 (all raised by the
+security and adversarial review passes on #99), plus the passphrase-change
+desync, app-wide `:focus-visible`, and borg-core log events being dropped
+below ERROR.
 
 Provider-specific SSH examples and Windows archive mounting were evaluated in
 [#67](https://github.com/bearyjd/borg-ui/issues/67). There is no recorded user
