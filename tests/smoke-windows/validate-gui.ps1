@@ -148,6 +148,22 @@ if (-not (Test-Path $cargo)) {
     try {
         $bo = Join-Path $env:TEMP "kc-build-o.txt"; $be = Join-Path $env:TEMP "kc-build-e.txt"
         $env:CARGO_NET_OFFLINE = "true"   # avoid the sparse-index network stall (HANDOFF gotcha)
+        # `make build-env` installs the GNU toolchain + MinGW, but nothing puts
+        # MinGW on the PATH a non-interactive SSH session inherits. Without it
+        # the windows-sys build fails with "error calling dlltool 'dlltool.exe':
+        # program not found", so this check reported a missing test binary and
+        # the skip message told you to run build-env + deploy -- which you had.
+        if ((Test-Path "C:\mingw64\bin") -and ($env:Path -notlike "*mingw64\bin*")) {
+            $env:Path = "C:\mingw64\bin;$env:Path"
+        }
+        # tauri-build validates tauri.conf.json `resources` at compile time, so a
+        # deployed source tree with no bundled borg fails with "resource path
+        # `binaries\borg` doesn't exist". CI stages the same placeholder.
+        $borgRes = Join-Path $srcDir "app-tauri\src-tauri\binaries\borg"
+        if (-not (Test-Path (Join-Path $borgRes "borg.exe"))) {
+            New-Item -ItemType Directory -Force -Path $borgRes | Out-Null
+            New-Item -ItemType File -Force -Path (Join-Path $borgRes "borg.exe") | Out-Null
+        }
         # Build the test binary only (running it here over SSH would fail on CredMan).
         # stdout/stderr MUST be different files (Start-Process rejects identical).
         $b = Start-Process -FilePath $cargo `
@@ -174,6 +190,23 @@ if (-not (Test-Path $cargo)) {
             "@echo off",
             "echo STARTED > `"$kcOut`"",
             "set BORGUI_KEYCHAIN_TEST=1",
+            # The exe dies at startup with 0xC0000135 (STATUS_DLL_NOT_FOUND)
+            # without these on PATH, and the ONLY symptom is
+            # BATCH_EXIT=-1073741515 with no test output -- indistinguishable
+            # from "the test never ran".
+            #
+            # Two candidate loads, both absent from a session-1 task's PATH:
+            # MinGW's runtime (libgcc_s_seh-1, libwinpthread-1) because the
+            # binary is GNU-built, and WebView2Loader.dll, which cargo puts in
+            # target\debug while the test exe lives in target\debug\deps.
+            # This is NOT yet a green path. Adding MinGW alone left 0xC0000135;
+            # adding target\debug moved it to 0xC0000139
+            # (STATUS_ENTRYPOINT_NOT_FOUND), i.e. a WebView2Loader.dll is now
+            # found but is the wrong build -- cargo emits both arm64 and x64
+            # copies under target\debug\build\webview2-com-sys-*\out\. Picking
+            # the x64 one explicitly is the next thing to try. See the tracking
+            # issue before spending time here.
+            "set PATH=C:\mingw64\bin;$srcDir\target\debug;%PATH%",
             "`"$testExe`" keychain::tests::windows_credential_manager_roundtrip --exact --nocapture >> `"$kcOut`" 2>&1",
             "echo BATCH_EXIT=%ERRORLEVEL% >> `"$kcOut`""
         ) | Set-Content -Path $kcBat -Encoding Ascii
