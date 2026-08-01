@@ -1,6 +1,6 @@
 # BorgUI handoff
 
-Last updated: 2026-07-31.
+Last updated: 2026-08-01.
 
 ## Current state
 
@@ -114,6 +114,76 @@ create**: the passphrase rule was duplicated in the frontend and only the backen
 was updated. Neither was visible to unit tests over pure functions; catching this
 class requires tests that cross a boundary (the database, or Rust↔TypeScript
 parity).
+
+### Update (2026-08-01) - 0.3.1 cut, DRAFT, not published
+
+**`master` is at `1ef06ee`, version 0.3.1. `v0.3.1` is tagged and built, but the
+GitHub release is a DRAFT.** GitHub excludes drafts from `releases/latest`, so
+`releases/latest` still resolves to v0.3.0 and **no user receives 0.3.1 until
+someone publishes it**. Draft assets verified: MSI + NSIS + both `.sig` +
+`latest.json` (version 0.3.1, correct URL, 416-byte signature). A stale v0.3.0
+*draft* from 2026-07-05 also still sits beside the published v0.3.0 - harmless.
+
+**To publish:** review the assets on the v0.3.1 draft, click Publish. Only then
+can the updater path be tested (see "unrun" below) - that ordering is forced,
+not an oversight.
+
+**Landed since the last section:** #113 (recovery-key import can revert the
+passphrase - now reported, and readiness treats an import as proof-of-key),
+#115 (archive-smoke assertion + evidence preservation), #116 (archive browser
+built its tree before the last batch arrived), #117 (0.3.1 release), #118
+(partial keychain harness unblock), #120 (harness: evidence preservation,
+decoded exit codes, ASCII guard in CI).
+
+**Windows verification: 39 smoke checks green** against a production build -
+engine, non-admin, VSS (including backing up an exclusively-locked file),
+scheduled task, tray, GUI flows (nav / profile switch / restore round-trip /
+cancel), NSIS + MSI install+uninstall. All of these were compile-only before.
+
+**Open issues, with the next concrete step for each:**
+
+- **#64 Authenticode** - blocked on Azure provisioning only. The repo side is
+  complete and the ordering is correct (Authenticode signs, *then* updater
+  `.sig` files are regenerated, *then* `latest.json` is built). A full runbook
+  and the exact missing secrets/variables are in a comment on the issue. No
+  repository variables are currently set, so `vars.AZURE_*` resolve to empty.
+- **#114 archive browser under-count** - #116 fixes the race it is attributed
+  to and makes an incomplete listing visible instead of silent. Reproduces
+  ~1 run in 6, so the fix is justified by code reading + arithmetic, NOT
+  demonstrated; three green post-fix runs would occur ~58% of the time on
+  unfixed code. Left open deliberately. Close it when the warning has had field
+  exposure, or when someone reproduces an under-count against a build
+  containing #116.
+- **#119 keychain never runs** - `keychain_credential_manager` has never
+  executed in the project's life. #118 fixed three blockers (MinGW on PATH,
+  placeholder borg resource, PATH for the session-1 task); the remaining one is
+  `0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND`: cargo emits both arm64 and x64
+  `WebView2Loader.dll`, and the wrong one loads. Pin the x64 copy on the task's
+  PATH ahead of `target\debug`. **Credential Manager is therefore unverified on
+  Windows** - covered by unit tests and the Linux `keyring` backend only, which
+  is the same posture 0.3.0 shipped in, but should not be obscured by the 39
+  green checks above.
+
+**Unrun smoke targets:** `validate-autostart-login` (reboots the guest) and
+`validate-updater` (blocked until 0.3.1 is published - the endpoint is hardcoded
+to `releases/latest/download/latest.json`). Multi-drive edge checks SKIP without
+a D: drive; `make edge-all` recreates the VM with it.
+
+**Harness work still queued** (items 3-5 of a 5-item plan; 1-2 shipped in #120):
+outcome-based assertions instead of internal shapes, **loud skips** (a
+permanently-skipping check currently looks identical to a passing one in the
+summary - that is exactly how #119 stayed invisible), and de-duplicating the
+UIA + session-1 blocks copy-pasted across four scripts. Loud skips is the
+highest value and the cheapest.
+
+**Read this before trusting smoke output.** Of five smoke failures investigated
+this session, **four were tests or fixtures, not the app**: a UTF-8 BOM in a
+hand-written `profiles.json` fixture (serde rejects it, app correctly finds no
+profile); a `history.json` assertion stale since history moved to SQLite; a
+restore assertion polling one directory level too shallow because the app nests
+restores under `BorgUI Restore <timestamp>\`; and that same assertion masking
+the one genuine bug (#116). Two app-bug conclusions had to be retracted. Treat
+harness output as a hypothesis and check it against the code before acting.
 
 ## Delivered roadmap
 
