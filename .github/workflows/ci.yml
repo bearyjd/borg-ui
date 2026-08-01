@@ -17,6 +17,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The smoke scripts declare "ASCII only" in their own headers, because
+      # Windows PowerShell 5.1 reads UTF-8-without-BOM as ANSI and a non-ASCII
+      # byte can break parsing. Nothing enforced it, and two scripts had picked
+      # up em-dashes from comment edits. Cheap to check here; the alternative is
+      # discovering it on a VM run that only happens by hand.
+      - name: Smoke scripts are ASCII-only
+        run: |
+          if bad=$(grep -rlP '[^\x00-\x7F]' tests/smoke-windows/*.ps1); then
+            echo "Non-ASCII bytes in PowerShell smoke scripts:"
+            echo "$bad"
+            grep -rnP '[^\x00-\x7F]' tests/smoke-windows/*.ps1 | head -20
+            exit 1
+          fi
+          echo "All smoke scripts are ASCII-only."
+
       - name: Install system dependencies
         run: |
           sudo apt-get update

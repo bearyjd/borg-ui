@@ -244,7 +244,19 @@ try {
                         }
                         if ($lock) { $lock.Close(); $lock.Dispose(); $lock = $null }
 
-                        if (-not $archName) { Fail "vss_manual_backup_locked_file" "no archive appeared within 120s -- the GUI backup did not complete (button not wired? repo error? check the app)" }
+                        if (-not $archName) {
+                            # Report what was observed, not a list of guesses. The
+                            # app logs its own reason; quoting it beats speculating
+                            # about wiring, which sends readers down dead ends.
+                            $vlog = Join-Path $env:LOCALAPPDATA "com.borgui.app\logs"
+                            $vwhy = ""
+                            $vlatest = Get-ChildItem $vlog -EA SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
+                            if ($vlatest) {
+                                $vlines = @(Get-Content $vlatest.FullName -EA SilentlyContinue | Select-Object -Last 3)
+                                $vwhy = if ($vlines.Count) { " App log tail: " + ($vlines -join ' | ') } else { " App log $($vlatest.Name) is empty." }
+                            } else { $vwhy = " No app log under $vlog." }
+                            Fail "vss_manual_backup_locked_file" "no archive appeared within 120s.$vwhy"
+                        }
                         else {
                             $listing = RunBorg @("list", "$repoUnc::$archName") $work
                             $listOut = "$($listing.out)"
