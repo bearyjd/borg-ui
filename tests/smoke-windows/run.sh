@@ -177,6 +177,7 @@ run_tests() {
     local output
     output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\smoke-test.ps1' 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/results.log"
+    report_skips "Smoke tests" "$output"
 
     if echo "$output" | grep -q "Failed: 0"; then
         log "All smoke tests passed!"
@@ -198,6 +199,7 @@ run_validate() {
     local output
     output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate.ps1' 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/validate.log"
+    report_skips "Windows validation" "$output"
 
     if echo "$output" | grep -q "Failed: 0"; then
         log "Windows validation passed!"
@@ -253,11 +255,13 @@ run_validate_edge() {
     local admin_out
     admin_out=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-edge.ps1 -Mode admin' 2>&1) || true
     echo "$admin_out" | tee "$SCRIPT_DIR/validate-edge.log"
+    report_skips "Edge validation (admin)" "$admin_out"
 
     log "Running non-admin validation (standard user borgstd)..."
     local std_out
     std_out=$($SSH_STD_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-edge.ps1 -Mode nonadmin' 2>&1) || true
     echo "$std_out" | tee -a "$SCRIPT_DIR/validate-edge.log"
+    report_skips "Edge validation (non-admin)" "$std_out"
 
     if echo "$admin_out" | grep -q "Failed: 0" && echo "$std_out" | grep -q "Failed: 0"; then
         log "Edge validation passed (multi-drive + non-admin)!"
@@ -477,6 +481,7 @@ run_validate_vss_spike() {
     local output
     output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-vss-spike.ps1' 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/validate-vss-spike.log"
+    report_skips "VSS feasibility spike" "$output"
 
     if echo "$output" | grep -q "Failed: 0"; then
         log "VSS spike PASSED — Approach B (NTFS junction) is viable; implement it."
@@ -708,6 +713,7 @@ run_validate_updater() {
     local output
     output=$($SSH_CMD "powershell -ExecutionPolicy Bypass -File C:\\Users\\$SSH_USER\\validate-updater.ps1 -BaselineInstaller C:\\Users\\$SSH_USER\\borgui-updater-baseline.exe -ExpectedVersion '$expected'" 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/validate-updater.log"
+    report_skips "Installed-app updater validation" "$output"
 
     if echo "$output" | grep -qE "Failed:[[:space:]]+0" && echo "$output" | grep -qE "Passed:[[:space:]]+[1-9]"; then
         log "Installed-app updater validation passed."
