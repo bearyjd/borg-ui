@@ -29,6 +29,17 @@ log()  { echo -e "${GREEN}[smoke]${NC} $*"; }
 warn() { echo -e "${YELLOW}[smoke]${NC} $*"; }
 fail() { echo -e "${RED}[smoke]${NC} $*" >&2; exit 1; }
 
+# A zero failure count alone is not evidence that a desktop-dependent check ran.
+# Keep skips non-fatal (some hosts legitimately lack session 1), but make them
+# impossible to mistake for a clean pass in the harness's final status line.
+report_skips() {
+    local label="$1" output="$2" skipped
+    skipped=$(printf '%s\n' "$output" | grep -Eo 'Skipped:[[:space:]]*[0-9]+' | tail -1 | grep -Eo '[0-9]+$' || true)
+    if [[ -n "$skipped" && "$skipped" != "0" ]]; then
+        warn "$label UNVERIFIED — $skipped check(s) skipped; inspect the log before claiming coverage."
+    fi
+}
+
 SSH_CMD="sshpass -p $SSH_PASS ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=240 -o TCPKeepAlive=yes -p $SSH_PORT $SSH_USER@$SSH_HOST"
 SCP_CMD="sshpass -p $SSH_PASS scp -o StrictHostKeyChecking=no -P $SSH_PORT"
 
@@ -278,6 +289,7 @@ run_validate_gui() {
     local output
     output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-gui.ps1' 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/validate-gui.log"
+    report_skips "GUI validation" "$output"
 
     if echo "$output" | grep -q "Failed: 0"; then
         log "GUI validation passed (no Tier A/B failures). Finish Tier C via the README VNC checklist."
@@ -307,6 +319,7 @@ run_validate_tray() {
     local output
     output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-tray.ps1' 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/validate-tray.log"
+    report_skips "Tray validation" "$output"
 
     if echo "$output" | grep -q "Failed: 0"; then
         log "Tray validation: no failures. SKIPs mean the icon wasn't locatable -- finish via the README VNC checklist."
@@ -332,6 +345,7 @@ run_validate_gui_flows() {
     local output
     output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-gui-flows.ps1' 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/validate-gui-flows.log"
+    report_skips "GUI-flow validation" "$output"
 
     if echo "$output" | grep -q "Failed: 0"; then
         log "GUI-flow validation: no failures. (SKIPs mean no production exe / no desktop.)"
@@ -356,6 +370,7 @@ run_validate_archive_smoke() {
     local output
     output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-archive-smoke.ps1' 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/validate-archive-smoke.log"
+    report_skips "Archive smoke" "$output"
 
     if echo "$output" | grep -q "Failed: 0"; then
         log "Archive smoke: no failures. (SKIPs mean no production exe / no desktop / borg missing.)"
@@ -490,6 +505,7 @@ run_validate_vss() {
     local output
     output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-vss.ps1' 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/validate-vss.log"
+    report_skips "VSS validation" "$output"
 
     if echo "$output" | grep -q "Failed: 0"; then
         log "VSS validation: no failures. (SKIPs mean no current borg-ui.exe build / no desktop.)"
@@ -512,6 +528,7 @@ run_validate_vss_manual() {
     local output
     output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-vss-manual.ps1' 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/validate-vss-manual.log"
+    report_skips "Manual-path VSS validation" "$output"
 
     if echo "$output" | grep -q "Failed: 0"; then
         log "Manual-path VSS validation: no failures. (SKIPs mean no production exe / no desktop / not elevated.)"
@@ -534,9 +551,17 @@ build_app() {
     log "Type-checking borg-platform-win (catches Windows-only VSS cfg errors)..."
     local pw
     pw=$($SSH_CMD '
-    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+    $env:PATH = "C:\mingw64\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
     $env:CARGO_NET_OFFLINE = "true"
     Set-Location C:\borgui-test
+    # tauri-build validates configured resources before compiling. The deployed
+    # source intentionally omits the large Borg onedir bundle; validation later
+    # copies the real bundle beside borg-ui.exe before it runs the app.
+    $borgResource = "C:\borgui-test\app-tauri\src-tauri\binaries\borg"
+    if (-not (Test-Path "$borgResource\borg.exe")) {
+        New-Item -ItemType Directory -Force -Path $borgResource | Out-Null
+        New-Item -ItemType File -Force -Path "$borgResource\borg.exe" | Out-Null
+    }
     cargo build -p borg-platform-win 2>&1 | Select-Object -Last 15
     ' 2>&1) || true
     echo "$pw"
@@ -547,7 +572,7 @@ build_app() {
     log "Building borg-ui.exe on the VM (cargo build --release -p borg-ui; several minutes)..."
     local bo
     bo=$($SSH_CMD '
-    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+    $env:PATH = "C:\mingw64\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
     $env:CARGO_NET_OFFLINE = "true"
     Set-Location C:\borgui-test
     cargo build --release -p borg-ui 2>&1 | Select-Object -Last 30
@@ -654,6 +679,7 @@ run_validate_installer() {
     local output
     output=$($SSH_CMD 'powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\validate-installer.ps1' 2>&1) || true
     echo "$output" | tee "$SCRIPT_DIR/validate-installer.log"
+    report_skips "Installer validation" "$output"
 
     if echo "$output" | grep -qE "Failed:[[:space:]]+0"; then
         log "Installer validation: no failures."

@@ -11,10 +11,12 @@
 #   2. Locate the install dir and assert borg-ui.exe + borg.exe + the PyInstaller
 #      sibling `_internal\python311.dll` are co-located (the bundling contract:
 #      lib.rs resolves borg as <exe dir>\borg.exe, and borg dies without _internal).
-#   3. Run the INSTALLED borg.exe through `--version` + a real init/create/list/
+#   3. Launch the INSTALLED borg-ui.exe in the interactive desktop and require
+#      an accessible rendered WebView window (not the old Vite localhost page).
+#   4. Run the INSTALLED borg.exe through `--version` + a real init/create/list/
 #      extract/byte-verify round-trip (relative paths to dodge the drive-letter
 #      bug; non-interactive env vars so it can't hang).
-#   4. Silent uninstall and assert the install dir is gone.
+#   5. Silent uninstall and assert the install dir is gone.
 #
 # Every borg call is hard-bounded by a timeout (Invoke-Borg) so a hang can never
 # block the run. NSIS (per-user `/S`) needs no elevation; an MSI per-machine
@@ -22,10 +24,49 @@
 # (not fails) and the NSIS case carries the proof.
 
 param(
-    [string]$InstallerDir = "$env:USERPROFILE\borgui-installers"
+    [string]$InstallerDir = "$env:USERPROFILE\borgui-installers",
+    [switch]$LaunchCheck,
+    [string]$AppExe
 )
 
 $ErrorActionPreference = "Continue"
+$script:SelfPath = $MyInvocation.MyCommand.Path
+
+# The outer installer pass runs over SSH in session 0, where a Tauri window can
+# start without ever rendering on a user's desktop. Run this small probe in the
+# interactive session and have it require both a BorgUI window and an accessible
+# WebView child. It also rejects the Vite localhost error page that previously
+# shipped in an installer.
+if ($LaunchCheck) {
+    Add-Type -AssemblyName UIAutomationClient
+    Add-Type -AssemblyName UIAutomationTypes
+    $tree = [System.Windows.Automation.TreeScope]
+    $windowType = [System.Windows.Automation.ControlType]::Window
+    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $windowType)
+    $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--force-renderer-accessibility"
+    $proc = Start-Process -FilePath $AppExe -PassThru
+    $deadline = (Get-Date).AddSeconds(45)
+    $result = $null
+    while ((Get-Date) -lt $deadline) {
+        foreach ($window in [System.Windows.Automation.AutomationElement]::RootElement.FindAll($tree::Children, $condition)) {
+            $name = ""; try { $name = $window.Current.Name } catch {}
+            if ($name -like "*BorgUI*") {
+                $content = $window.FindFirst($tree::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+                if ($content) {
+                    $text = ""; try { $text = $window.Current.Name + " " + $content.Current.Name } catch {}
+                    if ($text -notmatch "localhost.*refused|ERR_CONNECTION_REFUSED") { $result = "RENDER-PASS"; break }
+                    $result = "RENDER-FAIL localhost error page"
+                }
+            }
+        }
+        if ($result) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $result) { $result = "RENDER-FAIL BorgUI window with accessible WebView content did not appear" }
+    Write-Host $result
+    if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -EA SilentlyContinue }
+    exit $(if ($result -eq "RENDER-PASS") { 0 } else { 1 })
+}
 $script:Passed = 0
 $script:Failed = 0
 $script:Skipped = 0
@@ -93,6 +134,26 @@ function Find-InstallDir {
     return $null
 }
 
+function Test-InstalledRender($label, $borgUi) {
+    $self = $script:SelfPath
+    $task = "BorgUI-InstallerRender-$label"
+    $out = Join-Path $env:USERPROFILE "borgui-installer-render-$label.log"
+    $bat = Join-Path $env:USERPROFILE "borgui-installer-render-$label.bat"
+    Remove-Item $out, $bat -EA SilentlyContinue
+    @("@echo off", "powershell -ExecutionPolicy Bypass -File `"$self`" -LaunchCheck -AppExe `"$borgUi`" > `"$out`" 2>&1", "echo RENDER-DONE >> `"$out`"") | Set-Content $bat -Encoding Ascii
+    & schtasks.exe /Create /F /TN $task /TR "`"$bat`"" /SC ONCE /ST 23:59 /IT 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Skip "$label`_render" "could not create an interactive task"; return }
+    & schtasks.exe /Run /TN $task 2>&1 | Out-Null
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $deadline -and -not ((Get-Content $out -Raw -EA SilentlyContinue) -match "RENDER-DONE")) { Start-Sleep -Seconds 1 }
+    $text = Get-Content $out -Raw -EA SilentlyContinue
+    & schtasks.exe /Delete /F /TN $task 2>&1 | Out-Null
+    Remove-Item $bat -EA SilentlyContinue
+    if ($text -match "RENDER-PASS") { Pass "$label`_render" "installed BorgUI rendered in the interactive desktop" }
+    elseif ($text) { Fail "$label`_render" $text.Trim() }
+    else { Skip "$label`_render" "interactive task did not produce a render result" }
+}
+
 # Assert the bundling contract + exercise the installed borg engine.
 function Test-InstalledLayout($label, $installDir) {
     $borgUi   = Join-Path $installDir 'borg-ui.exe'
@@ -106,6 +167,7 @@ function Test-InstalledLayout($label, $installDir) {
             $installDir, (Test-Path $borgUi), (Test-Path $borg), (Test-Path $internal))
         return
     }
+    Test-InstalledRender $label $borgUi
 
     # borg --version proves _internal/ loads (the whole point of bundling the onedir).
     # NB: Start-Process -PassThru's ExitCode is unreliable (see validate.ps1), so we

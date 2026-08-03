@@ -134,7 +134,8 @@ separately in `borg-platform-win`.
    - **Tier B — scheduled firing (item 3), scriptable result.** Stages a profile
      with a local repo (via the UNC fix) + an enabled schedule, registers an
      interactive `borg-ui.exe --scheduled-backup` task, `/Run`s it, and asserts a
-     `history.json` success event + a new archive in the repo. SKIPs without
+     new archive in the repo. (History is SQLite-backed; `history.json` is no
+     longer written.) SKIPs without
      `borg-ui.exe`.
    - **Tier C — window/tray (1), `--minimized` (2), console flash (4): SIGNAL
      only.** A GUI launched over SSH renders in no desktop, so these print

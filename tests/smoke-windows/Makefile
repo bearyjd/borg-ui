@@ -28,6 +28,9 @@ build-env: ## Install Rust + MinGW + WebView2 in VM
 deploy: ## Upload source code to VM
 	./run.sh deploy
 
+build-app: ## Build the current borg-ui.exe on the VM for production-path validation
+	./run.sh build-app
+
 test: ## Run smoke tests against VM
 	./run.sh test
 
