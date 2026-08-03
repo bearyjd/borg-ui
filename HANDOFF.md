@@ -95,7 +95,9 @@ What CI does **not** prove (also in `CLAUDE.md`):
 
 ### Still unrun / uncovered
 
-- `validate-autostart-login` — reboots the guest.
+- `validate-autostart-login` — previously passed once on the KVM guest (see the
+  harness README); repeat it against the public v0.3.1 binary when the guest is
+  available. It reboots the guest.
 - Multi-drive edge checks — SKIP without a D: drive; `make edge-all` recreates
   the VM with one.
 - New #71–#80 features (wake / battery / Wi-Fi / removable / USB, SSH and
