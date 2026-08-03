@@ -103,7 +103,6 @@ function Invoke-Borg {
     return @{ TimedOut = $false; ExitCode = $p.ExitCode; Stdout = (Get-Content $o -Raw -EA SilentlyContinue); Stderr = (Get-Content $e -Raw -EA SilentlyContinue) }
 }
 function Get-Sha($path) { (Get-FileHash -Algorithm SHA256 -Path $path).Hash }
-function To-Unc($absPath) { "\\localhost\" + $absPath.Substring(0, 1) + "$" + $absPath.Substring(2) }
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -146,12 +145,14 @@ if ($script:Skipped -gt 0 -or $script:Failed -gt 0) {
         "vss-locked-payload-" + (Get-Date).Ticks | Out-File $lockedFile -Encoding ascii -NoNewline
         $normalSha = Get-Sha $normalFile
         $lockedSha = Get-Sha $lockedFile
-        $repoUnc = To-Unc $repoAbs
 
         # The runner does `create`, not `init` -> initialise the repo first.
-        $r = Invoke-Borg @("init", "--encryption", "none", $repoUnc) 40
-        if ($r.TimedOut) { throw "borg init hung on $repoUnc (admin share unavailable?)" }
-        if (-not (Test-Path $repoAbs)) { throw "repo not created (stderr: $($r.Stderr))" }
+        $r = Invoke-Borg @("init", "--encryption", "none", $repoAbs) 40
+        if ($r.TimedOut) { throw "borg init hung on $repoAbs" }
+        # Start-Process can leave ExitCode unset even after WaitForExit; the
+        # repository config below is the durable success signal in that case.
+        if ($null -ne $r.ExitCode -and $r.ExitCode -ne 0) { throw "borg init failed (exit $($r.ExitCode)): $($r.Stderr)" }
+        if (-not (Test-Path (Join-Path $repoAbs "config"))) { throw "repo config was not created" }
 
         # Stage the active profile the runner reads (profiles.rs shape). The
         # schedule's OWN source_paths are what a scheduled run backs up.
@@ -170,9 +171,6 @@ if ($script:Skipped -gt 0 -or $script:Failed -gt 0) {
                     post_backup      = $null
                 })
         }
-        $historyPath = Join-Path $configDir "history.json"
-        Remove-Item -Force $historyPath -EA SilentlyContinue
-        if (Test-Path $historyPath) { throw "could not clear stale history.json (file locked?)" }
         $profilesJson = ConvertTo-Json -InputObject $profiles -Depth 8
         $profilesJson | Out-File $profilesPath -Encoding ascii
 
@@ -192,33 +190,37 @@ if ($script:Skipped -gt 0 -or $script:Failed -gt 0) {
         & schtasks.exe /Run /TN $taskName 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "schtasks /Run failed (rc=$LASTEXITCODE)" }
 
-        # Bounded poll for the runner to record a success (or failure) event.
+        # Bounded poll for the outcome the user cares about: a newly-created
+        # archive. History moved from history.json to borgui.sqlite3, and the
+        # app does not expose that database as a stable harness interface. Borg's
+        # repository listing is both the durable outcome and what the remaining
+        # VSS assertions consume below.
         $deadline = (Get-Date).AddSeconds($ScheduledPollSec)
-        $successEvt = $null; $failEvt = $null
+        $archiveName = $null; $lastListError = $null
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 5
-            if (Test-Path $historyPath) {
+            $archives = Invoke-Borg @("list", "--json", "--", $repoAbs) 40
+            if (-not $archives.TimedOut -and ($null -eq $archives.ExitCode -or $archives.ExitCode -eq 0)) {
                 try {
-                    $events = @(Get-Content $historyPath -Raw | ConvertFrom-Json)
-                    $successEvt = $events | Where-Object { $_.kind -eq "backup" -and $_.outcome -eq "success" } | Select-Object -First 1
-                    if ($successEvt) { break }
-                    $failEvt = $events | Where-Object { $_.outcome -eq "failure" } | Select-Object -First 1
-                    if ($failEvt) { break }
-                } catch {}
+                    $archiveName = ((($archives.Stdout | ConvertFrom-Json).archives | Select-Object -First 1).name)
+                    if ($archiveName) { break }
+                } catch { $lastListError = "could not parse borg list --json output: $_" }
+            } else {
+                $lastListError = if ($archives.TimedOut) { "borg list --json timed out" } else { "exit $($archives.ExitCode): $($archives.Stderr) $($archives.Stdout)" }
             }
         }
 
         # Release the lock now the backup has run (so list/extract can read it).
         if ($lockStream) { $lockStream.Close(); $lockStream.Dispose(); $lockStream = $null }
 
-        if (-not $successEvt) {
-            if ($failEvt) { throw "runner recorded a FAILURE: $($failEvt.error_message)" }
-            throw "no history event within ${ScheduledPollSec}s -- app may not have launched (session 0? not elevated? not logged in?)"
+        if (-not $archiveName) {
+            $taskState = (& schtasks.exe /Query /TN $taskName /FO LIST /V 2>&1 | Out-String).Trim()
+            throw "no archive within ${ScheduledPollSec}s -- app may not have launched (session 0? not elevated? not logged in?). borg detail: $lastListError; task detail: $taskState"
         }
-        $archiveName = $successEvt.archive_name
 
         # Read the stored listing once; reused by the clean-path + locked-file checks.
-        $listing = Invoke-Borg @("list", "$repoUnc::$archiveName") 40
+        $archiveLocation = "{0}::{1}" -f $repoAbs, $archiveName
+        $listing = Invoke-Borg @("list", $archiveLocation) 40
         if ($listing.TimedOut) { throw "borg list hung" }
         $listOut = "$($listing.Stdout)"
 
@@ -244,7 +246,7 @@ if ($script:Skipped -gt 0 -or $script:Failed -gt 0) {
         # ----- restore round-trip: both files extract byte-correct -----
         Write-TestHeader "vss_restore_roundtrip"
         # Extract with cwd=out (borg writes the volume-relative tree under it).
-        $rx = Start-Process -FilePath $script:BorgExe -ArgumentList @("extract", "$repoUnc::$archiveName") `
+        $rx = Start-Process -FilePath $script:BorgExe -ArgumentList @("extract", $archiveLocation) `
             -WindowStyle Hidden -PassThru -WorkingDirectory $out `
             -RedirectStandardOutput (Join-Path $env:TEMP "vss-x-o.txt") -RedirectStandardError (Join-Path $env:TEMP "vss-x-e.txt")
         if (-not $rx.WaitForExit(60000)) { $rx.Kill(); throw "extract hung" }

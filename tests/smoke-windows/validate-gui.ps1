@@ -156,18 +156,11 @@ if (-not (Test-Path $cargo)) {
         if ((Test-Path "C:\mingw64\bin") -and ($env:Path -notlike "*mingw64\bin*")) {
             $env:Path = "C:\mingw64\bin;$env:Path"
         }
-        # tauri-build validates tauri.conf.json `resources` at compile time, so a
-        # deployed source tree with no bundled borg fails with "resource path
-        # `binaries\borg` doesn't exist". CI stages the same placeholder.
-        $borgRes = Join-Path $srcDir "app-tauri\src-tauri\binaries\borg"
-        if (-not (Test-Path (Join-Path $borgRes "borg.exe"))) {
-            New-Item -ItemType Directory -Force -Path $borgRes | Out-Null
-            New-Item -ItemType File -Force -Path (Join-Path $borgRes "borg.exe") | Out-Null
-        }
-        # Build the test binary only (running it here over SSH would fail on CredMan).
+        # Build the platform-only test binary (running it here over SSH would
+        # fail on CredMan). It deliberately does not link Tauri/WebView2.
         # stdout/stderr MUST be different files (Start-Process rejects identical).
         $b = Start-Process -FilePath $cargo `
-            -ArgumentList @("test", "--no-run", "-p", "borg-ui", "--lib") `
+            -ArgumentList @("test", "--no-run", "-p", "borg-platform-win", "--lib") `
             -WorkingDirectory $srcDir -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput $bo -RedirectStandardError $be
         if (-not $b.WaitForExit(900 * 1000)) { try { $b.Kill() } catch {}; throw "cargo test --no-run timed out (build hung)" }
@@ -180,8 +173,16 @@ if (-not (Test-Path $cargo)) {
             $btail = ($bout -split "`n" | Select-Object -Last 6) -join " | "
             throw "test binary failed to compile: $btail"
         }
-        $testExe = (Get-ChildItem (Join-Path $srcDir "target\debug\deps") -Filter "borg_ui_lib-*.exe" -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
-        if (-not $testExe) { throw "compiled test binary (borg_ui_lib-*.exe) not found under target\debug\deps" }
+        # Cargo can report completion before the redirected process metadata is
+        # observable to this SSH session. Poll briefly rather than turning that
+        # harmless handoff race into a missing-test-binary failure.
+        $testExe = $null
+        $testDeadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $testDeadline -and -not $testExe) {
+            $testExe = (Get-ChildItem (Join-Path $srcDir "target\debug\deps") -Filter "borg_platform_win-*.exe" -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+            if (-not $testExe) { Start-Sleep -Milliseconds 500 }
+        }
+        if (-not $testExe) { throw "compiled test binary (borg_platform_win-*.exe) not found under target\debug\deps" }
 
         # Batch the session-1 run; write to the user profile (session 1's unelevated
         # token can't write C:\ root). STARTED + BATCH_EXIT sentinels bracket it.
@@ -195,19 +196,10 @@ if (-not (Test-Path $cargo)) {
             # BATCH_EXIT=-1073741515 with no test output -- indistinguishable
             # from "the test never ran".
             #
-            # Two candidate loads, both absent from a session-1 task's PATH:
-            # MinGW's runtime (libgcc_s_seh-1, libwinpthread-1) because the
-            # binary is GNU-built, and WebView2Loader.dll, which cargo puts in
-            # target\debug while the test exe lives in target\debug\deps.
-            # This is NOT yet a green path. Adding MinGW alone left 0xC0000135;
-            # adding target\debug moved it to 0xC0000139
-            # (STATUS_ENTRYPOINT_NOT_FOUND), i.e. a WebView2Loader.dll is now
-            # found but is the wrong build -- cargo emits both arm64 and x64
-            # copies under target\debug\build\webview2-com-sys-*\out\. Picking
-            # the x64 one explicitly is the next thing to try. See the tracking
-            # issue before spending time here.
-            "set PATH=C:\mingw64\bin;$srcDir\target\debug;%PATH%",
-            "`"$testExe`" keychain::tests::windows_credential_manager_roundtrip --exact --nocapture >> `"$kcOut`" 2>&1",
+            # The GNU test binary still needs MinGW's runtime, but no longer
+            # links WebView2/Tauri.
+            "set PATH=C:\mingw64\bin;%PATH%",
+            "`"$testExe`" credential_manager::tests::windows_credential_manager_roundtrip --exact --nocapture >> `"$kcOut`" 2>&1",
             "echo BATCH_EXIT=%ERRORLEVEL% >> `"$kcOut`""
         ) | Set-Content -Path $kcBat -Encoding Ascii
 
@@ -253,9 +245,9 @@ if (-not (Test-Path $cargo)) {
                     '0xC0000005' = 'STATUS_ACCESS_VIOLATION -- the test crashed.'
                     '0xC0000142' = 'STATUS_DLL_INIT_FAILED -- a DLL loaded but failed to initialise.'
                 }
-                $why = if ($known.ContainsKey($hex)) { " Exit $hex: $($known[$hex])" }
-                       elseif ($code -lt 0) { " Exit $hex: the process died at load/startup, so no test ever ran." }
-                       else { " Exit $code: the test ran and reported failure." }
+                $why = if ($known.ContainsKey($hex)) { " Exit ${hex}: $($known[$hex])" }
+                       elseif ($code -lt 0) { " Exit ${hex}: the process died at load/startup, so no test ever ran." }
+                       else { " Exit ${code}: the test ran and reported failure." }
             }
             # Keep the batch + its output for inspection. They are normally
             # deleted in cleanup, which left nothing to look at after a failure.

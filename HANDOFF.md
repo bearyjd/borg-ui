@@ -1,6 +1,6 @@
 # BorgUI handoff
 
-Last updated: 2026-08-01. `master` is at **`f9b03ee`**, version **0.3.1**,
+Last updated: 2026-08-02. `master` is at **`f9b03ee`**, version **0.3.1**,
 **no open PRs**, three open issues (#64, #114, #119).
 
 > This file is a *living status* file, not a changelog. Everything above the
@@ -68,15 +68,10 @@ Actions secrets.
   of the time even on unfixed code. Left open deliberately. Close it when the
   warning has had field exposure, or when someone reproduces an under-count
   against a build containing #116.
-- **#119 — `keychain_credential_manager` has never executed** in the project's
-  life. #118 fixed three blockers (MinGW on PATH, placeholder borg resource,
-  PATH for the session-1 task); the remaining one is `0xC0000139
-  STATUS_ENTRYPOINT_NOT_FOUND` — cargo emits both arm64 and x64
-  `WebView2Loader.dll` and the wrong one loads. Fix: pin the x64 copy on the
-  task's PATH ahead of `target\debug`. **Credential Manager is therefore
-  unverified on Windows** — covered by unit tests and the Linux `keyring`
-  backend only. That is the same posture 0.3.0 shipped in, but it should not be
-  obscured by the 39 green checks below.
+- **#119 — Credential Manager is verified on Windows (2026-08-03).** The
+  round-trip now lives in `borg-platform-win`, so its test binary does not link
+  Tauri/WebView2. In session 1 it passed set → fresh get → `cmdkey` visibility
+  → clear. This replaces the old WebView loader-blocked app-crate test.
 
 ## Windows verification: what is actually proven
 
@@ -85,10 +80,12 @@ on the KVM guest: engine, non-admin, VSS† (including backing up an
 exclusively-locked file), scheduled task, tray, GUI flows (nav / profile switch /
 restore round-trip / cancel), NSIS + MSI install+uninstall.
 
-**† The VSS entry is disputed — do not count it as proven.** `validate-vss.ps1`
-gates on a `history.json` the app no longer writes (see "Harness gaps" below),
-so it is not clear how it was recorded green. Treat VSS as unverified until that
-is reconciled.
+**† VSS is verified independently (2026-08-02): 4 passed, 0 failed, 0
+skipped.** The corrected validator drove `--scheduled-backup` from the Windows
+guest, confirmed the exclusively locked file was archived (proving a snapshot,
+not live-file fallback), checked clean stored paths, and restored both files
+byte-correct. The old reported VSS result remains unreconciled, but this fresh
+run replaces it as the evidence.
 
 Note this is a claim about *one reported run*, not about coverage being new.
 An earlier revision of this file said "all of these were compile-only before
@@ -123,43 +120,26 @@ What CI does **not** prove (also in `CLAUDE.md`):
 
 ## Harness gaps and queued work
 
-**`validate-installer.ps1` never launches `borg-ui.exe`** — verified 2026-08-01.
-It asserts the file *exists* beside `borg.exe` and `_internal\python311.dll`,
-then exercises the installed **`borg.exe`** through a real round-trip. It never
-starts the app. This is exactly the hole that let **two release blockers ship in
-v0.2.0** and nearly in 0.3.0 (#85 `0xC0000135`, missing CRT; #86 the installed
-exe loading the Vite dev server and showing "localhost refused to connect"), and
-it is why `validate-installer` once reported a false 10/10. The 39 green checks
-do **not** close it: the GUI-flow scripts drive a loose `tauri build` exe staged
-at `C:\borgui-test\target\release\`, never the installed-from-installer layout.
-**Add a launch-and-render check to `validate-installer.ps1`.**
+**`validate-installer.ps1` now launches the installed `borg-ui.exe` in the
+interactive desktop.** It requires an accessible rendered WebView window and
+rejects the known Vite localhost error page, before it exercises the installed
+`borg.exe` round-trip. This closes the harness hole that let #85 (missing CRT)
+and #86 (installed app loading the Vite dev server) evade the old layout-only
+check. The new render check has not yet been run against release installers.
 
 **Queued harness plan, items 3–5 of 5** (1–2 shipped in #120):
 
 3. Outcome-based assertions instead of internal shapes.
 4. **Loud skips** — a permanently-skipping check currently looks identical to a
-   passing one in the summary. That is exactly how #119 stayed invisible for the
-   project's whole life. Highest value and the cheapest; do this first.
+   passing one in the summary. The primary desktop-dependent harness entry
+   points now emit an `UNVERIFIED` warning with the skipped count; extend that
+   convention to the remaining legacy entry points.
 5. De-duplicate the UIA + session-1 blocks copy-pasted across four scripts.
 
-**`validate-vss.ps1` still gates on `history.json` — verified 2026-08-01, and it
-is live, not cosmetic.** The move from JSON history to SQLite was only half
-followed through the harness. `validate-gui.ps1` correctly dropped its
-`history.json` assertion, but `validate-vss.ps1` clears `$historyPath`
-(line 173) and then **polls that same file for the success event** (~line 195),
-throwing if it never appears — `borg list` runs only after that gate. The app
-does not write that file: `borgui.sqlite3` is the store
-(`history.rs:922`), and `history.json` survives in `history.rs` only as a
-legacy *read* path for a one-time import (`history.rs:658`). So the poll cannot
-succeed and the check fails regardless of whether VSS actually worked.
-`tests/smoke-windows/README.md` documents the same stale assertion.
-
-**This contradicts the "39 checks green" line above, which counts VSS as
-passing.** Both claims cannot be true as written. Reconcile before trusting
-either one: establish how VSS was recorded green against a script that gates on
-a file the app never writes. Do not assume the app is broken — the far more
-likely answer, given four of five smoke failures last pass were fixtures, is
-that the harness result was misread.
+**The stale `validate-vss.ps1` `history.json` gate is fixed and re-run on
+Windows (2026-08-02).** The script polls `borg list --json` for the newly-created
+archive, then uses that archive for its locked-file and restore assertions.
+This outcome-based check passed 4/0/0; see the VSS note above.
 
 **Staging a production exe for GUI smoke** without a 15–30 min VM build: install
 the NSIS, then copy `%LOCALAPPDATA%\BorgUI` to `C:\borgui-test\target\release\`
