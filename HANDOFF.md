@@ -119,10 +119,10 @@ the interactive render probe, Borg layout, engine round-trip, and uninstall.
 **Queued harness plan, items 3–5 of 5** (1–2 shipped in #120):
 
 3. Outcome-based assertions instead of internal shapes.
-4. **Loud skips** — a permanently-skipping check currently looks identical to a
-   passing one in the summary. The primary desktop-dependent harness entry
-   points now emit an `UNVERIFIED` warning with the skipped count; extend that
-   convention to the remaining legacy entry points.
+4. **Loud skips — shipped.** A permanently-skipping check now emits an
+   `UNVERIFIED` warning with its skipped count across the desktop and legacy
+   harness entry points. A skip remains non-fatal where the host legitimately
+   lacks the prerequisite, but it can no longer be mistaken for coverage.
 5. De-duplicate the UIA + session-1 blocks copy-pasted across four scripts.
 
 **The stale `validate-vss.ps1` `history.json` gate is fixed and re-run on
