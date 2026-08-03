@@ -110,7 +110,9 @@ interactive desktop.** It requires an accessible rendered WebView window and
 rejects the known Vite localhost error page, before it exercises the installed
 `borg.exe` round-trip. This closes the harness hole that let #85 (missing CRT)
 and #86 (installed app loading the Vite dev server) evade the old layout-only
-check. The new render check has not yet been run against release installers.
+check. It passed against both public v0.3.1 release installers on the Windows
+KVM guest (NSIS + MSI: 12 passed, 0 failed, 0 skipped; 2026-08-03), including
+the interactive render probe, Borg layout, engine round-trip, and uninstall.
 
 **Queued harness plan, items 3–5 of 5** (1–2 shipped in #120):
 
