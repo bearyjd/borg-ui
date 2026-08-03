@@ -76,10 +76,21 @@ function Find-InstallDir {
 }
 
 function File-Version($path) {
-    $raw = (Get-Item $path).VersionInfo.ProductVersion
-    if (-not $raw) { $raw = (Get-Item $path).VersionInfo.FileVersion }
-    $clean = ([string]$raw).Split("+")[0]
-    return ([version]$clean).ToString(3)
+    # The updater briefly replaces borg-ui.exe in place.  During that window,
+    # Windows can expose the file before its version resource is available.
+    # Treat that as "not ready yet", rather than printing a conversion error
+    # on every poll.
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        $item = Get-Item -LiteralPath $path -ErrorAction Stop
+        $raw = $item.VersionInfo.ProductVersion
+        if (-not $raw) { $raw = $item.VersionInfo.FileVersion }
+        $clean = ([string]$raw).Split("+")[0].Trim()
+        if ($clean -notmatch '^\d+(\.\d+){1,3}$') { return $null }
+        return ([version]$clean).ToString(3)
+    } catch {
+        return $null
+    }
 }
 
 Add-Type -AssemblyName UIAutomationClient
@@ -127,6 +138,11 @@ if (-not $dir) {
 }
 $exe = Join-Path $dir "borg-ui.exe"
 $before = File-Version $exe
+if (-not $before) {
+    Fail "baseline_version" "could not read the installed executable version"
+    Finish
+    exit 1
+}
 if ([version]$before -ge [version]$ExpectedVersion) {
     Fail "baseline_version" "baseline $before must be older than $ExpectedVersion"
     Finish

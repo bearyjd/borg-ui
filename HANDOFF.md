@@ -1,6 +1,6 @@
 # BorgUI handoff
 
-Last updated: 2026-08-02. `master` is at **`f9b03ee`**, version **0.3.1**,
+Last updated: 2026-08-03. `master` includes **#122**, version **0.3.1**,
 **no open PRs**, three open issues (#64, #114, #119).
 
 > This file is a *living status* file, not a changelog. Everything above the
@@ -8,44 +8,33 @@ Last updated: 2026-08-02. `master` is at **`f9b03ee`**, version **0.3.1**,
 > code, the code wins — run `git log --oneline -- <the cited path>` and fix this
 > file. It has gone stale before (see "Trust rules" below).
 
-## Start here: 0.3.1 is built but nobody can get it
+## Start here: 0.3.1 is published and updater-verified
 
-`v0.3.1` is tagged and its installers are built, but **the GitHub release is a
-DRAFT**. GitHub excludes drafts from `releases/latest`, so `releases/latest`
-still resolves to **v0.3.0** and no user receives 0.3.1 until someone clicks
-Publish.
+`v0.3.1` is published on GitHub (2026-08-03), so `releases/latest` resolves to
+it and the in-app updater can offer it to eligible installed clients.
 
-Draft assets verified present and correct: MSI + NSIS + both `.sig` +
-`latest.json` (version `0.3.1`, correct URL, 416-byte signature).
+The complete public release has MSI + NSIS + both `.sig` files + `latest.json`
+(version `0.3.1`, correct URL, 416-byte signature).
 
-**Next action:** review the assets on the v0.3.1 draft and publish it.
+The installed-app updater has also passed on the Windows KVM guest: public
+v0.3.0 NSIS baseline → update prompt → user confirmation → installed v0.3.1
+(3 passed, 0 failed, 0 skipped, 2026-08-03).
 
-**But the updater is testable right now — don't wait on the publish to start.**
-Earlier revisions of this file claimed the updater path "cannot be exercised
-until 0.3.1 is published". That was wrong, and it has probably cost a round of
-verification. `validate-updater.ps1` takes `-BaselineInstaller` and
-`-ExpectedVersion` as parameters and hardcodes no version; the app polls
-`releases/latest`, which today resolves to the **published v0.3.0**. So an
-updater-capable v0.2.0 baseline updating to 0.3.0 can be smoke-tested against
-the current state. Publishing 0.3.1 gates only the test of delivering *0.3.1
-specifically*.
+`validate-updater.ps1` takes `-BaselineInstaller` and `-ExpectedVersion` as
+parameters and hardcodes no version, so retain it for future release checks.
 
 ```bash
-# Runnable today, against the published v0.3.0:
+# Verified on 2026-08-03:
 make -C tests/smoke-windows validate-updater \
-  BASELINE_INSTALLER=<an updater-capable 0.2.0 -setup.exe> EXPECTED_UPDATE_VERSION=0.3.0
-
-# After the 0.3.1 draft is published:
-make -C tests/smoke-windows validate-updater \
-  BASELINE_INSTALLER=<a 0.3.0 -setup.exe> EXPECTED_UPDATE_VERSION=0.3.1
+  BASELINE_INSTALLER=<v0.3.0 -setup.exe> EXPECTED_UPDATE_VERSION=0.3.1
 ```
 
 ### Release state
 
 | Tag | GitHub release | Notes |
 |---|---|---|
-| `v0.3.1` | **Draft** | built 2026-07-31; blocks delivery, and the 0.3.1-specific updater test (not the updater test in general — see above) |
-| `v0.3.0` | **Latest** (published 2026-07-05) | what users currently receive |
+| `v0.3.1` | **Latest** (published 2026-08-03) | public release; updater path passed from v0.3.0 |
+| `v0.3.0` | published (2026-07-05) | prior release and updater-test baseline |
 | `v0.3.0` | Draft (2026-07-05) | stale duplicate sitting beside the published one; harmless |
 | `v0.2.0`, `v0.1.0` | published | — |
 
@@ -106,13 +95,9 @@ What CI does **not** prove (also in `CLAUDE.md`):
 
 ### Still unrun / uncovered
 
-- `validate-updater` — **runnable today** against the published v0.3.0 (0.2.0
-  baseline → 0.3.0); only the 0.3.1-target run waits on the publish. See the
-  commands under "Start here".
 - `validate-autostart-login` — reboots the guest.
 - Multi-drive edge checks — SKIP without a D: drive; `make edge-all` recreates
   the VM with one.
-- Credential Manager on Windows — #119.
 - New #71–#80 features (wake / battery / Wi-Fi / removable / USB, SSH and
   secondary destinations, OneDrive placeholders, reporting delivery, recovery on
   a clean VM, all five templates through backup/restore) have **no smoke
