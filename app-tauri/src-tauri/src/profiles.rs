@@ -306,7 +306,15 @@ impl Default for ProfilesData {
 /// The single user-facing message for "a command needed the active profile and
 /// none is set". Every call site goes through [`ProfilesData::require_active`]
 /// so this text stays consistent across the ~35 commands that can hit it.
-pub(crate) const NO_ACTIVE_PROFILE: &str = "no active profile; configure repository first";
+///
+/// It covers two distinct states, so the remediation names both: no profile has
+/// been created yet (configure one), and `active_id` names a profile that is not
+/// in the list (select one). The second needs a hand-edited or corrupted
+/// `profiles.json` to reach — [`ProfilesData::remove`] reassigns `active_id`
+/// rather than leaving it dangling — but "configure repository first" alone
+/// would still send that user to the wrong screen.
+pub(crate) const NO_ACTIVE_PROFILE: &str =
+    "no active profile; configure or select a repository profile";
 
 impl ProfilesData {
     pub fn active(&self) -> Option<&Profile> {
@@ -641,8 +649,10 @@ mod tests {
 
     #[test]
     fn require_active_reports_one_message_when_no_profile_is_active() {
-        // Both "nothing selected" and "selection points at a deleted profile"
-        // are the same thing to the user, and must read the same.
+        // These are NOT the same state: "nothing configured yet" wants a new
+        // repository, "active_id names a profile that is gone" wants an
+        // existing one selected. They share one message because that message
+        // names both remediations, not because the states are equivalent.
         let unset = data_with_active(None, &["first"]);
         let dangling = data_with_active(Some("deleted"), &["first"]);
 

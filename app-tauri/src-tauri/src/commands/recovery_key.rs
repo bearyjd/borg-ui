@@ -73,8 +73,8 @@ pub async fn export_recovery_key(
     // this command, and the export has already succeeded — the key file is on
     // disk. Reaching here means the profile was deleted or switched while borg
     // was running, so only the "exported" bookkeeping flag is lost. Telling the
-    // user to "configure repository first" would imply nothing happened, and
-    // they would re-run an export that already completed.
+    // user to "configure or select a repository profile" would imply nothing
+    // happened, and they would re-run an export that already completed.
     data.active_mut()
         .ok_or_else(|| "active profile disappeared".to_string())?
         .hardening
