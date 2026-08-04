@@ -6,6 +6,7 @@
   import { repoState, isLocalRepo, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
+  import { eventEnvelope } from '$lib/history-event';
   import { profilesState } from '$lib/stores/profiles.svelte';
   import { formatBytes } from '$lib/format';
   import { explainConnectionError, repoHintContexts } from '$lib/connection-hints';
@@ -337,12 +338,10 @@
           : `${fileCount.toLocaleString()} files archived.`,
       );
       historyState.record({
-        id: `${Date.now()}`,
-        timestamp: new Date().toISOString(),
+        ...eventEnvelope(startMs),
         kind: 'backup',
         archive_name: archiveName,
         outcome: result.outcome,
-        duration_seconds: Math.round((Date.now() - startMs) / 1000),
         file_count: fileCount || undefined,
         original_size: originalSize || undefined,
       }).catch((err) => console.warn('Failed to record history:', err));
@@ -362,12 +361,10 @@
       ) ?? '';
       notificationsState.notify('Backup failed', 'See BorgUI for details.');
       historyState.record({
-        id: `${Date.now()}`,
-        timestamp: new Date().toISOString(),
+        ...eventEnvelope(startMs),
         kind: 'backup',
         archive_name: archiveName || '(unnamed)',
         outcome: 'failure',
-        duration_seconds: Math.round((Date.now() - startMs) / 1000),
         error_message: String(e),
       }).catch((err) => console.warn('Failed to record history:', err));
     } finally {

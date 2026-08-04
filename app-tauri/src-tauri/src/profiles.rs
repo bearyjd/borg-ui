@@ -303,6 +303,19 @@ impl Default for ProfilesData {
     }
 }
 
+/// The single user-facing message for "a command needed the active profile and
+/// none is set". Every call site goes through [`ProfilesData::require_active`]
+/// so this text stays consistent across the ~35 commands that can hit it.
+///
+/// It covers two distinct states, so the remediation names both: no profile has
+/// been created yet (configure one), and `active_id` names a profile that is not
+/// in the list (select one). The second needs a hand-edited or corrupted
+/// `profiles.json` to reach — [`ProfilesData::remove`] reassigns `active_id`
+/// rather than leaving it dangling — but "configure repository first" alone
+/// would still send that user to the wrong screen.
+pub(crate) const NO_ACTIVE_PROFILE: &str =
+    "no active profile; configure or select a repository profile";
+
 impl ProfilesData {
     pub fn active(&self) -> Option<&Profile> {
         let id = self.active_id.as_ref()?;
@@ -312,6 +325,18 @@ impl ProfilesData {
     pub fn active_mut(&mut self) -> Option<&mut Profile> {
         let id = self.active_id.clone()?;
         self.profiles.iter_mut().find(|p| p.id == id)
+    }
+
+    /// The active profile, or [`NO_ACTIVE_PROFILE`] when none is set. Prefer
+    /// this over `active().ok_or_else(...)` so the error text can't drift.
+    pub fn require_active(&self) -> Result<&Profile, String> {
+        self.active().ok_or_else(|| NO_ACTIVE_PROFILE.to_string())
+    }
+
+    /// Mutable counterpart to [`ProfilesData::require_active`].
+    pub fn require_active_mut(&mut self) -> Result<&mut Profile, String> {
+        self.active_mut()
+            .ok_or_else(|| NO_ACTIVE_PROFILE.to_string())
     }
 
     pub fn set_active(&mut self, id: &str) -> Result<(), String> {
@@ -606,6 +631,49 @@ mod tests {
             pre_backup: None,
             post_backup: None,
         }
+    }
+
+    fn data_with_active(active_id: Option<&str>, ids: &[&str]) -> ProfilesData {
+        ProfilesData {
+            profiles: ids.iter().map(|id| profile_with_id(id)).collect(),
+            active_id: active_id.map(Into::into),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn require_active_returns_the_active_profile() {
+        let data = data_with_active(Some("second"), &["first", "second"]);
+        assert_eq!(data.require_active().unwrap().id, "second");
+    }
+
+    #[test]
+    fn require_active_reports_one_message_when_no_profile_is_active() {
+        // These are NOT the same state: "nothing configured yet" wants a new
+        // repository, "active_id names a profile that is gone" wants an
+        // existing one selected. They share one message because that message
+        // names both remediations, not because the states are equivalent.
+        let unset = data_with_active(None, &["first"]);
+        let dangling = data_with_active(Some("deleted"), &["first"]);
+
+        assert_eq!(unset.require_active().unwrap_err(), NO_ACTIVE_PROFILE);
+        assert_eq!(dangling.require_active().unwrap_err(), NO_ACTIVE_PROFILE);
+    }
+
+    #[test]
+    fn require_active_mut_borrows_the_active_profile_for_mutation() {
+        let mut data = data_with_active(Some("first"), &["first", "second"]);
+        data.require_active_mut().unwrap().name = "renamed".into();
+
+        assert_eq!(data.require_active().unwrap().name, "renamed");
+        // The untouched profile stays untouched.
+        assert_eq!(data.profiles[1].name, "second");
+    }
+
+    #[test]
+    fn require_active_mut_reports_the_same_message_as_require_active() {
+        let mut data = data_with_active(None, &["first"]);
+        assert_eq!(data.require_active_mut().unwrap_err(), NO_ACTIVE_PROFILE);
     }
 
     #[test]

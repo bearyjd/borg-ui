@@ -30,9 +30,7 @@ use crate::profiles::{self, Profile};
 pub async fn run_restore_drill(config_dir: &Path, borg: &BorgClient) -> Result<(), String> {
     let started = Instant::now();
     let data = profiles::load(config_dir).await?;
-    let profile = data
-        .active()
-        .ok_or_else(|| "no active profile".to_string())?;
+    let profile = data.require_active()?;
     if !profile
         .restore_drill_schedule
         .as_ref()
@@ -351,9 +349,7 @@ fn build_archive_name(profile: &Profile) -> String {
 
 async fn load_active_profile(config_dir: &Path) -> Result<Profile, String> {
     let data = profiles::load(config_dir).await?;
-    data.active()
-        .cloned()
-        .ok_or_else(|| "no active profile configured".to_string())
+    data.require_active().cloned()
 }
 
 /// Record a backup history event and build the matching report.
@@ -728,9 +724,7 @@ pub async fn run_scheduled_integrity_check(
     borg: &BorgClient,
 ) -> Result<crate::history::IntegrityEvent, String> {
     let data = crate::profiles::load(config_dir).await?;
-    let profile = data
-        .active()
-        .ok_or_else(|| "no active profile".to_string())?;
+    let profile = data.require_active()?;
     if !profile
         .integrity_schedule
         .as_ref()
@@ -1007,7 +1001,7 @@ mod tests {
                 .error
                 .as_deref()
                 .unwrap()
-                .contains("no active profile")
+                .contains(profiles::NO_ACTIVE_PROFILE)
         );
     }
 

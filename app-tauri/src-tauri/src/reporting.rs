@@ -309,10 +309,7 @@ pub async fn report_backup_outcome(
 
 pub async fn run_daily(config_dir: &Path) -> Result<(), String> {
     let data = crate::profiles::load(config_dir).await?;
-    let profile = data
-        .active()
-        .cloned()
-        .ok_or_else(|| "no active profile".to_string())?;
+    let profile = data.require_active()?.clone();
     for pending in history::pending_deliveries(config_dir, &profile.id).await? {
         let _ = deliver(
             config_dir,

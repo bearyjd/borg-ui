@@ -6,6 +6,7 @@
   import { repoState, isLocalRepo, type RepoConfig } from '$lib/stores/repo.svelte';
   import { notificationsState } from '$lib/stores/notifications.svelte';
   import { historyState } from '$lib/stores/history.svelte';
+  import { eventEnvelope } from '$lib/history-event';
   import { profilesState } from '$lib/stores/profiles.svelte';
   import ArchiveBrowser from '$lib/components/ArchiveBrowser.svelte';
   import DiffViewer from '$lib/components/DiffViewer.svelte';
@@ -345,12 +346,10 @@
         `Archive "${archiveName}" restored to ${result.destination}.`,
       );
       historyState.record({
-        id: `${Date.now()}`,
-        timestamp: new Date().toISOString(),
+        ...eventEnvelope(startMs),
         kind: 'restore',
         archive_name: archiveName,
         outcome: 'success',
-        duration_seconds: Math.round((Date.now() - startMs) / 1000),
         ...(restoreFileCount > 0 ? { file_count: restoreFileCount } : {}),
       }).catch((err) => console.warn('Failed to record history:', err));
     } catch (e) {
@@ -366,12 +365,10 @@
       restoreHint = hintFor(e, ['restore']);
       notificationsState.notify('Restore failed', 'See BorgUI for details.');
       historyState.record({
-        id: `${Date.now()}`,
-        timestamp: new Date().toISOString(),
+        ...eventEnvelope(startMs),
         kind: 'restore',
         archive_name: archiveName,
         outcome: 'failure',
-        duration_seconds: Math.round((Date.now() - startMs) / 1000),
         error_message: String(e),
       }).catch((err) => console.warn('Failed to record history:', err));
     } finally {
