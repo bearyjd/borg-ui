@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { ENCRYPTION_MODES, encryptionNeedsPassphrase } from './encryption-modes';
 
@@ -36,14 +36,19 @@ describe('parity with the Rust definition', () => {
   });
 
   test('matches the Rust passphrase rule', () => {
-    const commandsRs = readFileSync(
-      new URL('../../src-tauri/src/commands.rs', import.meta.url),
-      'utf8'
-    );
+    // Scanned across the command modules rather than read from one hard-coded
+    // path: this assertion is about the rule, not about which file currently
+    // holds it, and pinning the filename made a pure code move look like a
+    // behavior regression.
+    const commandsDir = new URL('../../src-tauri/src/commands/', import.meta.url);
+    const sources = readdirSync(commandsDir)
+      .filter((name) => name.endsWith('.rs'))
+      .map((name) => readFileSync(new URL(name, commandsDir), 'utf8'));
+
     // The Rust side is `mode != "none"`. If that ever gains another exempt
     // mode, this fails and the two must be reconciled deliberately.
-    expect(commandsRs).toMatch(
-      /fn encryption_needs_passphrase\(mode: &str\) -> bool \{\s*mode != "none"\s*\}/
-    );
+    const rule = /fn encryption_needs_passphrase\(mode: &str\) -> bool \{\s*mode != "none"\s*\}/;
+    const matches = sources.filter((source) => rule.test(source));
+    expect(matches, 'encryption_needs_passphrase rule not found in src-tauri/src/commands/').toHaveLength(1);
   });
 });
