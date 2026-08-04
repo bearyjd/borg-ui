@@ -1,7 +1,7 @@
 # BorgUI handoff
 
-Last updated: 2026-08-03. `master` includes **#122**, version **0.3.1**,
-**no open PRs**, three open issues (#64, #114, #119).
+Last updated: 2026-08-04. `master` includes **#126**, version **0.3.1**,
+**no open PRs**, two open issues (#64, #114).
 
 > This file is a *living status* file, not a changelog. Everything above the
 > "History" heading describes the present. If a claim here disagrees with the
@@ -57,11 +57,6 @@ Actions secrets.
   of the time even on unfixed code. Left open deliberately. Close it when the
   warning has had field exposure, or when someone reproduces an under-count
   against a build containing #116.
-- **#119 — Credential Manager is verified on Windows (2026-08-03).** The
-  round-trip now lives in `borg-platform-win`, so its test binary does not link
-  Tauri/WebView2. In session 1 it passed set → fresh get → `cmdkey` visibility
-  → clear. This replaces the old WebView loader-blocked app-crate test.
-
 ## Windows verification: what is actually proven
 
 **39 smoke checks reported green (2026-07-31/08-01)** against a production build
@@ -75,6 +70,10 @@ guest, confirmed the exclusively locked file was archived (proving a snapshot,
 not live-file fallback), checked clean stored paths, and restored both files
 byte-correct. The old reported VSS result remains unreconciled, but this fresh
 run replaces it as the evidence.
+
+**Credential Manager is verified on Windows (2026-08-03).** The session-1
+`borg-platform-win` test passed set → fresh get → `cmdkey` visibility → clear,
+without linking Tauri/WebView2. The tracking issue #119 is closed.
 
 Note this is a claim about *one reported run*, not about coverage being new.
 An earlier revision of this file said "all of these were compile-only before
