@@ -1,7 +1,13 @@
 # BorgUI handoff
 
-Last updated: 2026-08-04. `master` includes **#126**, version **0.3.1**,
+Last updated: 2026-08-04. `master` includes **#128**, version **0.3.1**,
 **no open PRs**, two open issues (#64, #114).
+
+**#127 and #128 are on `master` but not in any release.** #128 restructured the
+Tauri command layer (see "Architecture map") — it is a refactor with no
+user-visible change beyond one error message, and all three CI jobs including
+`Rust (Windows)` passed on it. Any note citing `app-tauri/src-tauri/src/commands.rs`
+predates it and names a file that no longer exists.
 
 > This file is a *living status* file, not a changelog. Everything above the
 > "History" heading describes the present. If a claim here disagrees with the
@@ -122,7 +128,14 @@ the interactive render probe, Borg layout, engine round-trip, and uninstall.
    `UNVERIFIED` warning with its skipped count across the desktop and legacy
    harness entry points. A skip remains non-fatal where the host legitimately
    lacks the prerequisite, but it can no longer be mistaken for coverage.
-5. De-duplicate the UIA + session-1 blocks copy-pasted across four scripts.
+5. De-duplicate the UIA + session-1 blocks copy-pasted across the validate
+   scripts. **Re-counted 2026-08-04 and "four" understates it:** the
+   `Pass`/`Fail`/`Skip` trio is duplicated in 12 scripts, and the UIA helper set
+   (`Find-El`, `AidCond`, `CCond`, `TCond`, `Wait-Text`, `Bring-Foreground`) plus
+   `Ensure-BorgBeside` in 3+. #128's cleanup pass deliberately left this alone:
+   these run only against the KVM harness, so a Linux sandbox has no gate to
+   verify a refactor of them against. Do it from a host that can run
+   `make -C tests/smoke-windows validate-all`, not blind.
 
 **The stale `validate-vss.ps1` `history.json` gate is fixed and re-run on
 Windows (2026-08-02).** The script polls `borg list --json` for the newly-created
@@ -206,6 +219,13 @@ paragraph — it has now been wrong in both directions.
   cloud-file detection/hydration, other Windows integrations.
 - `app-tauri/src-tauri` — Tauri IPC, profiles, SQLite history, scheduling,
   reporting, recovery, health, forecasting, templates, backup orchestration.
+  The IPC surface is `src/commands/` — **16 domain modules since #128**, not the
+  single 2,781-line `commands.rs` that older notes cite. `commands/mod.rs`
+  re-exports every command, so `commands::<name>` paths and the
+  `generate_handler!` list in `lib.rs` are unchanged; it also holds what the
+  domain modules share (`AppState`, the operation-registry keys, the
+  profile/config helpers), which submodules reach via `use super::*`. Add a new
+  command to the module matching its domain, not to `mod.rs`.
 - `app-tauri/src` — Svelte 5 UI and stores.
 - `tests/smoke-windows` — KVM/Windows installer, updater, GUI, VSS, scheduler
   and archive smoke harness.

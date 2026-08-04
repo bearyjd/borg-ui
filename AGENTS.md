@@ -33,7 +33,7 @@ Native Windows GUI for BorgBackup. Lets users back up to a remote borg server ov
 ```
 Frontend (Svelte 5 / SvelteKit)
         ↕ Tauri IPC (invoke)
-Tauri Commands (app-tauri/src-tauri/src/commands.rs)
+Tauri Commands (app-tauri/src-tauri/src/commands/)
         ↕ Rust function calls
 borg-core          borg-platform-win
 (portable)         (Windows-specific)

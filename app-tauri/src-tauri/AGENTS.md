@@ -15,7 +15,7 @@ Tauri 2 Rust backend for the desktop application. Defines Tauri commands that th
 | `build.rs` | Tauri build script |
 | `src/main.rs` | Entry point — calls `borg_ui_lib::run()`, sets `windows_subsystem` in release |
 | `src/lib.rs` | App initialization: tracing setup, BorgClient creation, Tauri builder with command handlers |
-| `src/commands.rs` | Tauri IPC commands for repository setup, backup/restore, archive operations, integrity checks, schedules, diagnostics, recovery, updater support, and cancellation |
+| `src/commands/` | Tauri IPC commands, split by domain since #128 (was a single 2,781-line `commands.rs`): `repo`, `ssh`, `archives`, `restore`, `backup`, `retention`, `integrity`, `hardening`, `policy`, `reports`, `schedule`, `passphrase`, `profile_mgmt`, `support`, `recovery_key`. `mod.rs` re-exports every command and holds the shared internals (`AppState`, operation-registry keys, profile/config helpers) that submodules reach via `use super::*` |
 
 ## Subdirectories
 
@@ -28,7 +28,7 @@ Tauri 2 Rust backend for the desktop application. Defines Tauri commands that th
 ## For AI Agents
 
 ### Working In This Directory
-- `src/commands.rs` is the bridge between frontend and backend. Each `#[tauri::command]` maps to a frontend `invoke('command_name', {...})` call.
+- `src/commands/` is the bridge between frontend and backend. Each `#[tauri::command]` maps to a frontend `invoke('command_name', {...})` call.
 - `AppState` holds the `BorgClient` instance, managed via `tauri::Builder::manage()`.
 - The borg binary path defaults to `borg.exe` next to the app executable. Release builds place the Borg-for-Windows onedir bundle beside `borg-ui.exe`.
 - Long-running Borg operations use `CancelToken` entries in `AppState`; add explicit cancel IPC for any new streamed/long-running command.
@@ -42,9 +42,10 @@ Tauri 2 Rust backend for the desktop application. Defines Tauri commands that th
 - Prefer testing business logic in `borg-core`; test Tauri command glue when it owns persistence, IPC/cancellation, or redaction behavior.
 
 ### Adding a New Command
-1. Add the function in `src/commands.rs` with `#[tauri::command]`
-2. Register it in `src/lib.rs` inside `tauri::generate_handler![]`
+1. Add the function with `#[tauri::command]` to the `src/commands/` module matching its domain — not to `mod.rs`, which is for shared internals only. Start a new module if none fits, and declare + `pub use` it in `mod.rs`.
+2. Register it in `src/lib.rs` inside `tauri::generate_handler![]`. `mod.rs` re-exports every command, so the bare `commands::<name>` path works regardless of which module it lives in.
 3. Call from frontend: `await invoke('command_name', { params })`
+4. Keep each module under the 800-line convention. Splitting `commands.rs` at 2,781 lines was #128; do not rebuild the monolith inside one submodule.
 
 ## Dependencies
 

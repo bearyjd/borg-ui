@@ -58,13 +58,16 @@ being parsed as a flag is (e.g. `ssh_user = -oProxyCommand=...`). All argv-bound
 untrusted strings must pass `reject_option_like` (`crates/borg-core/src/config.rs:25-36`)
 before ever reaching a `Command`. `RepoConfig::validate()` already gates
 `repo_path`, `ssh_host`, `ssh_user`; `test_ssh_connection` in
-`app-tauri/src-tauri/src/commands.rs:142-157` gates the same fields
+`app-tauri/src-tauri/src/commands/ssh.rs:6-21` gates the same fields
 independently since it can be called before a full `validate()`. If you add any
 new user-controlled field that becomes an argv token (a borg binary path
 override, an archive name pattern, a new SSH option), route it through this
 same gate and add a `..._rejects_option_like_...` test alongside the existing
 ones (see `crates/borg-core/src/config.rs` tests and
-`app-tauri/src-tauri/src/commands.rs:2332-2342`).
+`test_ssh_connection_rejects_option_like_host_and_user` in
+`app-tauri/src-tauri/src/commands/ssh.rs`). Cite the test by name, not by line
+number — #128 split `commands.rs` into `commands/` and every pinned line number
+in the older docs rotted at once.
 
 ## Security/privacy invariants (never regress these)
 
@@ -119,8 +122,11 @@ passphrases/secrets — never persist them to `profiles.rs` config or SQLite
   introduce new error types per module).
 - `borg-core` must stay platform-agnostic — no `cfg(windows)` or Windows API
   calls there; Windows-only logic belongs in `borg-platform-win`.
-- Tauri commands (`app-tauri/src-tauri/src/commands.rs`) return `Result<T, String>`
-  (Tauri IPC requires string errors) — map `BorgError` with `.map_err(|e| e.to_string())`.
+- Tauri commands (`app-tauri/src-tauri/src/commands/`, 16 domain modules since
+  #128) return `Result<T, String>` (Tauri IPC requires string errors) — map
+  `BorgError` with `.map_err(|e| e.to_string())`. Add a command to the module
+  matching its domain; `commands/mod.rs` re-exports everything, so the
+  `generate_handler!` list in `lib.rs` needs only the command name.
 - Frontend: Svelte 5 runes (`$state`, `$props`, `$derived`), not legacy `$:`
   reactive statements or Svelte-4-style stores for component-local state.
 - No hardcoded CSS colors — every value is a token in `app-tauri/src/app.css`;

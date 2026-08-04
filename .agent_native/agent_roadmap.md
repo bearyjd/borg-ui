@@ -29,11 +29,19 @@ no longer true:
 | SSH key ACLs unrestricted | `a5a8bf0` |
 | Missing `--color-error` CSS token | `61831c2` (CSS token commit) |
 
-Only one item from that audit remains genuinely open: no passphrase-rotation/
-Credential-Manager desync guard (`set_repo_passphrase`,
-`app-tauri/src-tauri/src/commands.rs:1798`, only overwrites the Credential
-Manager entry — no `borg key change-passphrase`/equivalent exists anywhere in
-the codebase, confirmed absent via grep on 2026-07-07). The "`--`
+~~Only one item from that audit remains genuinely open: no passphrase-rotation/
+Credential-Manager desync guard.~~ **That claim is stale — corrected 2026-08-04.**
+It was true when written (2026-07-07) but rotation shipped afterwards in **#99**
+(`d8c3eaa`, "rotate the repository passphrase, not just the stored copy"):
+`BorgClient::change_passphrase` runs real `borg key change-passphrase`
+(`crates/borg-core/src/borg.rs:546-576`), and the desync guard exists as
+`PASSPHRASE_ROTATED_UNSAVED_PREFIX` / `rotated_unsaved_error` in
+`app-tauri/src-tauri/src/commands/passphrase.rs`, which distinguishes
+"rotated but not saved" from "indeterminate" so the user is never told a
+rotation failed when it may have committed. `set_repo_passphrase` also now lives
+in that module, not the long-gone `commands.rs:1798`. **Nothing from that audit
+is open.** This entry is exactly the failure mode `CLAUDE.md` warns about — verify
+"still open" claims with `git log --oneline -S <symbol> -- <path>` before acting. The "`--`
 end-of-options before positional paths" item, which this audit *also* first
 listed as open, turned out to already be fixed — it shipped in the same commit
 (`9257b75`) as the SSH-RCE fix (see the `EndOfOptions` trait,
@@ -254,14 +262,14 @@ enforced by `crates/AGENTS.md`'s stated dependency direction, and `borg-core`
 has zero internal dependencies per `cargo metadata`). No entanglement found
 there. The one soft spot:
 
-- **`app-tauri/src-tauri/src/commands.rs` is a wide single file** (24 sibling
-  modules — profiles, history, scheduling, reporting, recovery, health,
-  forecasting, templates — all funnel through it as the Tauri IPC surface).
-  This is consistent with Tauri's command-registration model, not an accident,
-  but it means "add a new command" and "review security-sensitive IPC" both
-  require scanning one large file. Given the user's own file-size convention
-  (`coding-style.md`: 800 lines max), it's worth an agent checking
-  `wc -l app-tauri/src-tauri/src/commands.rs` before adding new commands and
-  splitting by domain (backup/restore, profiles, recovery, diagnostics) if it's
-  crossed that threshold — not done in this pass since it's a judgment call
-  for the maintainer, not a bug.
+- ~~**`app-tauri/src-tauri/src/commands.rs` is a wide single file**~~ —
+  **RESOLVED in #128 (2026-08-04).** It had reached 2,781 lines and 86 commands,
+  well past the 800-line convention in `coding-style.md`. Split by domain into
+  16 modules under `app-tauri/src-tauri/src/commands/` (largest now 405 lines),
+  which is roughly the split this entry proposed. `mod.rs` re-exports every
+  command, so Tauri's command-registration model is unaffected and the
+  `generate_handler!` list in `lib.rs` did not change. Both concerns this entry
+  raised are addressed: "add a new command" now means editing the module for
+  that domain, and "review security-sensitive IPC" can be scoped to one file
+  (e.g. the SSH option-injection gate is `commands/ssh.rs`, ~85 lines, instead
+  of buried in a 2,781-line file).
