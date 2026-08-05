@@ -1,13 +1,42 @@
 # BorgUI handoff
 
-Last updated: 2026-08-04. `master` includes **#128**, version **0.3.1**,
+Last updated: 2026-08-05. `master` includes **#131**, version **0.3.1**,
 **no open PRs**, two open issues (#64, #114).
 
-**#127 and #128 are on `master` but not in any release.** #128 restructured the
+**#127–#131 are on `master` but not in any release.** #128 restructured the
 Tauri command layer (see "Architecture map") — it is a refactor with no
-user-visible change beyond one error message, and all three CI jobs including
-`Rust (Windows)` passed on it. Any note citing `app-tauri/src-tauri/src/commands.rs`
-predates it and names a file that no longer exists.
+user-visible change beyond one error message. Any note citing
+`app-tauri/src-tauri/src/commands.rs` predates it and names a file that no longer
+exists.
+
+**#128 is runtime-verified on Windows, not just CI-green (2026-08-05).** The
+whole point of the KVM harness is that `Rust (Windows)` CI compiles and
+unit-tests but stages a placeholder `borg.exe` and never runs a backup. The full
+matrix was run against a `borg-ui.exe` built from post-#128 `master` on the
+guest, with **zero failures and zero unexplained skips**:
+
+| Check | Result |
+|---|---|
+| `validate` (engine, autostart reg, schtasks, local drive repo) | 5/5 |
+| `validate-vss` (scheduled path, exclusively-locked file) | 4/4 |
+| `validate-vss-manual` (GUI path) | 3/3 |
+| `validate-gui` (keychain + real scheduled task fires) | 2/2 gating |
+| `validate-gui-flows` (nav, profile switch, restore, cancel) | 4/4 |
+| `validate-tray` | 3/3 |
+| `validate-archive-smoke` (100k entries) | 5/5 |
+| `validate-edge` (non-admin) | 2/2 |
+| `validate-installer` (published v0.3.1 NSIS + MSI) | 12/12 |
+
+That covers the VSS wiring #128 moved into `commands/backup.rs`: the
+exclusively-locked file landed in the archive, which a live-file fallback could
+not have done. `validate-installer` ran against the **real published v0.3.1
+artifacts**, including the `nsis_render`/`msi_render` launch checks.
+
+Staging trick used for the UIA scripts (they hardcode
+`C:\borgui-test\target\release\borg-ui.exe` and need a real rendered WebView, which
+a plain `cargo build --release` does not produce): silent-install the v0.3.1 NSIS,
+then copy `%LOCALAPPDATA%\BorgUI\*` to that path. Always prefix `KEEP_VM=1` or
+`run.sh` tears the container down on EXIT.
 
 > This file is a *living status* file, not a changelog. Everything above the
 > "History" heading describes the present. If a claim here disagrees with the
@@ -128,14 +157,33 @@ the interactive render probe, Borg layout, engine round-trip, and uninstall.
    `UNVERIFIED` warning with its skipped count across the desktop and legacy
    harness entry points. A skip remains non-fatal where the host legitimately
    lacks the prerequisite, but it can no longer be mistaken for coverage.
-5. De-duplicate the UIA + session-1 blocks copy-pasted across the validate
-   scripts. **Re-counted 2026-08-04 and "four" understates it:** the
-   `Pass`/`Fail`/`Skip` trio is duplicated in 12 scripts, and the UIA helper set
-   (`Find-El`, `AidCond`, `CCond`, `TCond`, `Wait-Text`, `Bring-Foreground`) plus
-   `Ensure-BorgBeside` in 3+. #128's cleanup pass deliberately left this alone:
-   these run only against the KVM harness, so a Linux sandbox has no gate to
-   verify a refactor of them against. Do it from a host that can run
-   `make -C tests/smoke-windows validate-all`, not blind.
+5. De-duplicate the copy-pasted blocks. **Result helpers: DONE in #131
+   (2026-08-05).** `Pass`/`Fail`/`Skip` plus their counters now live in
+   `tests/smoke-windows/_common.ps1`, dot-sourced by 9 scripts — 17 duplicated
+   definitions removed. Each migrated script was **run on the guest and compared
+   to its pre-change baseline** (see the table above); a green build proves
+   nothing for harness code.
+   - `push_ps1 <script> [user]` in `run.sh` uploads the helper beside each
+     script, because every script is scp'd standalone and run with
+     `powershell -File` — there is no shared upload path. It takes a user because
+     `validate-edge` runs as the admin *and* `borgstd`.
+   - Dot-source, never `&`: dot-sourcing runs in the caller's scope so
+     `$script:Passed` binds correctly; `&` would leave every counter at 0.
+   - **Left out on purpose:** `validate-installer` / `validate-updater` (neither
+     keeps a `$script:Results` array; updater has its own `Finish` writing
+     `updater-smoke-result.json`) and `validate-autostart-login` (uses `Res()`).
+     Sharing would change what they emit.
+   - **Still open:** `smoke-test.ps1` (migration written, held back until its
+     `run.sh test` run is green), and the **UIA helper set** itself
+     (`Find-El`, `AidCond`, `CCond`, `TCond`, `Wait-Text`, `Bring-Foreground`,
+     `Ensure-BorgBeside`) — still duplicated across 3+ scripts.
+
+   **Bug fixed along the way:** `validate-vss-spike.ps1` calls `Skip` 9 times but
+   its local `Skip` never incremented a counter, never declared `$script:Skipped`,
+   and its summary printed no `Skipped:` line — so `report_skips` could not see
+   it. That is exactly the "a permanently-skipping check looks identical to a
+   passing one" hole item 4 closed elsewhere, still live in that script. It now
+   counts and reports skips (verified on the guest).
 
 **The stale `validate-vss.ps1` `history.json` gate is fixed and re-run on
 Windows (2026-08-02).** The script polls `borg list --json` for the newly-created
