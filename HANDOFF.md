@@ -141,6 +141,35 @@ What CI does **not** prove (also in `CLAUDE.md`):
 
 ## Harness gaps and queued work
 
+**`run.sh test` / `make test` stalls indefinitely on the KVM guest (found
+2026-08-05, UNRESOLVED).** Every other target in this harness runs; this one
+hangs before it compiles anything. Signature:
+
+- one `cargo` process alive, **no `rustc` children**,
+- **~0.37 CPU-seconds consumed over an hour** of wall clock — blocked, not slow,
+- `taskkill /F /IM cargo.exe /T` on the guest reports a **tree of ~6 nested
+  cargo processes**, consistent with a deadlock on the package-cache lock
+  (`%USERPROFILE%\.cargo\.package-cache`).
+
+Killing the tree and re-running from a clean guest **reproduces the same
+signature**, so it is not a stale orphan from an earlier run. It is not the
+sparse-index stall this file warns about elsewhere either: `smoke-test.ps1`
+already sets `CARGO_NET_OFFLINE`, `CARGO_BUILD_JOBS=2` and `PATH` itself
+(unlike `run_tests()` in `run.sh`, which sets no environment — that asymmetry
+with `build_app()` is worth a look but is *not* the cause).
+
+Consequences, both real:
+
+- `make smoke` (which calls `run_tests`) cannot complete on this guest.
+- The **`smoke-test.ps1` half of #131 is unverified and therefore unshipped.**
+  Its migration is written but was deliberately reverted rather than committed
+  blind. To finish it: dot-source `_common.ps1` the way the other nine scripts
+  do, switch its `run.sh` upload line to `push_ps1 smoke-test.ps1`, and run
+  `KEEP_VM=1 ./run.sh test`. Nothing else about #131 depends on it.
+
+Diagnose it before trusting a green `make smoke`; a hang here currently looks
+like "still running", not like a failure.
+
 **`validate-installer.ps1` now launches the installed `borg-ui.exe` in the
 interactive desktop.** It requires an accessible rendered WebView window and
 rejects the known Vite localhost error page, before it exercises the installed
