@@ -10,6 +10,11 @@ use crate::proc;
 
 use crate::error::{BorgError, Result};
 
+/// Outer bound on the `ssh` connectivity probe. Comfortably above ssh's own
+/// `-o ConnectTimeout=10` so a healthy-but-slow host still succeeds, while a
+/// host that never answers can no longer hang the caller indefinitely.
+const CONNECT_TEST_TIMEOUT_SECS: u64 = 30;
+
 pub async fn test_connection(
     host: &str,
     port: u16,
@@ -26,8 +31,22 @@ pub async fn test_connection(
     }
 
     cmd.arg(format!("{}@{}", user, host)).arg("echo ok");
+    // Reap the child if the timeout below fires. Without this a hung ssh.exe
+    // outlives the probe and accumulates across calls.
+    cmd.kill_on_drop(true);
 
-    let output = cmd.output().await?;
+    // Bound the probe ourselves rather than trusting `-o ConnectTimeout`.
+    // Windows OpenSSH does not reliably honour it: on the Windows guest,
+    // `ssh -o BatchMode=yes -o ConnectTimeout=10` against a closed/filtered
+    // port was still running after 90s. Nothing else bounds this call, so the
+    // caller hangs forever -- including `test_ssh_connection`, the "Test
+    // connection" button, which awaits it directly with no timeout of its own.
+    // Mirrors the timeout `borg.rs::run_checked` puts around every borg spawn.
+    let output = timeout(Duration::from_secs(CONNECT_TEST_TIMEOUT_SECS), cmd.output())
+        .await
+        .map_err(|_| BorgError::Timeout {
+            seconds: CONNECT_TEST_TIMEOUT_SECS,
+        })??;
     if output.status.success() {
         return Ok(());
     }
@@ -694,9 +713,18 @@ mod tests {
         let err = test_connection("127.0.0.1", 61234, "nobody", None)
             .await
             .unwrap_err();
-        assert!(matches!(err, BorgError::SshFailed { .. }));
-        // The whole point of the change: a failure carries a real, non-empty
-        // diagnostic for the UI to display, not just a boolean.
+        // Which variant depends on the platform, and both are correct:
+        // everywhere ssh answers, it reports "Connection refused" and we return
+        // SshFailed carrying that text. On Windows, OpenSSH does not honour
+        // `-o ConnectTimeout` against this port and never answers, so our own
+        // bound fires and Timeout is the honest result. Pinning SshFailed here
+        // made this test hang forever on Windows before that bound existed.
+        assert!(matches!(
+            err,
+            BorgError::SshFailed { .. } | BorgError::Timeout { .. }
+        ));
+        // The guarantee this test actually exists to protect: a failure carries
+        // a real, non-empty diagnostic for the UI to display, not just a boolean.
         assert!(!err.to_string().is_empty());
     }
 

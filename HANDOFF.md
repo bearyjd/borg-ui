@@ -141,34 +141,43 @@ What CI does **not** prove (also in `CLAUDE.md`):
 
 ## Harness gaps and queued work
 
-**`run.sh test` / `make test` stalls indefinitely on the KVM guest (found
-2026-08-05, UNRESOLVED).** Every other target in this harness runs; this one
-hangs before it compiles anything. Signature:
+**`make test` stalled on the KVM guest — ROOT-CAUSED AND FIXED (2026-08-05).**
+It was never a harness problem. **`ssh::test_connection` had no timeout of its
+own**, and Windows OpenSSH does not honour `-o ConnectTimeout`: measured
+directly on the guest, `ssh.exe -o BatchMode=yes -o ConnectTimeout=10 -p 61234
+nobody@127.0.0.1` was **still running after 90s**. That hung
+`ssh::tests::test_connection_errors_for_closed_port`, which hung
+`cargo test -p borg-core`, which hung `run.sh test`.
 
-- one `cargo` process alive, **no `rustc` children**,
-- **~0.37 CPU-seconds consumed over an hour** of wall clock — blocked, not slow,
-- `taskkill /F /IM cargo.exe /T` on the guest reports a **tree of ~6 nested
-  cargo processes**, consistent with a deadlock on the package-cache lock
-  (`%USERPROFILE%\.cargo\.package-cache`).
+**The real bug was user-facing, not test-only.** `test_ssh_connection` — the
+"Test connection" button — awaits `test_connection` directly with no timeout, so
+on Windows a host whose port is filtered would hang the UI indefinitely, with no
+timeout and no cancel. Every borg spawn in `borg.rs` is wrapped in
+`tokio::time::timeout`, and `check_host_reachable` bounds its TCP connect at 5s;
+this one spawn was the gap. Fixed by bounding it at
+`CONNECT_TEST_TIMEOUT_SECS = 30` plus `kill_on_drop(true)` so a hung `ssh.exe`
+is reaped instead of accumulating. Verified: borg-core is **158 passed / 0
+failed on Windows** (was an infinite hang) and 173/0 on Linux; `make test` now
+completes 8 passed / 0 failed / 1 skipped.
 
-Killing the tree and re-running from a clean guest **reproduces the same
-signature**, so it is not a stale orphan from an earlier run. It is not the
-sparse-index stall this file warns about elsewhere either: `smoke-test.ps1`
-already sets `CARGO_NET_OFFLINE`, `CARGO_BUILD_JOBS=2` and `PATH` itself
-(unlike `run_tests()` in `run.sh`, which sets no environment — that asymmetry
-with `build_app()` is worth a look but is *not* the cause).
+**Two wrong diagnoses were published before the right one — recorded so nobody
+re-runs them.** An earlier revision of this entry blamed a **cargo package-cache
+lock deadlock**; the ~6-process `cargo` tree that suggested it was a *symptom*
+(orphaned children of the hung test), not the cause. The second guess was the
+PyInstaller e2e spawn-hang documented under "Trust rules" — also wrong,
+`e2e_backup_restore` completes fine. What settled it: running cargo directly
+instead of through `run.sh`'s output-capturing `$(...)`, where
+`cargo test -p borg-core --no-run` **finished in 8.4s**, proving compilation was
+never involved and the hang was in *running* the tests. Bisecting the test
+binaries then named the culprit in one pass.
 
-Consequences, both real:
+**Side effect worth knowing:** those three `test_connection` tests now take ~30s
+on Windows, because they genuinely wait out the new bound. Correct, but slower —
+not a regression.
 
-- `make smoke` (which calls `run_tests`) cannot complete on this guest.
-- The **`smoke-test.ps1` half of #131 is unverified and therefore unshipped.**
-  Its migration is written but was deliberately reverted rather than committed
-  blind. To finish it: dot-source `_common.ps1` the way the other nine scripts
-  do, switch its `run.sh` upload line to `push_ps1 smoke-test.ps1`, and run
-  `KEEP_VM=1 ./run.sh test`. Nothing else about #131 depends on it.
-
-Diagnose it before trusting a green `make smoke`; a hang here currently looks
-like "still running", not like a failure.
+Still true and unrelated: `run_tests()` in `run.sh` sets no environment while
+`build_app()` sets `PATH`/`CARGO_NET_OFFLINE`. Harmless today because
+`smoke-test.ps1` sets its own, but the asymmetry is a trap.
 
 **`validate-installer.ps1` now launches the installed `borg-ui.exe` in the
 interactive desktop.** It requires an accessible rendered WebView window and
