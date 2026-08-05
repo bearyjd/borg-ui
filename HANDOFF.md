@@ -211,10 +211,17 @@ the interactive render probe, Borg layout, engine round-trip, and uninstall.
      keeps a `$script:Results` array; updater has its own `Finish` writing
      `updater-smoke-result.json`) and `validate-autostart-login` (uses `Res()`).
      Sharing would change what they emit.
-   - **Still open:** `smoke-test.ps1` (migration written, held back until its
-     `run.sh test` run is green), and the **UIA helper set** itself
-     (`Find-El`, `AidCond`, `CCond`, `TCond`, `Wait-Text`, `Bring-Foreground`,
-     `Ensure-BorgBeside`) — still duplicated across 3+ scripts.
+   - `smoke-test.ps1` was held back from #131 because `make test` was hanging
+     (the ssh bug fixed in #134) and it could not be verified. **Landed once that
+     unblocked it: 10 of 10 migratable scripts now share `_common.ps1`**, checked
+     by `KEEP_VM=1 ./run.sh test` → 8 passed / 0 failed / 1 skipped, with the
+     loud-skip warning firing (the `e2e_backup_restore` skip is expected without
+     `BORG_TEST_BIN`, and seeing it counted proves the shared `Skip` works).
+   - **Still open:** the **UIA helper set** (`Find-El`, `AidCond`, `CCond`,
+     `TCond`, `Wait-Text`, `Bring-Foreground`, `Ensure-BorgBeside`) — still
+     duplicated across 3+ scripts. Unlike the result helpers, those copies do
+     *not* share a provably identical contract, so they need their own analysis
+     rather than a lift-and-shift.
 
    **Bug fixed along the way:** `validate-vss-spike.ps1` calls `Skip` 9 times but
    its local `Skip` never incremented a counter, never declared `$script:Skipped`,

@@ -182,7 +182,7 @@ deploy_source() {
 # --- Phase 5: Run smoke tests ---
 run_tests() {
     log "Uploading smoke test script..."
-    $SCP_CMD "$SCRIPT_DIR/smoke-test.ps1" "$SSH_USER@$SSH_HOST:smoke-test.ps1"
+    push_ps1 smoke-test.ps1
 
     log "Running smoke tests..."
     # PowerShell stderr from cargo compile output causes non-zero exit even on success.
