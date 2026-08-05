@@ -27,27 +27,12 @@
 param([int]$AppTimeoutSec = 20, [int]$ScheduledPollSec = 150)
 
 $ErrorActionPreference = "Continue"
-$script:Passed = 0
-$script:Failed = 0
-$script:Skipped = 0
-$script:Results = @()
+
+# Counters + Pass/Fail/Skip. Dot-sourced so they run in this script's scope;
+# run.sh's push_ps1 uploads _common.ps1 alongside this file.
+. "$PSScriptRoot\_common.ps1"
 
 function Write-TestHeader($name) { Write-Host "`n--- VALIDATE-GUI: $name ---" -ForegroundColor Cyan }
-function Pass($name, $detail) {
-    $script:Passed++; $script:Results += @{ Name = $name; Status = "PASS"; Detail = $detail }
-    Write-Host "  PASS: $name" -ForegroundColor Green
-    if ($detail) { Write-Host "        $detail" -ForegroundColor DarkGray }
-}
-function Fail($name, $detail) {
-    $script:Failed++; $script:Results += @{ Name = $name; Status = "FAIL"; Detail = $detail }
-    Write-Host "  FAIL: $name" -ForegroundColor Red
-    if ($detail) { Write-Host "        $detail" -ForegroundColor Yellow }
-}
-function Skip($name, $detail) {
-    $script:Skipped++; $script:Results += @{ Name = $name; Status = "SKIP"; Detail = $detail }
-    Write-Host "  SKIP: $name" -ForegroundColor Yellow
-    if ($detail) { Write-Host "        $detail" -ForegroundColor DarkGray }
-}
 # Tier-C visual items: recorded for the record but never gate the exit code.
 function Signal($name, $detail) {
     $script:Results += @{ Name = $name; Status = "SIGNAL"; Detail = $detail }

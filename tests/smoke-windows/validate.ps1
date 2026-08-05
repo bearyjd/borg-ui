@@ -16,23 +16,10 @@
 # block the run.
 
 $ErrorActionPreference = "Continue"
-$script:Passed = 0
-$script:Failed = 0
-$script:Results = @()
 
-function Pass($name, $detail) {
-    $script:Passed++
-    $script:Results += @{ Name = $name; Status = "PASS"; Detail = $detail }
-    Write-Host "  PASS: $name" -ForegroundColor Green
-    if ($detail) { Write-Host "        $detail" -ForegroundColor DarkGray }
-}
-
-function Fail($name, $detail) {
-    $script:Failed++
-    $script:Results += @{ Name = $name; Status = "FAIL"; Detail = $detail }
-    Write-Host "  FAIL: $name" -ForegroundColor Red
-    if ($detail) { Write-Host "        $detail" -ForegroundColor Yellow }
-}
+# Counters + Pass/Fail/Skip. Dot-sourced so they run in this script's scope;
+# run.sh's push_ps1 uploads _common.ps1 alongside this file.
+. "$PSScriptRoot\_common.ps1"
 
 function Write-TestHeader($name) {
     Write-Host "`n--- VALIDATE: $name ---" -ForegroundColor Cyan
