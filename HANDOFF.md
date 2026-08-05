@@ -217,11 +217,24 @@ the interactive render probe, Borg layout, engine round-trip, and uninstall.
      by `KEEP_VM=1 ./run.sh test` → 8 passed / 0 failed / 1 skipped, with the
      loud-skip warning firing (the `e2e_backup_restore` skip is expected without
      `BORG_TEST_BIN`, and seeing it counted proves the shared `Skip` works).
-   - **Still open:** the **UIA helper set** (`Find-El`, `AidCond`, `CCond`,
-     `TCond`, `Wait-Text`, `Bring-Foreground`, `Ensure-BorgBeside`) — still
-     duplicated across 3+ scripts. Unlike the result helpers, those copies do
-     *not* share a provably identical contract, so they need their own analysis
-     rather than a lift-and-shift.
+   - **The remaining "UIA helper set" item is mostly a mirage — measured
+     2026-08-05, recommend closing it.** Of **28 helpers defined in more than one
+     script, only 5 are byte-identical**; the other **23 have drifted into
+     genuinely different implementations**. Worst cases: `Invoke-Borg` has **6**
+     variants, `Ensure-BorgBeside` **5**, `Write-TestHeader` **8**.
+
+     Crucially, much of that drift is **intentional, not rot**:
+     `Write-TestHeader`, `Hdr` and `Summary` each print their own section label
+     (`--- TEST:`, `--- VALIDATE-VSS:`, `--- GUI-FLOW:` …), so collapsing them
+     would be a regression. `Invoke-Borg`'s variants differ in timeout and cwd
+     handling per call site.
+
+     What is actually shareable: `AidCond`, `CCond`, `TCond` (x3 each),
+     `Wait-Text` (x2), `Signal` (x2) — about 11 definitions, three of which are
+     one-line UIA condition constructors. Extracting those would add a shared-file
+     dependency to three more scripts to remove eleven trivial lines: worse than
+     the duplication. **Do not lift-and-shift this set.** If someone touches it,
+     re-measure first — the count in any older note is wrong.
 
    **Bug fixed along the way:** `validate-vss-spike.ps1` calls `Skip` 9 times but
    its local `Skip` never incremented a counter, never declared `$script:Skipped`,
