@@ -48,6 +48,19 @@ SCP_CMD="sshpass -p $SSH_PASS scp -o StrictHostKeyChecking=no -P $SSH_PORT"
 STD_USER="borgstd"
 SSH_STD_CMD="sshpass -p $SSH_PASS ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=240 -o TCPKeepAlive=yes -p $SSH_PORT $STD_USER@$SSH_HOST"
 
+# Uploads a smoke script together with the shared helper it dot-sources.
+#
+# Each validate-*.ps1 is scp'd standalone into a user's home and run with
+# `powershell -File`, so there is no shared upload path -- _common.ps1 has to
+# land in the SAME directory (the scripts resolve it via $PSScriptRoot) and for
+# the SAME user. validate-edge runs as both the admin and the standard user, so
+# it pushes twice; that is why the user is a parameter rather than assumed.
+push_ps1() {
+    local name="$1" user="${2:-$SSH_USER}"
+    $SCP_CMD "$SCRIPT_DIR/_common.ps1" "$user@$SSH_HOST:_common.ps1"
+    $SCP_CMD "$SCRIPT_DIR/$name" "$user@$SSH_HOST:$name"
+}
+
 cleanup() {
     if [[ "${KEEP_VM:-}" != "1" ]]; then
         log "Tearing down Windows container..."
@@ -193,7 +206,7 @@ run_tests() {
 # SSH. Sidesteps the PyInstaller borg.exe spawn hang (see HANDOFF.md / validate.ps1).
 run_validate() {
     log "Uploading validation script..."
-    $SCP_CMD "$SCRIPT_DIR/validate.ps1" "$SSH_USER@$SSH_HOST:validate.ps1"
+    push_ps1 validate.ps1
 
     log "Running Windows validation pass..."
     local output
@@ -247,9 +260,9 @@ provision_edge() {
 # --- Edge validation: multi-drive (admin) + non-admin fast-fail (standard user) ---
 run_validate_edge() {
     log "Uploading edge validation script..."
-    $SCP_CMD "$SCRIPT_DIR/validate-edge.ps1" "$SSH_USER@$SSH_HOST:validate-edge.ps1"
+    push_ps1 validate-edge.ps1
     # borgstd needs its own copy in its home for the non-admin run.
-    $SCP_CMD "$SCRIPT_DIR/validate-edge.ps1" "$STD_USER@$SSH_HOST:validate-edge.ps1"
+    push_ps1 validate-edge.ps1 "$STD_USER"
 
     log "Running multi-drive validation (admin user)..."
     local admin_out
@@ -278,7 +291,7 @@ run_validate_edge() {
 # operator finishes the verdict with the README VNC checklist.
 run_validate_gui() {
     log "Uploading GUI validation script..."
-    $SCP_CMD "$SCRIPT_DIR/validate-gui.ps1" "$SSH_USER@$SSH_HOST:validate-gui.ps1"
+    push_ps1 validate-gui.ps1
 
     # If a pre-built app binary was dropped in shared/, push it to the VM home so
     # validate-gui.ps1 finds it (dockur does not surface ./shared inside Windows).
@@ -310,7 +323,7 @@ run_validate_gui() {
 # false-fail, and the README VNC checklist is the verdict. Needs borg-ui.exe.
 run_validate_tray() {
     log "Uploading tray-menu validation script..."
-    $SCP_CMD "$SCRIPT_DIR/validate-tray.ps1" "$SSH_USER@$SSH_HOST:validate-tray.ps1"
+    push_ps1 validate-tray.ps1
 
     if [[ -f "$SCRIPT_DIR/shared/borg-ui.exe" ]]; then
         log "Uploading shared/borg-ui.exe to the VM..."
@@ -343,7 +356,7 @@ run_validate_tray() {
 # see the Svelte content. Stages its own repos/profiles; restores config after.
 run_validate_gui_flows() {
     log "Uploading GUI-flow validation script..."
-    $SCP_CMD "$SCRIPT_DIR/validate-gui-flows.ps1" "$SSH_USER@$SSH_HOST:validate-gui-flows.ps1"
+    push_ps1 validate-gui-flows.ps1
 
     log "Running GUI-flow validation pass (relaunches itself in session 1)..."
     local output
@@ -368,7 +381,7 @@ run_validate_gui_flows() {
 # tauri-build exe at C:\borgui-test\target\release\borg-ui.exe.
 run_validate_archive_smoke() {
     log "Uploading large-archive smoke script..."
-    $SCP_CMD "$SCRIPT_DIR/validate-archive-smoke.ps1" "$SSH_USER@$SSH_HOST:validate-archive-smoke.ps1"
+    push_ps1 validate-archive-smoke.ps1
 
     log "Running large-archive (#35) smoke pass (stages 100k entries, relaunches in session 1)..."
     local output
@@ -475,7 +488,7 @@ run_validate_autostart_login() {
 # Approach C (COM ExposeSnapshot). The script cleans up its own snapshot/junction.
 run_validate_vss_spike() {
     log "Uploading VSS feasibility spike script..."
-    $SCP_CMD "$SCRIPT_DIR/validate-vss-spike.ps1" "$SSH_USER@$SSH_HOST:validate-vss-spike.ps1"
+    push_ps1 validate-vss-spike.ps1
 
     log "Running VSS feasibility spike (snapshot -> junction -> clean-path -> restore)..."
     local output
@@ -504,7 +517,7 @@ run_validate_vss_spike() {
 # itself is proven by validate-vss-spike; this proves the shipped Rust does it.
 run_validate_vss() {
     log "Uploading VSS validation script..."
-    $SCP_CMD "$SCRIPT_DIR/validate-vss.ps1" "$SSH_USER@$SSH_HOST:validate-vss.ps1"
+    push_ps1 validate-vss.ps1
 
     log "Running VSS validation (scheduled-backup + locked file -> snapshot-or-skip)..."
     local output
@@ -527,7 +540,7 @@ run_validate_vss() {
 # an interactive desktop; self-relaunches in session 1 /RL HIGHEST. SKIPs cleanly otherwise.
 run_validate_vss_manual() {
     log "Uploading manual-path VSS validation script..."
-    $SCP_CMD "$SCRIPT_DIR/validate-vss-manual.ps1" "$SSH_USER@$SSH_HOST:validate-vss-manual.ps1"
+    push_ps1 validate-vss-manual.ps1
 
     log "Running manual-path VSS validation (GUI Start Backup + locked file; relaunches elevated in session 1)..."
     local output

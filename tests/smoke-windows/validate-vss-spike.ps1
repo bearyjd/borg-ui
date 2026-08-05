@@ -20,34 +20,20 @@
 # hang can never block the run. Cleans up its own snapshot, junction, and files.
 
 $ErrorActionPreference = "Continue"
-$script:Passed = 0
-$script:Failed = 0
-$script:Results = @()
+
+# Counters + Pass/Fail/Skip. Dot-sourced so they run in this script's scope;
+# run.sh's push_ps1 uploads _common.ps1 alongside this file.
+#
+# This file previously defined its own Skip that never incremented a counter --
+# and it calls Skip 9 times. Combined with a summary that printed no `Skipped:`
+# line, every skipped check here was invisible to run.sh's report_skips warning.
+# The shared Skip counts, and the summary below now reports it.
+. "$PSScriptRoot\_common.ps1"
 
 # Cleanup handles -- tracked in script scope so the finally block always releases
 # the snapshot and junction even if a test throws midway.
 $script:ShadowId = $null
 $script:MountDir = $null
-
-function Pass($name, $detail) {
-    $script:Passed++
-    $script:Results += @{ Name = $name; Status = "PASS"; Detail = $detail }
-    Write-Host "  PASS: $name" -ForegroundColor Green
-    if ($detail) { Write-Host "        $detail" -ForegroundColor DarkGray }
-}
-
-function Fail($name, $detail) {
-    $script:Failed++
-    $script:Results += @{ Name = $name; Status = "FAIL"; Detail = $detail }
-    Write-Host "  FAIL: $name" -ForegroundColor Red
-    if ($detail) { Write-Host "        $detail" -ForegroundColor Yellow }
-}
-
-function Skip($name, $detail) {
-    $script:Results += @{ Name = $name; Status = "SKIP"; Detail = $detail }
-    Write-Host "  SKIP: $name" -ForegroundColor Yellow
-    if ($detail) { Write-Host "        $detail" -ForegroundColor DarkGray }
-}
 
 function Write-TestHeader($name) {
     Write-Host "`n--- VSS SPIKE: $name ---" -ForegroundColor Cyan
@@ -324,7 +310,10 @@ Write-Host "  VSS FEASIBILITY SPIKE RESULTS" -ForegroundColor White
 Write-Host "========================================" -ForegroundColor White
 Write-Host "  Passed: $script:Passed" -ForegroundColor Green
 Write-Host "  Failed: $script:Failed" -ForegroundColor $(if ($script:Failed -gt 0) { "Red" } else { "Green" })
-Write-Host "  Total: $($script:Passed + $script:Failed)" -ForegroundColor White
+# run.sh's report_skips greps for this line. Without it a permanently-skipping
+# check here looked exactly like a passing one.
+Write-Host "  Skipped: $script:Skipped" -ForegroundColor $(if ($script:Skipped -gt 0) { "Yellow" } else { "Green" })
+Write-Host "  Total: $($script:Passed + $script:Failed + $script:Skipped)" -ForegroundColor White
 Write-Host "========================================`n" -ForegroundColor White
 
 $verdict = if ($script:Failed -eq 0 -and $script:Passed -ge 5) {

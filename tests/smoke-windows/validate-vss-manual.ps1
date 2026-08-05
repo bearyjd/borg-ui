@@ -52,10 +52,9 @@ if (-not $InSession1) {
 # ----------------------------------------------------------------------------
 # SESSION-1 INNER RUN (elevated)
 # ----------------------------------------------------------------------------
-$script:Passed = 0; $script:Failed = 0; $script:Skipped = 0; $script:Results = @()
-function Pass($n, $d) { $script:Passed++; $script:Results += @{ Name = $n; Status = "PASS"; Detail = $d }; Write-Host "  PASS: $n"; if ($d) { Write-Host "        $d" } }
-function Fail($n, $d) { $script:Failed++; $script:Results += @{ Name = $n; Status = "FAIL"; Detail = $d }; Write-Host "  FAIL: $n"; if ($d) { Write-Host "        $d" } }
-function Skip($n, $d) { $script:Skipped++; $script:Results += @{ Name = $n; Status = "SKIP"; Detail = $d }; Write-Host "  SKIP: $n"; if ($d) { Write-Host "        $d" } }
+# Counters + Pass/Fail/Skip. Dot-sourced so they run in this script's scope;
+# run.sh's push_ps1 uploads _common.ps1 alongside this file.
+. "$PSScriptRoot\_common.ps1"
 function Hdr($n) { Write-Host "`n--- VSS-MANUAL: $n ---" }
 function Summary {
     Write-Host "`n========================================"
