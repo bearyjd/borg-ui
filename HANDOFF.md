@@ -213,9 +213,44 @@ check. It passed against both public v0.3.1 release installers on the Windows
 KVM guest (NSIS + MSI: 12 passed, 0 failed, 0 skipped; 2026-08-03), including
 the interactive render probe, Borg layout, engine round-trip, and uninstall.
 
-**Queued harness plan, items 3–5 of 5** (1–2 shipped in #120):
+**Queued harness plan — all 5 items are now resolved** (1–2 shipped in #120;
+3 closed 2026-08-06, 4 shipped in #126, 5 completed in #131/#135 with its
+remaining sub-item measured and closed in #136). Kept in full below because
+each entry records *why* the item ended where it did, which is the part that
+stops it being re-opened from scratch:
 
-3. Outcome-based assertions instead of internal shapes.
+3. **Outcome-based assertions instead of internal shapes. Measured and closed
+   2026-08-06 — much smaller than the item implies.** Audited all 52 distinct
+   check names: assertions are already outcome-based nearly everywhere (an
+   archive appeared and is listable, the locked file landed in it, the restore
+   is byte-correct, the installed exe reached a version). The `history.json`
+   cases this item was written for are already gone — `validate-vss` polls
+   `borg list --json`, and `validate-gui` carries an explicit comment saying it
+   deliberately does *not* assert on `history.json`.
+
+   Exactly three checks still asserted a shape, and **none of them touched
+   BorgUI at all**:
+
+   | Was | What it actually proved | Real outcome check |
+   |---|---|---|
+   | `validate.ps1::autostart_registry_roundtrip` | `reg.exe` works; the value written was `C:\fake\BorgUI.exe` | `validate-autostart-login.ps1::autostart_login_fires` |
+   | `validate.ps1::schtasks_roundtrip` | `schtasks.exe` works; the task action was `C:\fake\BorgUI.exe` | `validate-gui.ps1::scheduled_task_fires` |
+   | `smoke-test.ps1::webview2_available` | the WebView2 runtime exists on disk | `validate-installer.ps1`'s interactive render probe |
+
+   **Renamed to a `precondition_` prefix, deliberately not deleted.** They carry
+   no product coverage, but on a locked-down host where policy blocks
+   `reg.exe`/`schtasks.exe` they say the *environment* is at fault before anyone
+   blames the app. The defect was the labelling: a green
+   `autostart_registry_roundtrip` reads in a summary as "autostart validated"
+   when nothing of the sort was validated. Same family as #126's loud skips —
+   there a permanently-skipping check looked like a passing one; here a check of
+   *Windows* looked like a check of *BorgUI*.
+
+   Nothing greps these names (`run.sh` matches only `Failed: 0` and
+   `Skipped:\s*\d+`), so the rename is contained. **Verified on the guest, not
+   just read:** `validate` 5 passed / 0 failed and `test` 8 passed / 0 failed /
+   1 skipped, both identical to their pre-change baselines, with the loud-skip
+   warning still firing.
 4. **Loud skips — shipped.** A permanently-skipping check now emits an
    `UNVERIFIED` warning with its skipped count across the desktop and legacy
    harness entry points. A skip remains non-fatal where the host legitimately

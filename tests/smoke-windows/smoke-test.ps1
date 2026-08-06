@@ -89,9 +89,16 @@ if ($output -match "Finished|Compiling borg") {
 }
 
 # ------------------------------------------------------------------
-# Test 6: WebView2 runtime available
+# Test 6: PRECONDITION -- the WebView2 runtime is installed on this guest.
+# This is a registry/on-disk presence check, so it proves the runtime EXISTS,
+# not that BorgUI renders in it. #85 (missing CRT) and #86 (installed app
+# loading the Vite dev server) both shipped past presence-only checks like this
+# one; what catches that class is the interactive render probe in
+# validate-installer.ps1, which launches the installed exe and rejects the
+# localhost error page. Named precondition_ so the distinction survives a
+# glance at the summary.
 # ------------------------------------------------------------------
-Write-TestHeader "webview2_available"
+Write-TestHeader "precondition_webview2_runtime"
 
 $wv2Paths = @(
     "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BEF-A3BE4B6AF2AC}",
@@ -101,13 +108,13 @@ $wv2Paths = @(
 $found = $false
 foreach ($p in $wv2Paths) {
     $val = Get-ItemProperty $p -ErrorAction SilentlyContinue
-    if ($val) { Pass "webview2_available" "WebView2 found at $p"; $found = $true; break }
+    if ($val) { Pass "precondition_webview2_runtime" "WebView2 found at $p"; $found = $true; break }
 }
 $wv2Bin = Get-ChildItem "C:\Program Files*\Microsoft\EdgeWebView" -Recurse -Filter "msedgewebview2.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (!$found -and $wv2Bin) {
-    Pass "webview2_available" "WebView2 binary at $($wv2Bin.FullName)"
+    Pass "precondition_webview2_runtime" "WebView2 binary at $($wv2Bin.FullName)"
 } elseif (!$found) {
-    Fail "webview2_available" "WebView2 not found"
+    Fail "precondition_webview2_runtime" "WebView2 not found"
 }
 
 # ------------------------------------------------------------------
