@@ -1,6 +1,6 @@
 # BorgUI Roadmap Status
 
-Last updated: 2026-08-01.
+Last updated: 2026-08-06.
 
 The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 
@@ -22,15 +22,19 @@ The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 
 ## Current release posture
 
-- **`v0.3.0` is the published latest** (MSI, NSIS, updater signatures,
-  `latest.json`). `v0.3.1` is tagged and built but its release is still a DRAFT —
-  see the release-state note at the bottom of this file.
-- The installed-app updater smoke last passed in the v0.2.0 cycle (0.1.0
-  baseline → published 0.2.0 target: 3 passed, 0 failed, 0 skipped). It has
-  **not** been re-run for 0.3.0 or 0.3.1. It *can* be re-run now against the
-  published v0.3.0 (a 0.2.0 baseline → 0.3.0); `validate-updater.ps1` takes the
-  baseline and expected version as parameters. Only testing delivery of **0.3.1**
-  requires publishing the draft.
+- **`v0.3.1` is the published latest** (published 2026-08-03; MSI, NSIS, both
+  updater signatures, `latest.json`). `releases/latest` resolves to it, so
+  eligible installed clients are offered it.
+- The installed-app updater smoke **has been re-run for 0.3.1** and passed on
+  the Windows KVM guest: public v0.3.0 NSIS baseline → update prompt → user
+  confirmation → installed v0.3.1 (3 passed, 0 failed, 0 skipped, 2026-08-03).
+  `validate-updater.ps1` takes the baseline and expected version as parameters
+  and hardcodes no version, so retain it for future release checks.
+- **`master` is well ahead of the `v0.3.1` tag** (which points at #117), so
+  merged work is not the same as shipped work. Mostly smoke-harness and
+  documentation, but it includes the #128 command-layer refactor and the #134
+  SSH-probe timeout fix. `HANDOFF.md` carries the current range; the
+  authoritative check is `git log --oneline v0.3.1..master`.
 - Borg-for-Windows 1.4.4+win7 fixes native drive-letter repositories; BorgUI now
   passes those paths directly, including for standard users.
 - Installers remain usable unsigned. Authenticode signing is prepared but intentionally disabled until Azure Trusted Signing repository configuration exists.
@@ -45,20 +49,21 @@ pnpm with a vitest gate.
 ## Tracked follow-up issues
 
 - [#64](https://github.com/bearyjd/borg-ui/issues/64) — production Authenticode signing. Repo side complete; blocked on Azure provisioning. Runbook + exact missing secrets/variables are in a comment on the issue.
-- [#114](https://github.com/bearyjd/borg-ui/issues/114) — archive browser intermittently under-counts (~1 run in 6). [#116](https://github.com/bearyjd/borg-ui/pull/116) fixes the race it is attributed to and makes an incomplete listing visible; deliberately left open because the fix is reasoned, not demonstrated.
-- [#119](https://github.com/bearyjd/borg-ui/issues/119) — `keychain_credential_manager` has never run, so **Credential Manager is unverified on Windows**. One blocker left: the wrong-architecture `WebView2Loader.dll` loads (`0xC0000139`).
+- [#114](https://github.com/bearyjd/borg-ui/issues/114) — archive browser intermittently under-counts (~1 run in 6). [#116](https://github.com/bearyjd/borg-ui/pull/116) fixes the race it is attributed to and makes an incomplete listing visible. **17 consecutive clean `validate-archive-smoke` runs against a production v0.3.1 build (2026-08-05, posted to the issue): count assertion 17/17, zero `incomplete` banners, and each run logged a progressive count mid-stream so it genuinely entered the race window.** At the documented ~1-in-6 rate that is a (5/6)^17 ≈ 4.5% fluke. Still open deliberately: controlled repetition on one machine and one archive shape is not the *varied field exposure* the closure criterion asks for. The disposition call is the maintainer's.
 
-**Release state: `v0.3.1` is tagged and built but the GitHub release is a
-DRAFT.** `releases/latest` still resolves to v0.3.0, so nobody receives 0.3.1
-until it is published. Publishing gates the **0.3.1-target** updater test, not
-the updater path in general — the endpoint is hardcoded to `releases/latest`,
-which today resolves to the published v0.3.0, so a 0.2.0 → 0.3.0 run is
-possible now.
+**Release state: `v0.3.1` is published and is `releases/latest`** (2026-08-03).
+The complete public release has MSI + NSIS + both `.sig` files + `latest.json`
+(version `0.3.1`, correct URL, 416-byte signature), and the v0.3.0 → v0.3.1
+updater path has passed on the Windows guest. A stale duplicate **draft** of
+v0.3.0 still sits beside the published v0.3.0; it is harmless.
 
 Closed in the 0.3.1 cycle: #100, #101, #102, #103, #104 (all raised by the
 security and adversarial review passes on #99), plus the passphrase-change
 desync, app-wide `:focus-visible`, and borg-core log events being dropped
-below ERROR.
+below ERROR. [#119](https://github.com/bearyjd/borg-ui/issues/119) is also
+closed (2026-08-03): the `WebView2Loader.dll` blocker was resolved and
+**Credential Manager is now verified on Windows** — the session-1
+`borg-platform-win` test passed set → fresh get → `cmdkey` visibility → clear.
 
 Provider-specific SSH examples and Windows archive mounting were evaluated in
 [#67](https://github.com/bearyjd/borg-ui/issues/67). There is no recorded user
