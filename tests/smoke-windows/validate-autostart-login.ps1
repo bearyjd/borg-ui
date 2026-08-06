@@ -2,7 +2,7 @@
 # registers actually LAUNCHES the app (minimized, in the interactive session)
 # after a real reboot + auto-login. The reg add/query/delete round-trip and the
 # --minimized -> hidden-in-tray behaviour are validated separately
-# (validate.ps1::autostart_registry_roundtrip + PR #33 item 2); the one piece
+# (validate.ps1::precondition_autostart_reg_tool + PR #33 item 2); the one piece
 # never exercised on real hardware is the login actually FIRING the Run key.
 #
 # Three phases, driven by run.sh across a guest reboot (a single script can't

@@ -30,11 +30,19 @@ Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
 # ==================================================================
-# 1. Autostart: reg.exe round-trip on HKCU\...\Run (mirrors
-#    borg-platform-win::autostart). Throwaway value name so a real install is
-#    never touched. Native tool, reliable headless.
+# 1. PRECONDITION, not product coverage. This writes a THROWAWAY value shaped
+#    like the one borg-platform-win::autostart writes, then reads it back and
+#    deletes it. BorgUI is never involved: a green result proves reg.exe works
+#    on this guest, NOT that the app's autostart works. Named with the
+#    precondition_ prefix so it cannot be misread as the latter in a summary.
+#
+#    The product outcome -- borg-ui.exe actually LAUNCHING at login -- is
+#    validate-autostart-login.ps1::autostart_login_fires, which reboots the
+#    guest and auto-logs in. Keep this check anyway: on a locked-down host
+#    where policy blocks reg.exe, it tells you the environment is at fault
+#    before you go blaming the app.
 # ==================================================================
-Write-TestHeader "autostart_registry_roundtrip"
+Write-TestHeader "precondition_autostart_reg_tool"
 try {
     $runKey = "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
     $testName = "BorgUI-ValidateSmoke"
@@ -49,16 +57,21 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "reg delete failed (rc=$LASTEXITCODE)" }
     & reg.exe query $runKey /V $testName 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { throw "value still present after delete" }
-    Pass "autostart_registry_roundtrip" "add -> query -> delete on HKCU Run key OK"
+    Pass "precondition_autostart_reg_tool" "reg.exe add -> query -> delete works on the HKCU Run key (environment precondition; BorgUI's own autostart is validate-autostart-login.ps1::autostart_login_fires)"
 } catch {
     & reg.exe delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /V "BorgUI-ValidateSmoke" /F 2>&1 | Out-Null
-    Fail "autostart_registry_roundtrip" "$_"
+    Fail "precondition_autostart_reg_tool" "$_"
 }
 
 # ==================================================================
-# 2. Scheduling: schtasks.exe round-trip (mirrors borg-platform-win::scheduler).
+# 2. PRECONDITION, not product coverage -- same reasoning as check 1. The task
+#    action points at C:\fake\BorgUI.exe, so nothing here runs BorgUI or fires
+#    a backup; it proves schtasks.exe create/query/delete works on this guest.
+#
+#    The product outcome -- a real scheduled task firing and producing a
+#    listable archive -- is validate-gui.ps1::scheduled_task_fires.
 # ==================================================================
-Write-TestHeader "schtasks_roundtrip"
+Write-TestHeader "precondition_schtasks_tool"
 try {
     $taskName = "BorgUI-ValidateSmoke-Backup"
     $tr = "C:\fake\BorgUI.exe --scheduled-backup"
@@ -68,10 +81,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "schtasks /Query failed (rc=$LASTEXITCODE)" }
     & schtasks.exe /Delete /F /TN $taskName 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "schtasks /Delete failed (rc=$LASTEXITCODE)" }
-    Pass "schtasks_roundtrip" "create -> query -> delete OK"
+    Pass "precondition_schtasks_tool" "schtasks.exe create -> query -> delete works (environment precondition; a real task firing a backup is validate-gui.ps1::scheduled_task_fires)"
 } catch {
     & schtasks.exe /Delete /F /TN "BorgUI-ValidateSmoke-Backup" 2>&1 | Out-Null
-    Fail "schtasks_roundtrip" "$_"
+    Fail "precondition_schtasks_tool" "$_"
 }
 
 # ==================================================================
