@@ -1,20 +1,18 @@
 # BorgUI handoff
 
-Last updated: 2026-08-06. `master` includes **#137**, version **0.3.1**, two
+Last updated: 2026-08-06. `master` includes **#140**, version **0.3.2**, two
 open issues (#64, #114).
 
-**#118–#137 are on `master` but not in any release.** `v0.3.1` tags #117, and
-`master` is 19 commits past it — verify with
-`git log --oneline v0.3.1..master` rather than trusting this range, which goes
-stale on every merge. Most of it is smoke-harness and documentation work; two
-entries are user-affecting:
+**Nothing is sitting unreleased right now.** `v0.3.2` tags #140, which is the
+tip of `master`, so "merged" and "shipped" mean the same thing at this instant.
+That is the exception in this repo, not the rule — it stops being true the
+moment anything merges, so confirm with `git log --oneline v0.3.2..master`
+rather than trusting this sentence.
 
-- **#128** restructured the Tauri command layer (see "Architecture map") — a
-  refactor with no user-visible change beyond one error message. Any note citing
-  `app-tauri/src-tauri/src/commands.rs` predates it and names a file that no
-  longer exists.
-- **#134** bounds the SSH connection probe, so a filtered host can no longer
-  hang the UI.
+**#128** restructured the Tauri command layer (see "Architecture map") — a
+refactor with no user-visible change beyond one error message. Any note citing
+`app-tauri/src-tauri/src/commands.rs` predates it and names a file that no
+longer exists.
 
 **#128 is runtime-verified on Windows, not just CI-green (2026-08-05).** The
 whole point of the KVM harness is that `Rust (Windows)` CI compiles and
@@ -50,33 +48,45 @@ then copy `%LOCALAPPDATA%\BorgUI\*` to that path. Always prefix `KEEP_VM=1` or
 > code, the code wins — run `git log --oneline -- <the cited path>` and fix this
 > file. It has gone stale before (see "Trust rules" below).
 
-## Start here: 0.3.1 is published and updater-verified
+## Start here: 0.3.2 is published and updater-verified
 
-`v0.3.1` is published on GitHub (2026-08-03), so `releases/latest` resolves to
+`v0.3.2` is published on GitHub (2026-08-06), so `releases/latest` resolves to
 it and the in-app updater can offer it to eligible installed clients.
 
 The complete public release has MSI + NSIS + both `.sig` files + `latest.json`
-(version `0.3.1`, correct URL, 416-byte signature).
+(version `0.3.2`, correct URL, 416-byte signature). The signature's trusted
+comment names `file:BorgUI_0.3.2_x64-setup.exe`, which is worth checking on any
+future release: a 416-byte `.sig` that belongs to a *different* artifact looks
+correct in every size/presence check and ships an update every client refuses.
 
-The installed-app updater has also passed on the Windows KVM guest: public
-v0.3.0 NSIS baseline → update prompt → user confirmation → installed v0.3.1
-(3 passed, 0 failed, 0 skipped, 2026-08-03).
+**Verified before publishing** — `validate-installer` against the draft's own
+downloaded artifacts: **12 passed, 0 failed, 0 skipped** across NSIS and MSI
+(install, layout, interactive render, borg version, engine round-trip,
+uninstall). The two render checks are the ones that matter; #85 and #86 both
+shipped past green CI and a layout-only check.
+
+**Verified after publishing** — the installed-app updater on the KVM guest:
+installed v0.3.1 → update prompt → user confirmation → installed v0.3.2
+(3 passed, 0 failed, 0 skipped, 2026-08-06). This one *cannot* run earlier: the
+updater endpoint is hardcoded to `releases/latest`, so there is nothing to point
+at until the release is public.
 
 `validate-updater.ps1` takes `-BaselineInstaller` and `-ExpectedVersion` as
 parameters and hardcodes no version, so retain it for future release checks.
 
 ```bash
-# Verified on 2026-08-03:
+# Verified on 2026-08-06:
 make -C tests/smoke-windows validate-updater \
-  BASELINE_INSTALLER=<v0.3.0 -setup.exe> EXPECTED_UPDATE_VERSION=0.3.1
+  BASELINE_INSTALLER=<v0.3.1 -setup.exe> EXPECTED_UPDATE_VERSION=0.3.2
 ```
 
 ### Release state
 
 | Tag | GitHub release | Notes |
 |---|---|---|
-| `v0.3.1` | **Latest** (published 2026-08-03) | public release; updater path passed from v0.3.0 |
-| `v0.3.0` | published (2026-07-05) | prior release and updater-test baseline |
+| `v0.3.2` | **Latest** (published 2026-08-06) | public release; updater path passed from v0.3.1 |
+| `v0.3.1` | published (2026-08-03) | prior release and current updater-test baseline |
+| `v0.3.0` | published (2026-07-05) | — |
 | `v0.3.0` | Draft (2026-07-05) | stale duplicate sitting beside the published one; harmless |
 | `v0.2.0`, `v0.1.0` | published | — |
 
@@ -155,7 +165,7 @@ What CI does **not** prove (also in `CLAUDE.md`):
 ### Still unrun / uncovered
 
 - `validate-autostart-login` — previously passed once on the KVM guest (see the
-  harness README); repeat it against the public v0.3.1 binary when the guest is
+  harness README); repeat it against the public v0.3.2 binary when the guest is
   available. It reboots the guest.
 - Multi-drive edge checks — SKIP without a D: drive; `make edge-all` recreates
   the VM with one.

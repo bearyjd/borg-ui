@@ -22,19 +22,22 @@ The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 
 ## Current release posture
 
-- **`v0.3.1` is the published latest** (published 2026-08-03; MSI, NSIS, both
+- **`v0.3.2` is the published latest** (published 2026-08-06; MSI, NSIS, both
   updater signatures, `latest.json`). `releases/latest` resolves to it, so
   eligible installed clients are offered it.
-- The installed-app updater smoke **has been re-run for 0.3.1** and passed on
-  the Windows KVM guest: public v0.3.0 NSIS baseline → update prompt → user
-  confirmation → installed v0.3.1 (3 passed, 0 failed, 0 skipped, 2026-08-03).
+- The installed-app updater smoke **has been re-run for 0.3.2** and passed on
+  the Windows KVM guest: installed v0.3.1 → update prompt → user confirmation →
+  installed v0.3.2 (3 passed, 0 failed, 0 skipped, 2026-08-06). It cannot run
+  before publishing — the updater endpoint is hardcoded to `releases/latest`.
   `validate-updater.ps1` takes the baseline and expected version as parameters
   and hardcodes no version, so retain it for future release checks.
-- **`master` is well ahead of the `v0.3.1` tag** (which points at #117), so
-  merged work is not the same as shipped work. Mostly smoke-harness and
-  documentation, but it includes the #128 command-layer refactor and the #134
-  SSH-probe timeout fix. `HANDOFF.md` carries the current range; the
-  authoritative check is `git log --oneline v0.3.1..master`.
+- `validate-installer` passed **12/0/0** against the v0.3.2 artifacts before
+  they were published, including the interactive render checks on both NSIS and
+  MSI.
+- **`master` and the `v0.3.2` tag are level right now** (the tag points at
+  #140, the tip), so nothing is waiting to ship. That is the exception here,
+  not the rule — check `git log --oneline v0.3.2..master` rather than trusting
+  this bullet.
 - Borg-for-Windows 1.4.4+win7 fixes native drive-letter repositories; BorgUI now
   passes those paths directly, including for standard users.
 - Installers remain usable unsigned. Authenticode signing is prepared but intentionally disabled until Azure Trusted Signing repository configuration exists.
@@ -51,11 +54,12 @@ pnpm with a vitest gate.
 - [#64](https://github.com/bearyjd/borg-ui/issues/64) — production Authenticode signing. Repo side complete; blocked on Azure provisioning. Runbook + exact missing secrets/variables are in a comment on the issue.
 - [#114](https://github.com/bearyjd/borg-ui/issues/114) — archive browser intermittently under-counts (~1 run in 6). [#116](https://github.com/bearyjd/borg-ui/pull/116) fixes the race it is attributed to and makes an incomplete listing visible. **17 consecutive clean `validate-archive-smoke` runs against a production v0.3.1 build (2026-08-05, posted to the issue): count assertion 17/17, zero `incomplete` banners, and each run logged a progressive count mid-stream so it genuinely entered the race window.** At the documented ~1-in-6 rate that is a (5/6)^17 ≈ 4.5% fluke. Still open deliberately: controlled repetition on one machine and one archive shape is not the *varied field exposure* the closure criterion asks for. The disposition call is the maintainer's.
 
-**Release state: `v0.3.1` is published and is `releases/latest`** (2026-08-03).
+**Release state: `v0.3.2` is published and is `releases/latest`** (2026-08-06).
 The complete public release has MSI + NSIS + both `.sig` files + `latest.json`
-(version `0.3.1`, correct URL, 416-byte signature), and the v0.3.0 → v0.3.1
-updater path has passed on the Windows guest. A stale duplicate **draft** of
-v0.3.0 still sits beside the published v0.3.0; it is harmless.
+(version `0.3.2`, correct URL, 416-byte signature), and the v0.3.1 → v0.3.2
+updater path has passed on the Windows guest. 0.3.2 is a one-fix patch release:
+#134, the bounded SSH connection probe. A stale duplicate **draft** of v0.3.0
+still sits beside the published v0.3.0; it is harmless.
 
 Closed in the 0.3.1 cycle: #100, #101, #102, #103, #104 (all raised by the
 security and adversarial review passes on #99), plus the passphrase-change
