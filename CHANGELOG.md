@@ -5,6 +5,20 @@ All notable changes to BorgUI are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-08-06
+
+### Fixed
+
+- **"Test connection" can no longer hang the app against an unreachable SSH
+  host.** The probe trusted ssh's own `-o ConnectTimeout`, which Windows
+  OpenSSH does not reliably honour — against a filtered port that silently
+  drops packets it was still running after 90 seconds, and nothing else bounded
+  the call, so the button simply never came back. The probe is now capped at 30
+  seconds, comfortably above ssh's own 10-second connect timeout so a healthy
+  but slow host still succeeds, and it reports an honest timeout instead of
+  hanging. The `ssh` process is also reaped when that bound fires, so repeated
+  attempts no longer leave stray processes behind. (#134)
+
 ## [0.3.1] - 2026-08-01
 
 ### Security
@@ -165,6 +179,8 @@ First public release: a native Windows GUI for [BorgBackup](https://www.borgback
 - Borg runs fully non-interactively so prompts cannot hang the app. (#24)
 - Console-window flashes on Windows process spawns are suppressed. (#25)
 
+[0.3.2]: https://github.com/bearyjd/borg-ui/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/bearyjd/borg-ui/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/bearyjd/borg-ui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bearyjd/borg-ui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bearyjd/borg-ui/releases/tag/v0.1.0
