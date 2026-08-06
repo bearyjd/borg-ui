@@ -1,13 +1,20 @@
 # BorgUI handoff
 
-Last updated: 2026-08-05. `master` includes **#131**, version **0.3.1**,
-**no open PRs**, two open issues (#64, #114).
+Last updated: 2026-08-06. `master` includes **#137**, version **0.3.1**, two
+open issues (#64, #114).
 
-**#127–#131 are on `master` but not in any release.** #128 restructured the
-Tauri command layer (see "Architecture map") — it is a refactor with no
-user-visible change beyond one error message. Any note citing
-`app-tauri/src-tauri/src/commands.rs` predates it and names a file that no longer
-exists.
+**#118–#137 are on `master` but not in any release.** `v0.3.1` tags #117, and
+`master` is 19 commits past it — verify with
+`git log --oneline v0.3.1..master` rather than trusting this range, which goes
+stale on every merge. Most of it is smoke-harness and documentation work; two
+entries are user-affecting:
+
+- **#128** restructured the Tauri command layer (see "Architecture map") — a
+  refactor with no user-visible change beyond one error message. Any note citing
+  `app-tauri/src-tauri/src/commands.rs` predates it and names a file that no
+  longer exists.
+- **#134** bounds the SSH connection probe, so a filtered host can no longer
+  hang the UI.
 
 **#128 is runtime-verified on Windows, not just CI-green (2026-08-05).** The
 whole point of the KVM harness is that `Rust (Windows)` CI compiles and
