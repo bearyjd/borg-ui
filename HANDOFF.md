@@ -92,6 +92,24 @@ Actions secrets.
   of the time even on unfixed code. Left open deliberately. Close it when the
   warning has had field exposure, or when someone reproduces an under-count
   against a build containing #116.
+
+  **Evidence gathered 2026-08-05 (posted to the issue): 17 consecutive clean
+  runs.** `validate-archive-smoke` x17 on the KVM guest against a production
+  v0.3.1 build (contains #116). The count assertion passed **17/17** —
+  `header shows 100000 / 100000` every time, zero `incomplete` banners.
+  **(5/6)^17 ≈ 4.5%**, so this inverts the original arithmetic instead of
+  repeating it.
+
+  What makes those runs count: each logged a **progressive count mid-stream
+  (85000-95000)** before the tree was built, confirming every run entered the
+  race window #116 closed. A run finishing too fast to show a partial count
+  would not have exercised the bug.
+
+  **Still not closed, deliberately.** 17 back-to-back runs on one machine, one
+  archive shape, one fixture generator is *controlled repetition*, not the
+  "field exposure across varied conditions" this criterion asks for. Strong
+  evidence the race is fixed; not proof it cannot reproduce elsewhere. The
+  disposition call is the maintainer's.
 ## Windows verification: what is actually proven
 
 **39 smoke checks reported green (2026-07-31/08-01)** against a production build
@@ -266,6 +284,18 @@ the app**, and two app-bug conclusions had to be retracted:
 - a restore assertion polling one directory level too shallow, because the app
   nests restores under `BorgUI Restore <timestamp>\`,
 - …and that same shallow assertion was *masking* the one genuine bug (#116).
+
+**A sixth instance, 2026-08-05:** `validate-archive-smoke`'s
+`browser_selective_restore` failed once in 18 runs with
+`restore destination dialog: dialog still open after Ctrl+L navigate + select`.
+That is the **native folder picker failing to dismiss under UI automation** —
+the restore never started, so the failure carries no information about restore
+correctness. The count assertion passed on that same run. A clean re-run passed
+5/5, confirming a transient UIA flake (HANDOFF already records an earlier
+selective-restore timeout). **Read the detail line before believing the check
+name:** "selective restore failed" sounds like data loss and was a stuck dialog.
+One re-run distinguishes *sometimes* from *always*; it does not measure the
+flake rate, so if this starts costing time it needs its own repetition study.
 
 **Two fixes shipped broken and needed a second pass** — worth remembering when
 reviewing this class of change. #106 was a **silent no-op**: a SQLite CHECK
