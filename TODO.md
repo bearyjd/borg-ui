@@ -52,7 +52,8 @@ pnpm with a vitest gate.
 ## Tracked follow-up issues
 
 - [#64](https://github.com/bearyjd/borg-ui/issues/64) — production Authenticode signing. Repo side complete; blocked on Azure provisioning. Runbook + exact missing secrets/variables are in a comment on the issue.
-- [#114](https://github.com/bearyjd/borg-ui/issues/114) — archive browser intermittently under-counts (~1 run in 6). [#116](https://github.com/bearyjd/borg-ui/pull/116) fixes the race it is attributed to and makes an incomplete listing visible. **17 consecutive clean `validate-archive-smoke` runs against a production v0.3.1 build (2026-08-05, posted to the issue): count assertion 17/17, zero `incomplete` banners, and each run logged a progressive count mid-stream so it genuinely entered the race window.** At the documented ~1-in-6 rate that is a (5/6)^17 ≈ 4.5% fluke. Still open deliberately: controlled repetition on one machine and one archive shape is not the *varied field exposure* the closure criterion asks for. The disposition call is the maintainer's.
+
+**#64 is the only open issue.** [#114](https://github.com/bearyjd/borg-ui/issues/114) — the intermittent archive-browser under-count — was **closed 2026-08-06** on 17 consecutive clean `validate-archive-smoke` runs against a production build containing [#116](https://github.com/bearyjd/borg-ui/pull/116) ((5/6)^17 ≈ 4.5% at the documented ~1-in-6 rate, each run confirmed to have entered the race window). The decisive argument was not the arithmetic: #116 made an incomplete listing *visible* instead of silent, so the harmful outcome is prevented either way, and the issue's stated "field exposure" criterion was unobservable — the product has no telemetry and the privacy invariants preclude adding any. `HANDOFF.md` carries the full reasoning and what should reopen it.
 
 **Release state: `v0.3.2` is published and is `releases/latest`** (2026-08-06).
 The complete public release has MSI + NSIS + both `.sig` files + `latest.json`

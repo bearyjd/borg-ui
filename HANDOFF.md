@@ -1,7 +1,7 @@
 # BorgUI handoff
 
-Last updated: 2026-08-06. `master` includes **#140**, version **0.3.2**, two
-open issues (#64, #114).
+Last updated: 2026-08-06. `master` includes **#141**, version **0.3.2**, **one
+open issue (#64)** — #114 closed 2026-08-06, see below.
 
 **Nothing is sitting unreleased right now.** `v0.3.2` tags #140, which is the
 tip of `master`, so "merged" and "shipped" mean the same thing at this instant.
@@ -94,7 +94,7 @@ Installers are intentionally **unsigned** (Authenticode is #64). Updater signing
 is separate from Authenticode; the updater private key lives only in GitHub
 Actions secrets.
 
-## Open issues, with the next concrete step for each
+## The one open issue, with its next concrete step
 
 - **#64 — production Authenticode signing.** Blocked on Azure provisioning only.
   The repo side is complete and the ordering is correct (Authenticode signs,
@@ -102,31 +102,45 @@ Actions secrets.
   full runbook and the exact missing secrets/variables are in a comment on the
   issue. No repository variables are currently set, so `vars.AZURE_*` resolve to
   empty. Must not weaken or block unsigned development dry runs.
-- **#114 — archive browser under-counts entries** (99799 of 100000). #116 fixes
-  the race it is attributed to and makes an incomplete listing *visible* instead
-  of silent. Reproduces ~1 run in 6, so the fix is justified by code reading and
-  arithmetic, **not demonstrated** — three green post-fix runs would occur ~58%
-  of the time even on unfixed code. Left open deliberately. Close it when the
-  warning has had field exposure, or when someone reproduces an under-count
-  against a build containing #116.
+## Closed 2026-08-06: #114, the archive-browser under-count
 
-  **Evidence gathered 2026-08-05 (posted to the issue): 17 consecutive clean
-  runs.** `validate-archive-smoke` x17 on the KVM guest against a production
-  v0.3.1 build (contains #116). The count assertion passed **17/17** —
-  `header shows 100000 / 100000` every time, zero `incomplete` banners.
-  **(5/6)^17 ≈ 4.5%**, so this inverts the original arithmetic instead of
-  repeating it.
+Recorded here rather than only in the issue, because the *reason* it closed is
+the reusable part.
 
-  What makes those runs count: each logged a **progressive count mid-stream
-  (85000-95000)** before the tree was built, confirming every run entered the
-  race window #116 closed. A run finishing too fast to show a partial count
-  would not have exercised the bug.
+**Evidence:** `validate-archive-smoke` x17 on the KVM guest against a production
+build containing #116 — count assertion **17/17**, `header shows 100000 /
+100000` every time, zero `incomplete` banners. Each run logged a **progressive
+count mid-stream (85000-95000)** before the tree was built, confirming it
+actually entered the race window; a run finishing too fast to show a partial
+count would not have exercised the bug at all. At the documented ~1-in-6 rate
+that is a **(5/6)^17 ≈ 4.5%** fluke, which inverts the original arithmetic
+rather than repeating it (three green runs would have been ~58% likely even on
+unfixed code — which is exactly why three was never enough).
 
-  **Still not closed, deliberately.** 17 back-to-back runs on one machine, one
-  archive shape, one fixture generator is *controlled repetition*, not the
-  "field exposure across varied conditions" this criterion asks for. Strong
-  evidence the race is fixed; not proof it cannot reproduce elsewhere. The
-  disposition call is the maintainer's.
+**Why it closed on that, given the stated criterion was "field exposure":**
+that criterion is **not observable in this product.** There is no telemetry, no
+analytics, no crash reporting, and the privacy invariants preclude adding any —
+so field exposure could only ever appear as an *absence of complaints*, which
+never produces a positive signal. Waiting on it was waiting for something that
+by construction never arrives.
+
+**The load-bearing argument was not the 4.5%.** #116 changed the failure from
+*silent* to *visible*: an incomplete listing now raises the `incomplete` banner
+instead of quietly reporting a wrong total. The harmful outcome — a user
+trusting a listing that dropped entries — is prevented whether or not the race
+is completely dead. An open issue earns its keep by collecting information, and
+that one structurally could not.
+
+**Reopen on either:** a user reporting the `incomplete` banner on a real
+archive, or anyone reproducing an under-count against a build containing #116.
+
+**The 17 runs remain honest about their limit** — one machine, one archive
+shape, one fixture generator, warm VM. That is controlled repetition, not
+varied conditions. If this ever needs strengthening, repeat runs add almost
+nothing; vary the conditions instead (`validate-archive-smoke.ps1` takes
+`-FileCount`/`-DirCount`, though `run.sh` currently forwards no parameters) and
+widen the race window with a cold VM or constrained CPU/RAM.
+
 ## Windows verification: what is actually proven
 
 **39 smoke checks reported green (2026-07-31/08-01)** against a production build
