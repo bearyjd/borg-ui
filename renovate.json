@@ -1,0 +1,86 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "schedule:weekly"
+  ],
+  "timezone": "America/New_York",
+  "automerge": false,
+  "osvVulnerabilityAlerts": true,
+  "packageRules": [
+    {
+      "description": "One weekly PR for updates that cannot break the build. Renovate classifies a 0.x minor bump (0.37 -> 0.38) as 'minor', but Cargo and npm treat it as breaking, so pre-1.0 packages join this group only for patch bumps.",
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchCurrentVersion": "!/^0\\./",
+      "groupName": "non-breaking dependencies"
+    },
+    {
+      "description": "Patch bumps of pre-1.0 packages are compatible, so they join the weekly group.",
+      "matchUpdateTypes": ["patch"],
+      "matchCurrentVersion": "/^0\\./",
+      "groupName": "non-breaking dependencies"
+    },
+    {
+      "description": "Major updates wait for a tick on the Dependency Dashboard instead of opening PRs on their own.",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "So do 0.x minor bumps, which Cargo and npm treat as breaking.",
+      "matchUpdateTypes": ["minor"],
+      "matchCurrentVersion": "/^0\\./",
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "borg-core passes rand_core's OsRng to ssh-key, so rand_core must stay on the version ssh-key depends on; a standalone bump cannot compile.",
+      "matchPackageNames": ["rand_core"],
+      "enabled": false
+    },
+    {
+      "description": "Remind whoever takes an ssh-key bump to move rand_core with it.",
+      "matchPackageNames": ["ssh-key"],
+      "matchUpdateTypes": ["minor", "major"],
+      "prBodyNotes": [
+        "Renovate does not update `rand_core`, and `borg-core` passes `rand_core::OsRng` to ssh-key. If this ssh-key depends on a newer `rand_core`, bump it in `crates/borg-core/Cargo.toml` on this branch to match."
+      ]
+    },
+    {
+      "description": "npm lets a version be unpublished for 72 hours; waiting it out also gives a compromised publish time to be caught.",
+      "matchDatasources": ["npm"],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Windows-runtime packages. The Rust (Windows) CI job stages a placeholder borg.exe and never launches the app, so green CI proves nothing about the installer, WebView, Credential Manager, or VSS. Rust and npm Tauri packages share a group, and a common release age, because the Tauri CLI rejects a crate and npm package on different minor versions.",
+      "matchPackageNames": [
+        "tauri",
+        "tauri-build",
+        "tauri-plugin-*",
+        "@tauri-apps/**",
+        "keyring",
+        "windows-sys"
+      ],
+      "groupName": "Tauri, keyring and windows-sys",
+      "separateMultipleMajor": true,
+      "minimumReleaseAge": "3 days",
+      "dependencyDashboardApproval": true,
+      "labels": ["needs-vm-smoke"],
+      "prBodyNotes": [
+        "**Green CI does not verify this update.** The `Rust (Windows)` job stages a placeholder `borg.exe` and never launches the app. Before merging, check this branch's build on the KVM harness (`tests/smoke-windows/`):\n\n1. `gh workflow run release.yml --ref {{{branchName}}}`, then download into a fresh directory, since `installer-all` installs the first installer it finds: `D=$(mktemp -d) && gh run download <run-id> -n borgui-windows-installers-unsigned -D \"$D\"`\n2. `KEEP_VM=1 INSTALLER_DIR=\"$D\" make -C tests/smoke-windows installer-all` covers install, render, engine round-trip, and uninstall.\n\nStep 2 does **not** cover:\n\n- **keyring**: the `validate-gui` keychain check compiles `borg-platform-win` from the source last deployed to the VM, offline. Check out this branch, run `KEEP_VM=1 make -C tests/smoke-windows build-env deploy` (the check skips without a toolchain), and `cargo fetch` on the VM before `validate-gui`. An `UNVERIFIED` line is a failure.\n- **GUI** (`validate-gui-flows`, `validate-tray`, `validate-vss`): these prefer `C:\\borgui\\borg-ui.exe` and `%USERPROFILE%\\borg-ui.exe` (uploaded from `tests/smoke-windows/shared/`) over a staged build. Remove both, reinstall this branch's NSIS and stage it as `HANDOFF.md` describes (after `deploy`, which wipes `C:\\borgui-test`), and confirm each log names the staged exe. Prefix every target with `KEEP_VM=1`.\n- **tauri-plugin-updater**: untestable before release; `validate-updater` only updates to a published release.\n\n`validate-all` does not help here: it drives the native `borg.exe`/`reg`/`schtasks`, not this build."
+      ]
+    },
+    {
+      "description": "Actions used only in release.yml, which PR CI never runs.",
+      "matchPackageNames": [
+        "actions/upload-artifact",
+        "azure/login",
+        "azure/artifact-signing-action"
+      ],
+      "groupName": "release workflow actions",
+      "dependencyDashboardApproval": true,
+      "labels": ["needs-release-dry-run"],
+      "prBodyNotes": [
+        "**PR CI never runs these actions**; they are used only in `release.yml`. Before merging, run `gh workflow run release.yml --ref {{{branchName}}}` and confirm the `borgui-windows-installers-unsigned` artifact uploads. The Azure signing actions cannot be verified until signing is provisioned (#64); after that, add `-f enable_signing=true`, and the Azure federated credential must accept this branch's ref."
+      ]
+    }
+  ]
+}
