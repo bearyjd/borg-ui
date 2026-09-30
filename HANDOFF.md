@@ -1,13 +1,13 @@
 # BorgUI handoff
 
-Last updated: 2026-08-06. `master` includes **#141**, version **0.3.2**, **one
-open issue (#64)** — #114 closed 2026-08-06, see below.
+Last updated: 2026-09-30. `master` includes **#144** (frontend advisory fixes)
+and **#143** (Renovate), version **0.3.2**, **one open issue (#64)**.
 
-**Nothing is sitting unreleased right now.** `v0.3.2` tags #140, which is the
-tip of `master`, so "merged" and "shipped" mean the same thing at this instant.
-That is the exception in this repo, not the rule — it stops being true the
-moment anything merges, so confirm with `git log --oneline v0.3.2..master`
-rather than trusting this sentence.
+**`master` is ahead of `v0.3.2` again.** #144 changes the shipped frontend
+bundle (SvelteKit and devalue code) as well as the toolchain. The shipped app
+was not exposed to any of the advisories it fixes (see "Dependency updates"), so
+a 0.3.3 is not urgent. #143 adds only `renovate.json`. Confirm what is waiting
+with `git log --oneline v0.3.2..master` rather than trusting this paragraph.
 
 **#128** restructured the Tauri command layer (see "Architecture map") — a
 refactor with no user-visible change beyond one error message. Any note citing
@@ -102,6 +102,45 @@ Actions secrets.
   full runbook and the exact missing secrets/variables are in a comment on the
   issue. No repository variables are currently set, so `vars.AZURE_*` resolve to
   empty. Must not weaken or block unsigned development dry runs.
+
+## Dependency updates (Renovate)
+
+`renovate.json` (#143) explains each rule in its `description`. The points that
+are easy to miss:
+
+- **Only two kinds of PR open on their own:** the weekly `non-breaking
+  dependencies` group (Mondays before 04:00 New York time) and OSV security
+  fixes, which skip the schedule and every approval gate. Majors, 0.x minor
+  bumps, and the two gated groups below wait for a tick on the Dependency
+  Dashboard (#145). Tick them one at a time: the dashboard's "Create all
+  pending approval PRs at once" box opens every gated PR together, the
+  `needs-vm-smoke` group included.
+- **Renovate's onboarding preview over-lists.** Its "What to Expect" counted the
+  dashboard-gated branches as PRs it would open; the gate is applied when a
+  branch is created, not in the preview.
+- **`needs-vm-smoke`** (Tauri crates, `@tauri-apps/*`, keyring, windows-sys):
+  green CI does not verify these. Their PR body carries a branch-build procedure
+  for the KVM harness. It was assembled from the harness scripts and has not yet
+  been run end to end, so treat the first run as a check of the procedure too.
+- **`needs-release-dry-run`** (`actions/upload-artifact`, the Azure signing
+  actions): used only in `release.yml`, which PR CI never runs. The Azure ones
+  cannot be verified until #64.
+- **Renovate never updates `rand_core`.** borg-core hands its `OsRng` to
+  ssh-key, so it has to move by hand together with ssh-key.
+- **Security alerts come from OSV, not Dependabot** (Dependabot alerts are off
+  for this repo). OSV only checks packages named in a manifest, so also run
+  `pnpm audit` in `app-tauri/`: it found transitive advisories (postcss, nanoid,
+  devalue) that Renovate's scan did not.
+- **The VM procedure runs `release.yml` on an unmerged Renovate branch**, which
+  exposes `TAURI_SIGNING_PRIVATE_KEY` to that branch's dependency code.
+  Restricting the key to tags and `master` with a GitHub Environment would close
+  that; not done.
+- **#144 (2026-09-30) cleared the advisory backlog found at onboarding:** pnpm
+  10.34.5, vite 6.4.3, SvelteKit 2.70.3, vitest 4 (no 3.x fix exists; no test
+  changes, and the same 81 tests pass). `pnpm audit` is down to one low:
+  `cookie` 0.6.0, pinned by SvelteKit and reachable only through server-side
+  cookie parsing, which a static build never runs.
+
 ## Closed 2026-08-06: #114, the archive-browser under-count
 
 Recorded here rather than only in the issue, because the *reason* it closed is
