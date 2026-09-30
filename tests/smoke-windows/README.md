@@ -350,9 +350,20 @@ installed layout). `validate-installer.ps1`:
    init→create→delete→extract→byte-verify round-trip.
 4. Silently uninstalls and asserts the app is gone.
 
-Build the installers in CI (the `Release` workflow uploads a `borgui-windows-installers`
-artifact on every run), then `gh run download <run-id> -n borgui-windows-installers -D
-tests/smoke-windows/installers` before running the target.
+Build the installers in CI (the `Release` workflow uploads a
+`borgui-windows-installers-unsigned` artifact on every run, `-signed` when signing
+is enabled), then download it into an empty directory and point `INSTALLER_DIR` at
+it:
+
+```bash
+D=$(mktemp -d)
+gh run download <run-id> -n borgui-windows-installers-unsigned -D "$D"
+KEEP_VM=1 INSTALLER_DIR="$D" make installer-all
+```
+
+Use an empty directory: `validate-installer.ps1` installs the first `*-setup.exe`
+and `*.msi` it finds, so an older installer left in `installers/` gets tested
+instead of the one you meant.
 
 ## Pre-built Binary
 

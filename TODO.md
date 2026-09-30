@@ -1,6 +1,6 @@
 # BorgUI Roadmap Status
 
-Last updated: 2026-08-06.
+Last updated: 2026-09-30.
 
 The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 
@@ -34,10 +34,10 @@ The original Vorta-parity roadmap is complete for the Windows-focused v0.1 line:
 - `validate-installer` passed **12/0/0** against the v0.3.2 artifacts before
   they were published, including the interactive render checks on both NSIS and
   MSI.
-- **`master` and the `v0.3.2` tag are level right now** (the tag points at
-  #140, the tip), so nothing is waiting to ship. That is the exception here,
-  not the rule — check `git log --oneline v0.3.2..master` rather than trusting
-  this bullet.
+- **`master` is ahead of `v0.3.2`**: #144 (frontend advisory fixes, which
+  change the shipped bundle; the shipped app was not exposed) and #143
+  (Renovate config). A 0.3.3 is not urgent. Check
+  `git log --oneline v0.3.2..master` rather than trusting this bullet.
 - Borg-for-Windows 1.4.4+win7 fixes native drive-letter repositories; BorgUI now
   passes those paths directly, including for standard users.
 - Installers remain usable unsigned. Authenticode signing is prepared but intentionally disabled until Azure Trusted Signing repository configuration exists.
