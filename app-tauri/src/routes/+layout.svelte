@@ -1,6 +1,6 @@
 <script lang="ts">
   import '../app.css';
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -101,7 +101,7 @@
           <a
             href={item.href}
             class="nav-item"
-            class:active={$page.url.pathname === item.href}
+            class:active={page.url.pathname === item.href}
           >
             <span class="nav-icon">{item.icon}</span>
             <span class="nav-label">{item.label}</span>

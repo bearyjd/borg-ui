@@ -56,7 +56,7 @@ SvelteKit file-based routing. Each subdirectory is a page in the app. The layout
 
 ### Internal
 - `$lib/stores/repo` — shared repo configuration state
-- `$app/stores` — SvelteKit page store for active route detection
+- `$app/state` — SvelteKit page state for active route detection
 - `$app/navigation` — `goto` for programmatic navigation
 
 ### External
