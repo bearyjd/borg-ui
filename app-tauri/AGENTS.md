@@ -12,7 +12,7 @@ Tauri 2 desktop application combining a Svelte 5 frontend with a Rust backend. T
 |------|-------------|
 | `package.json` | Node dependencies and scripts (`dev`, `build`, `check`, `tauri`) |
 | `pnpm-lock.yaml` | Locked pnpm dependencies |
-| `svelte.config.js` | SvelteKit configuration (static adapter for Tauri) |
+| `svelte.config.js` | (removed in SvelteKit v3; config now lives in `vite.config.ts` via `sveltekit({...})`) |
 | `vite.config.ts` | Vite build configuration |
 | `tsconfig.json` | TypeScript compiler settings |
 
