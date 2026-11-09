@@ -10,6 +10,8 @@
     replaced: string[];
     removed: string[];
     active_profile: string | null;
+    hooks_cleared: string[];
+    reporting_reset: string[];
   }
 
   let busy = $state(false);
@@ -122,6 +124,16 @@
         <p class:destructive={preview.removed.length > 0}>
           Will remove: {preview.removed.length ? preview.removed.join(', ') : 'none'}
         </p>
+        {#if preview.hooks_cleared.length}
+          <p class="destructive">
+            Pre/post-backup hooks removed for: {preview.hooks_cleared.join(', ')}. Re-enter them manually if needed.
+          </p>
+        {/if}
+        {#if preview.reporting_reset.length}
+          <p class="destructive">
+            Reporting settings reset for: {preview.reporting_reset.join(', ')}. Reconfigure reports after import.
+          </p>
+        {/if}
         <div class="confirm-actions">
           <button class="btn btn-secondary" type="button" onclick={() => {
             preview = null;
