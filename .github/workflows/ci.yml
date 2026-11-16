@@ -32,6 +32,9 @@ jobs:
           fi
           echo "All smoke scripts are ASCII-only."
 
+      - name: Release workflow actions are SHA-pinned
+        run: scripts/check-release-pinned-actions.sh
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
