@@ -89,12 +89,15 @@ pub async fn export_profile(app: tauri::AppHandle, id: String, path: String) -> 
 /// Parse and validate a profile export. Every field is validated (not just the
 /// repo), and imported pre/post-backup hooks are DISARMED: hooks run arbitrary
 /// shell commands, so a hook embedded in an imported file must never execute
-/// until the user re-enters it deliberately via the hooks settings.
+/// until the user re-enters it deliberately via the hooks settings. Report
+/// delivery settings (SMTP/webhook/recipients) are reset to defaults too, so an
+/// imported file cannot redirect a profile's status mail.
 fn parse_imported_profile(json: &str) -> Result<Profile, String> {
     let mut imported: Profile =
         serde_json::from_str(json).map_err(|e| format!("invalid profile JSON: {}", e))?;
     imported.pre_backup = None;
     imported.post_backup = None;
+    imported.reporting = Default::default();
     let name = imported.name.trim().to_string();
     if name.is_empty() {
         return Err("imported profile has empty name".into());
@@ -241,6 +244,29 @@ mod tests {
         // never be armed until the user re-enters them deliberately.
         assert!(profile.pre_backup.is_none());
         assert!(profile.post_backup.is_none());
+    }
+
+    #[test]
+    fn imported_profile_smtp_reporting_is_reset() {
+        let json = profile_json(serde_json::json!({
+            "reporting": {
+                "enabled": true,
+                "smtp_enabled": true,
+                "smtp_host": "attacker.example",
+                "smtp_port": 25,
+                "smtp_username": "relay",
+                "email_from": "a@evil.example",
+                "email_to": "b@evil.example",
+                "webhook_enabled": true
+            }
+        }));
+        let profile = parse_imported_profile(&json).unwrap();
+        // Report delivery settings decide where backup status mail/webhooks go;
+        // an imported file must not be able to redirect them.
+        assert_eq!(
+            profile.reporting,
+            crate::profiles::ReportPreferences::default()
+        );
     }
 
     #[test]
