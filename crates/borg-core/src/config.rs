@@ -12,10 +12,34 @@ pub struct RepoConfig {
     pub ssh_key_path: Option<PathBuf>,
 }
 
-const SSH_FORBIDDEN: &[char] = &[
-    '@', ':', ' ', '\'', '"', ';', '&', '|', '`', '$', '\n', '\r',
-];
-const PATH_FORBIDDEN: &[char] = &[';', '&', '|', '`', '$', '\'', '"', '\n', '\r', '\0'];
+/// Allowlists: anything not explicitly permitted is rejected.
+fn is_ssh_name_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '.' | '-' | '_')
+}
+
+fn is_repo_path_char(c: char) -> bool {
+    c.is_alphanumeric()
+        || matches!(
+            c,
+            ' ' | '/'
+                | '\\'
+                | ':'
+                | '.'
+                | '_'
+                | '-'
+                | '~'
+                | '+'
+                | '@'
+                | ','
+                | '='
+                | '%'
+                | '#'
+                | '('
+                | ')'
+                | '['
+                | ']'
+        )
+}
 
 /// Central option-injection gate. borg and ssh are spawned with direct argv
 /// (no shell), so metacharacter injection is impossible — but an untrusted
@@ -48,7 +72,7 @@ impl RepoConfig {
 
     pub fn validate(&self) -> Result<()> {
         reject_option_like("repo_path", &self.repo_path)?;
-        if self.repo_path.chars().any(|c| PATH_FORBIDDEN.contains(&c)) {
+        if !self.repo_path.chars().all(is_repo_path_char) {
             return Err(BorgError::InvalidConfig {
                 message: "repo_path contains invalid characters".into(),
             });
@@ -66,12 +90,12 @@ impl RepoConfig {
                 message: "ssh_port must be > 0".into(),
             });
         }
-        if self.ssh_host.chars().any(|c| SSH_FORBIDDEN.contains(&c)) {
+        if !self.ssh_host.chars().all(is_ssh_name_char) {
             return Err(BorgError::InvalidConfig {
                 message: "ssh_host contains invalid characters".into(),
             });
         }
-        if self.ssh_user.chars().any(|c| SSH_FORBIDDEN.contains(&c)) {
+        if !self.ssh_user.chars().all(is_ssh_name_char) {
             return Err(BorgError::InvalidConfig {
                 message: "ssh_user contains invalid characters".into(),
             });
@@ -499,6 +523,68 @@ mod tests {
             ssh_key_path: None,
         };
         assert!(repo.validate().is_err());
+    }
+
+    fn repo_with(host: &str, user: &str, path: &str) -> RepoConfig {
+        RepoConfig {
+            ssh_host: host.into(),
+            ssh_port: 22,
+            ssh_user: user.into(),
+            repo_path: path.into(),
+            ssh_key_path: None,
+        }
+    }
+
+    #[test]
+    fn allowlist_rejects_chars_outside_blacklists() {
+        for bad in [
+            "/repo<x",
+            "/repo>x",
+            "/repo*",
+            "/repo?",
+            "/repo\ttab",
+            "/repo(\u{7f}",
+            "/re!po{}",
+        ] {
+            assert!(
+                repo_with("host.com", "borg", bad).validate().is_err(),
+                "{bad:?}"
+            );
+        }
+        for bad in [
+            "host!name",
+            "ho<st",
+            "host/x",
+            "host name",
+            "host\u{7f}",
+            "ho*st",
+            "[::1]",
+        ] {
+            assert!(
+                repo_with(bad, "borg", "/repo").validate().is_err(),
+                "{bad:?}"
+            );
+        }
+        for bad in ["bo<rg", "bo!rg", "bo/rg", "bo*rg"] {
+            assert!(
+                repo_with("host.com", bad, "/repo").validate().is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allowlist_accepts_normal_values() {
+        assert!(
+            repo_with("backup-1.example.com", "borg_user.x", "/data/my repo-1~/é")
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            repo_with("10.0.0.1", "borg", "D:\\Backups\\repo (2)")
+                .validate()
+                .is_ok()
+        );
     }
 
     #[test]
