@@ -12,32 +12,24 @@ pub struct RepoConfig {
     pub ssh_key_path: Option<PathBuf>,
 }
 
-/// Allowlists: anything not explicitly permitted is rejected.
-fn is_ssh_name_char(c: char) -> bool {
+/// ssh_host / ssh_user are allowlisted. ssh_user also permits `\` and `+` so
+/// Windows OpenSSH forms such as `DOMAIN\\user` keep working.
+fn is_ssh_host_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '.' | '-' | '_')
 }
 
+fn is_ssh_user_char(c: char) -> bool {
+    is_ssh_host_char(c) || matches!(c, '\\' | '+')
+}
+
+/// repo_path is denied by class, not allowed by enumeration: legal Windows
+/// paths (curly apostrophes, en dashes, `!`, `{}`, `^`, emoji, ...) must keep
+/// validating for already-persisted profiles.
 fn is_repo_path_char(c: char) -> bool {
-    c.is_alphanumeric()
-        || matches!(
+    !c.is_control()
+        && !matches!(
             c,
-            ' ' | '/'
-                | '\\'
-                | ':'
-                | '.'
-                | '_'
-                | '-'
-                | '~'
-                | '+'
-                | '@'
-                | ','
-                | '='
-                | '%'
-                | '#'
-                | '('
-                | ')'
-                | '['
-                | ']'
+            ';' | '&' | '|' | '`' | '$' | '\'' | '"' | '<' | '>' | '*' | '?'
         )
 }
 
@@ -90,12 +82,12 @@ impl RepoConfig {
                 message: "ssh_port must be > 0".into(),
             });
         }
-        if !self.ssh_host.chars().all(is_ssh_name_char) {
+        if !self.ssh_host.chars().all(is_ssh_host_char) {
             return Err(BorgError::InvalidConfig {
                 message: "ssh_host contains invalid characters".into(),
             });
         }
-        if !self.ssh_user.chars().all(is_ssh_name_char) {
+        if !self.ssh_user.chars().all(is_ssh_user_char) {
             return Err(BorgError::InvalidConfig {
                 message: "ssh_user contains invalid characters".into(),
             });
@@ -544,7 +536,8 @@ mod tests {
             "/repo?",
             "/repo\ttab",
             "/repo(\u{7f}",
-            "/re!po{}",
+            "/repo'x",
+            "/repo\"x",
         ] {
             assert!(
                 repo_with("host.com", "borg", bad).validate().is_err(),
@@ -585,6 +578,33 @@ mod tests {
                 .validate()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn previously_valid_repo_paths_still_pass() {
+        for path in [
+            "C:\\Backups!\\repo",
+            "D:\\Mike\u{2019}s Files",
+            "E:\\Backups \u{2013} 2024",
+            "/data/{x}",
+            "/data/a^b",
+            "/data/\u{20ac}uro",
+        ] {
+            assert!(
+                repo_with("host.com", "borg", path).validate().is_ok(),
+                "{path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ssh_user_allows_windows_domain_and_plus() {
+        for user in ["DOMAIN\\user", "user+tag"] {
+            assert!(
+                repo_with("host.com", user, "/repo").validate().is_ok(),
+                "{user:?}"
+            );
+        }
     }
 
     #[test]
