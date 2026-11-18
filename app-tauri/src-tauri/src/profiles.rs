@@ -20,8 +20,8 @@ pub struct BackupSelection {
     pub excludes: Vec<String>,
     #[serde(default)]
     pub template_id: Option<String>,
-    /// Reserved now so template upgrades in v0.4 do not need another selection
-    /// migration.
+    /// Reserved so template upgrades in v0.4 do not need another selection
+    /// migration. Only validated for now: it must accompany a `template_id`.
     #[serde(default)]
     pub template_version: Option<u32>,
 }
@@ -271,6 +271,11 @@ impl Profile {
         }
         borg_core::config::validate_exclude_patterns(&self.backup_selection.excludes)
             .map_err(|e| e.to_string())?;
+        if self.backup_selection.template_version.is_some()
+            && self.backup_selection.template_id.is_none()
+        {
+            return Err("template version requires a template id".into());
+        }
         if let Some(template) = &self.archive_template {
             borg_core::config::reject_option_like("archive_template", template)
                 .map_err(|e| e.to_string())?;
@@ -731,6 +736,15 @@ mod tests {
         let mut profile = profile_with_id("p");
         profile.archive_template = Some("--glob-archives".into());
         assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn profile_validate_rejects_template_version_without_template_id() {
+        let mut profile = profile_with_id("p");
+        profile.backup_selection.template_version = Some(1);
+        assert!(profile.validate().is_err());
+        profile.backup_selection.template_id = Some("documents".into());
+        assert!(profile.validate().is_ok());
     }
 
     #[test]
