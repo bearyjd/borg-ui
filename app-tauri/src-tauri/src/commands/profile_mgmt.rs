@@ -11,7 +11,8 @@ pub async fn list_profiles(app: tauri::AppHandle) -> Result<ProfilesData, String
 pub async fn set_active_profile(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let mut data = read_profiles(&app).await?;
     data.set_active(&id)?;
-    write_profiles(&app, &data).await
+    write_profiles(&app, &data).await?;
+    schedule::reconcile_backup_task(data.active()).await
 }
 
 #[tauri::command]
@@ -201,7 +202,8 @@ pub async fn preview_archive_name(
 pub async fn delete_profile(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let mut data = read_profiles(&app).await?;
     data.remove(&id)?;
-    write_profiles(&app, &data).await
+    write_profiles(&app, &data).await?;
+    schedule::reconcile_backup_task(data.active()).await
 }
 
 #[cfg(test)]

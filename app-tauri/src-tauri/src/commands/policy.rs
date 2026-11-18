@@ -107,20 +107,8 @@ pub async fn save_resource_policy(
     let mut data = read_profiles(&app).await?;
     let profile = data.require_active_mut()?;
     profile.resource_policy = policy.clone();
-    let schedule = profile.schedule.clone();
     write_profiles(&app, &data).await?;
-    if let Some(schedule) = schedule.filter(|schedule| schedule.enabled) {
-        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        borg_platform_win::scheduler::schedule_backup(
-            "BorgUI-Backup",
-            &exe.to_string_lossy(),
-            "--scheduled-backup",
-            &schedule.schedule,
-            policy.wake_for_backup,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    }
+    schedule::reconcile_backup_task(data.active()).await?;
     Ok(())
 }
 

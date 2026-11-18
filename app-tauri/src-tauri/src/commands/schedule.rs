@@ -10,6 +10,61 @@ pub async fn load_schedule_config(
     Ok(data.active().and_then(|p| p.schedule.clone()))
 }
 
+const BACKUP_TASK: &str = "BorgUI-Backup";
+
+/// What the machine-wide backup task should look like for the active profile.
+enum TaskPlan {
+    Register {
+        schedule: borg_platform_win::scheduler::Schedule,
+        wake_to_run: bool,
+    },
+    Remove,
+}
+
+fn plan_backup_task(active: Option<&Profile>) -> TaskPlan {
+    match active.and_then(|p| p.schedule.as_ref().filter(|s| s.enabled).map(|s| (p, s))) {
+        Some((profile, config)) => TaskPlan::Register {
+            schedule: config.schedule.clone(),
+            wake_to_run: profile.resource_policy.wake_for_backup,
+        },
+        None => TaskPlan::Remove,
+    }
+}
+
+/// Make the machine-wide Task Scheduler entry match the active profile's
+/// schedule. The single path for every change to the active profile, its
+/// schedule, or its wake policy, so the task never drifts from profile state.
+pub(super) async fn reconcile_backup_task(active: Option<&Profile>) -> Result<(), String> {
+    match plan_backup_task(active) {
+        TaskPlan::Register {
+            schedule,
+            wake_to_run,
+        } => {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            borg_platform_win::scheduler::schedule_backup(
+                BACKUP_TASK,
+                &exe.to_string_lossy(),
+                "--scheduled-backup",
+                &schedule,
+                wake_to_run,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        }
+        TaskPlan::Remove => {
+            if borg_platform_win::scheduler::task_exists(BACKUP_TASK)
+                .await
+                .unwrap_or(false)
+            {
+                borg_platform_win::scheduler::unschedule_backup(BACKUP_TASK)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn save_schedule_config(
     app: tauri::AppHandle,
@@ -19,26 +74,9 @@ pub async fn save_schedule_config(
     let mut data = read_profiles(&app).await?;
     let profile = data.require_active_mut()?;
     profile.schedule = Some(config.clone());
-    let wake_to_run = profile.resource_policy.wake_for_backup;
     write_profiles(&app, &data).await?;
 
-    if config.enabled {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let exe_str = exe.to_string_lossy().to_string();
-        let args = "--scheduled-backup";
-        borg_platform_win::scheduler::schedule_backup(
-            "BorgUI-Backup",
-            &exe_str,
-            args,
-            &config.schedule,
-            wake_to_run,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    } else {
-        let _ = borg_platform_win::scheduler::unschedule_backup("BorgUI-Backup").await;
-    }
-
+    reconcile_backup_task(data.active()).await?;
     Ok(())
 }
 
@@ -78,7 +116,7 @@ pub async fn scheduled_backup_status(
         crate::scheduled::is_missed(&attempt.timestamp, grace_seconds, chrono::Utc::now())
     });
     let task_registered = if schedule.is_some() {
-        borg_platform_win::scheduler::task_exists("BorgUI-Backup")
+        borg_platform_win::scheduler::task_exists(BACKUP_TASK)
             .await
             .unwrap_or(false)
     } else {
@@ -115,5 +153,69 @@ pub async fn set_autostart(enabled: bool) -> Result<(), String> {
         borg_platform_win::autostart::disable(value)
             .await
             .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use borg_platform_win::scheduler::Schedule;
+
+    fn profile(extra: serde_json::Value) -> Profile {
+        let mut base = serde_json::json!({
+            "id": "p",
+            "name": "P",
+            "repo": {
+                "ssh_host": "backup.example.com",
+                "ssh_port": 22,
+                "ssh_user": "borg",
+                "repo_path": "/data/repo",
+                "ssh_key_path": null
+            }
+        });
+        base.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(base).unwrap()
+    }
+
+    #[test]
+    fn no_active_profile_removes_task() {
+        assert!(matches!(plan_backup_task(None), TaskPlan::Remove));
+    }
+
+    #[test]
+    fn profile_without_schedule_removes_task() {
+        assert!(matches!(
+            plan_backup_task(Some(&profile(serde_json::json!({})))),
+            TaskPlan::Remove
+        ));
+    }
+
+    #[test]
+    fn disabled_schedule_removes_task() {
+        let p = profile(serde_json::json!({
+            "schedule": {"enabled": false, "schedule": {"type": "hourly"}}
+        }));
+        assert!(matches!(plan_backup_task(Some(&p)), TaskPlan::Remove));
+    }
+
+    #[test]
+    fn enabled_schedule_registers_task_with_wake_policy() {
+        let p = profile(serde_json::json!({
+            "schedule": {"enabled": true, "schedule": {"type": "daily", "hour": 3, "minute": 30}}
+        }));
+        match plan_backup_task(Some(&p)) {
+            TaskPlan::Register { schedule, .. } => {
+                assert!(matches!(
+                    schedule,
+                    Schedule::Daily {
+                        hour: 3,
+                        minute: 30
+                    }
+                ));
+            }
+            TaskPlan::Remove => panic!("expected Register"),
+        }
     }
 }
