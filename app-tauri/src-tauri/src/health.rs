@@ -49,6 +49,7 @@ pub struct HealthInputs<'a> {
     pub primary_attempt: Option<&'a DestinationAttempt>,
     pub secondary_attempt: Option<&'a DestinationAttempt>,
     pub passphrase_available: bool,
+    pub storage: Option<&'a crate::forecast::StorageForecast>,
     pub now: DateTime<Utc>,
 }
 
@@ -105,8 +106,12 @@ pub fn aggregate(inputs: HealthInputs<'_>) -> ProtectionHealth {
         || inputs.unavailable_sources > 0
         || last_success.is_none()
         || consecutive_failures >= inputs.profile.reporting.failure_threshold.max(1);
+    let storage_low = inputs.storage.is_some_and(|forecast| {
+        crate::forecast::exceeds_thresholds(forecast, &inputs.profile.storage_warnings, inputs.now)
+    });
     let amber = !red
         && (inputs.missed
+            || storage_low
             || stale
             || integrity_status != "success"
             || restore_drill_status != "success"
@@ -137,6 +142,9 @@ pub fn aggregate(inputs: HealthInputs<'_>) -> ProtectionHealth {
     }
     if integrity_status != "success" || restore_drill_status != "success" {
         actions.push(action("Run protection checks", "/settings"));
+    }
+    if storage_low {
+        actions.push(action("Free up backup storage", "/settings"));
     }
     if !recovery_key_ready {
         actions.push(action("Export a recovery key", "/settings"));
@@ -251,6 +259,7 @@ mod tests {
             primary_attempt: None,
             secondary_attempt: None,
             passphrase_available: true,
+            storage: None,
             now: Utc::now(),
         });
         assert_eq!(health.severity, HealthSeverity::Red);
@@ -302,8 +311,77 @@ mod tests {
             primary_attempt: None,
             secondary_attempt: None,
             passphrase_available: true,
+            storage: None,
             now,
         });
         assert_eq!(health.severity, HealthSeverity::Green);
+    }
+
+    #[test]
+    fn low_storage_makes_healthy_protection_amber() {
+        let profile = profile();
+        let now = Utc::now();
+        let events = vec![BackupEvent {
+            id: "1".into(),
+            timestamp: now.to_rfc3339(),
+            kind: "backup".into(),
+            archive_name: "archive".into(),
+            outcome: "success".into(),
+            duration_seconds: 1,
+            file_count: None,
+            original_size: None,
+            error_message: None,
+        }];
+        let integrity = IntegrityEvent {
+            id: "i".into(),
+            timestamp: now.to_rfc3339(),
+            profile_id: "p".into(),
+            mode: "repository".into(),
+            outcome: "success".into(),
+            duration_seconds: 1,
+            error_message: None,
+        };
+        let drill = RestoreDrillEvent {
+            id: "d".into(),
+            timestamp: now.to_rfc3339(),
+            profile_id: "p".into(),
+            outcome: "success".into(),
+            files_checked: 1,
+            duration_seconds: 1,
+            error_message: None,
+        };
+        let forecast = crate::forecast::StorageForecast {
+            observations: 7,
+            deduplication_savings_percent: None,
+            recent_growth_bytes: None,
+            throughput_bytes_per_second: None,
+            estimated_next_duration_seconds: None,
+            projected_capacity_date: None,
+            local_free_space: Some(1),
+            remote_quota: None,
+            status: "ready".into(),
+        };
+        let health = aggregate(HealthInputs {
+            profile: &profile,
+            events: &events,
+            scheduled: None,
+            missed: false,
+            unavailable_sources: 0,
+            repository_reachable: true,
+            integrity: Some(&integrity),
+            drill: Some(&drill),
+            primary_attempt: None,
+            secondary_attempt: None,
+            passphrase_available: true,
+            storage: Some(&forecast),
+            now,
+        });
+        assert_eq!(health.severity, HealthSeverity::Amber);
+        assert!(
+            health
+                .actions
+                .iter()
+                .any(|a| a.label == "Free up backup storage")
+        );
     }
 }

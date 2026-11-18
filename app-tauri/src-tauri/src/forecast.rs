@@ -120,6 +120,27 @@ pub fn calculate(
     }
 }
 
+/// True when free space is below the saved minimum, or the projected capacity
+/// date falls within the saved warning window.
+pub fn exceeds_thresholds(
+    forecast: &StorageForecast,
+    thresholds: &crate::profiles::StorageWarningThresholds,
+    now: DateTime<Utc>,
+) -> bool {
+    let low_space = forecast
+        .local_free_space
+        .is_some_and(|free| free < thresholds.minimum_free_space_bytes);
+    let near_capacity = forecast
+        .projected_capacity_date
+        .as_deref()
+        .and_then(|date| DateTime::parse_from_rfc3339(date).ok())
+        .is_some_and(|date| {
+            date.with_timezone(&Utc)
+                <= now + Duration::days(i64::from(thresholds.capacity_warning_days))
+        });
+    low_space || near_capacity
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +180,53 @@ mod tests {
             calculate(&metrics, Some(1000), None).recent_growth_bytes,
             Some(10)
         );
+    }
+
+    fn forecast_with(free: Option<u64>, projected: Option<&str>) -> StorageForecast {
+        StorageForecast {
+            observations: 7,
+            deduplication_savings_percent: None,
+            recent_growth_bytes: None,
+            throughput_bytes_per_second: None,
+            estimated_next_duration_seconds: None,
+            projected_capacity_date: projected.map(str::to_owned),
+            local_free_space: free,
+            remote_quota: None,
+            status: "ready".into(),
+        }
+    }
+
+    #[test]
+    fn warns_when_free_space_below_threshold() {
+        let thresholds = crate::profiles::StorageWarningThresholds::default();
+        let now = Utc::now();
+        let low = forecast_with(Some(thresholds.minimum_free_space_bytes - 1), None);
+        let ok = forecast_with(Some(thresholds.minimum_free_space_bytes), None);
+        assert!(exceeds_thresholds(&low, &thresholds, now));
+        assert!(!exceeds_thresholds(&ok, &thresholds, now));
+    }
+
+    #[test]
+    fn warns_when_projected_capacity_within_warning_days() {
+        let thresholds = crate::profiles::StorageWarningThresholds::default();
+        let now = Utc::now();
+        let soon = (now + Duration::days(10)).to_rfc3339();
+        let far = (now + Duration::days(90)).to_rfc3339();
+        let big = Some(thresholds.minimum_free_space_bytes * 2);
+        assert!(exceeds_thresholds(
+            &forecast_with(big, Some(&soon)),
+            &thresholds,
+            now
+        ));
+        assert!(!exceeds_thresholds(
+            &forecast_with(big, Some(&far)),
+            &thresholds,
+            now
+        ));
+        assert!(!exceeds_thresholds(
+            &forecast_with(None, None),
+            &thresholds,
+            now
+        ));
     }
 }

@@ -154,6 +154,15 @@ pub async fn protection_health(
     let missed = scheduled.as_ref().is_some_and(|attempt| {
         crate::scheduled::is_missed(&attempt.timestamp, grace_seconds, chrono::Utc::now())
     });
+    let storage = if repository_reachable && profile.repo.is_local() {
+        let metrics = history::repository_metrics(&dir, &profile.id, "primary").await?;
+        let free_space =
+            borg_platform_win::cloud_files::free_space(&PathBuf::from(&profile.repo.repo_path))
+                .ok();
+        Some(crate::forecast::calculate(&metrics, free_space, None))
+    } else {
+        None
+    };
     Ok(crate::health::aggregate(crate::health::HealthInputs {
         profile: &profile,
         events: &events,
@@ -169,6 +178,7 @@ pub async fn protection_health(
             .ok()
             .flatten()
             .is_some(),
+        storage: storage.as_ref(),
         now: chrono::Utc::now(),
     }))
 }
