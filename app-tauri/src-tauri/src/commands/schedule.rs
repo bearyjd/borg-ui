@@ -65,9 +65,9 @@ pub(super) async fn reconcile_backup_task(active: Option<&Profile>) -> Result<()
     }
 }
 
-const INTEGRITY_TASK: &str = "BorgUI-Integrity-Check";
-const RESTORE_DRILL_TASK: &str = "BorgUI-Monthly-Restore-Drill";
-const HEALTH_REPORT_TASK: &str = "BorgUI-Daily-Health-Report";
+pub(super) const INTEGRITY_TASK: &str = "BorgUI-Integrity-Check";
+pub(super) const RESTORE_DRILL_TASK: &str = "BorgUI-Monthly-Restore-Drill";
+pub(super) const HEALTH_REPORT_TASK: &str = "BorgUI-Daily-Health-Report";
 
 enum AuxKind {
     Monthly,
@@ -83,6 +83,15 @@ struct AuxTask {
 enum AuxPlan {
     Register(AuxTask),
     Remove(&'static str),
+}
+
+impl AuxPlan {
+    fn name(&self) -> &'static str {
+        match self {
+            AuxPlan::Register(task) => task.name,
+            AuxPlan::Remove(name) => name,
+        }
+    }
 }
 
 fn aux_plan(enabled: bool, task: AuxTask) -> AuxPlan {
@@ -165,6 +174,27 @@ async fn apply_aux_plan(plan: AuxPlan) -> Result<(), String> {
             }
             Ok(())
         }
+    }
+}
+
+/// The plan for a single aux task, or `None` for an unknown task name.
+fn plan_single_aux_task(name: &str, active: Option<&Profile>) -> Option<AuxPlan> {
+    plan_aux_tasks(active)
+        .into_iter()
+        .find(|plan| plan.name() == name)
+}
+
+/// Reconcile only one aux task (integrity, restore drill or daily digest).
+/// Used by the setters that own a single task, so a toggle never re-registers
+/// the backup task (which would shift an hourly StartBoundary) nor clobbers a
+/// sibling aux task from a stale snapshot.
+pub(super) async fn reconcile_aux_task(
+    name: &'static str,
+    active: Option<&Profile>,
+) -> Result<(), String> {
+    match plan_single_aux_task(name, active) {
+        Some(plan) => apply_aux_plan(plan).await,
+        None => Err(format!("unknown scheduled task: {name}")),
     }
 }
 
@@ -350,6 +380,21 @@ mod tests {
                 AuxPlan::Remove(name) => (name, false),
             })
             .collect()
+    }
+
+    #[test]
+    fn single_aux_plan_targets_only_named_task() {
+        let p = profile(serde_json::json!({
+            "integrity_schedule": {"enabled": true},
+            "restore_drill_schedule": {"enabled": false}
+        }));
+        let on = plan_single_aux_task(INTEGRITY_TASK, Some(&p)).unwrap();
+        assert_eq!(on.name(), INTEGRITY_TASK);
+        assert!(matches!(on, AuxPlan::Register(_)));
+        let off = plan_single_aux_task(RESTORE_DRILL_TASK, Some(&p)).unwrap();
+        assert_eq!(off.name(), RESTORE_DRILL_TASK);
+        assert!(matches!(off, AuxPlan::Remove(_)));
+        assert!(plan_single_aux_task("BorgUI-Backup", Some(&p)).is_none());
     }
 
     const AUX_NAMES: [&str; 3] = [INTEGRITY_TASK, RESTORE_DRILL_TASK, HEALTH_REPORT_TASK];

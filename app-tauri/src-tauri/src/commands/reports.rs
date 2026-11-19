@@ -58,8 +58,10 @@ pub async fn save_reporting_settings(
         return Err("configure the SMTP password before enabling email".into());
     }
     let profile_id = profile.id.clone();
+    // Reconcile only the digest task, before persisting, so a scheduler
+    // failure does not leave profiles.json out of step with the task.
+    schedule::reconcile_aux_task(schedule::HEALTH_REPORT_TASK, data.active()).await?;
     write_profiles(&app, &data).await?;
-    schedule::reconcile_all_tasks(data.active()).await?;
     tracing::debug!(profile_id, "reporting settings updated");
     Ok(())
 }

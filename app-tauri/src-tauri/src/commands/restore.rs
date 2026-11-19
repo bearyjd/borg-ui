@@ -137,8 +137,9 @@ pub async fn set_monthly_restore_drill(app: tauri::AppHandle, enabled: bool) -> 
     let mut data = read_profiles(&app).await?;
     data.require_active_mut()?.restore_drill_schedule =
         Some(crate::profiles::RestoreDrillSchedule { enabled });
-    write_profiles(&app, &data).await?;
-    schedule::reconcile_all_tasks(data.active()).await
+    // Reconcile first: a scheduler failure leaves profiles.json unchanged.
+    schedule::reconcile_aux_task(schedule::RESTORE_DRILL_TASK, data.active()).await?;
+    write_profiles(&app, &data).await
 }
 
 #[tauri::command]

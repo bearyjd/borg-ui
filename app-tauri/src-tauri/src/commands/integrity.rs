@@ -96,6 +96,8 @@ pub async fn set_monthly_integrity_check(
     let mut data = read_profiles(&app).await?;
     let profile = data.require_active_mut()?;
     profile.integrity_schedule = Some(crate::profiles::IntegritySchedule { enabled });
-    write_profiles(&app, &data).await?;
-    schedule::reconcile_all_tasks(data.active()).await
+    // Reconcile first: a scheduler failure leaves profiles.json unchanged so
+    // the persisted flag and the UI stay in sync.
+    schedule::reconcile_aux_task(schedule::INTEGRITY_TASK, data.active()).await?;
+    write_profiles(&app, &data).await
 }
