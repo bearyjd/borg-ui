@@ -812,10 +812,6 @@ mod tests {
 
     fn profile_with_schedule(repo: RepoConfig, sources: Vec<String>, enabled: bool) -> Profile {
         Profile {
-            id: "default".into(),
-            name: "Scheduled".into(),
-            repo,
-            secondary_repo: None,
             backup_selection: profiles::BackupSelection {
                 source_paths: sources,
                 ..Default::default()
@@ -825,18 +821,7 @@ mod tests {
                 schedule: Schedule::Hourly,
                 skip_metered_networks: false,
             }),
-            integrity_schedule: None,
-            restore_drill_schedule: None,
-            resource_policy: Default::default(),
-            hardening: Default::default(),
-            reporting: Default::default(),
-            placeholder_policy: Default::default(),
-            storage_warnings: Default::default(),
-            recovery: Default::default(),
-            retention: None,
-            archive_template: None,
-            pre_backup: None,
-            post_backup: None,
+            ..Profile::new("default", "Scheduled", repo)
         }
     }
 

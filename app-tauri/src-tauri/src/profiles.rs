@@ -248,6 +248,31 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// Blank profile: the given identity and repository, everything else at
+    /// its default (no schedules, no retention, default policies).
+    pub fn new(id: impl Into<String>, name: impl Into<String>, repo: RepoConfig) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            repo,
+            secondary_repo: None,
+            backup_selection: BackupSelection::default(),
+            schedule: None,
+            integrity_schedule: None,
+            restore_drill_schedule: None,
+            resource_policy: ResourcePolicy::default(),
+            hardening: HardeningPosture::default(),
+            reporting: ReportPreferences::default(),
+            placeholder_policy: PlaceholderPolicy::default(),
+            storage_warnings: StorageWarningThresholds::default(),
+            recovery: RecoveryPolicy::default(),
+            retention: None,
+            archive_template: None,
+            pre_backup: None,
+            post_backup: None,
+        }
+    }
+
     /// Full-profile validation gate for every externally-influenced field.
     /// Untrusted profiles arrive via `import_profile` and user-entered config;
     /// this must run before a profile is persisted so option-like values
@@ -539,24 +564,10 @@ async fn migrate_legacy(config_dir: &Path) -> Result<ProfilesData, String> {
         .unwrap_or(None);
 
     let profile = Profile {
-        id: "default".into(),
-        name: "Default".into(),
-        repo,
-        secondary_repo: None,
         backup_selection,
         schedule,
-        integrity_schedule: None,
-        restore_drill_schedule: None,
-        resource_policy: ResourcePolicy::default(),
-        hardening: HardeningPosture::default(),
-        reporting: ReportPreferences::default(),
-        placeholder_policy: PlaceholderPolicy::default(),
-        storage_warnings: StorageWarningThresholds::default(),
-        recovery: RecoveryPolicy::default(),
         retention,
-        archive_template: None,
-        pre_backup: None,
-        post_backup: None,
+        ..Profile::new("default", "Default", repo)
     };
 
     Ok(ProfilesData {
@@ -616,26 +627,38 @@ mod tests {
     }
 
     fn profile_with_id(id: &str) -> Profile {
-        Profile {
-            id: id.into(),
-            name: id.into(),
+        Profile::new(id, id, sample_repo())
+    }
+
+    #[test]
+    fn profile_new_matches_the_blank_profile_defaults() {
+        // Pins Profile::new to the defaults formerly spelled out field by
+        // field in create_profile / save_repo_config / the legacy migration.
+        let expected = Profile {
+            id: "x".into(),
+            name: "X".into(),
             repo: sample_repo(),
             secondary_repo: None,
             backup_selection: Default::default(),
             schedule: None,
             integrity_schedule: None,
             restore_drill_schedule: None,
-            resource_policy: ResourcePolicy::default(),
-            hardening: HardeningPosture::default(),
-            reporting: ReportPreferences::default(),
-            placeholder_policy: PlaceholderPolicy::default(),
-            storage_warnings: StorageWarningThresholds::default(),
-            recovery: RecoveryPolicy::default(),
+            resource_policy: Default::default(),
+            hardening: Default::default(),
+            reporting: Default::default(),
+            placeholder_policy: Default::default(),
+            storage_warnings: Default::default(),
+            recovery: Default::default(),
             retention: None,
             archive_template: None,
             pre_backup: None,
             post_backup: None,
-        }
+        };
+        let actual = Profile::new("x", "X", sample_repo());
+        assert_eq!(
+            serde_json::to_value(&actual).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
     }
 
     fn data_with_active(active_id: Option<&str>, ids: &[&str]) -> ProfilesData {
