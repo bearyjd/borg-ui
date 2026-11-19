@@ -60,7 +60,7 @@ pub async fn import_configuration(
     diagnostics::import_configuration(&config_dir, &PathBuf::from(path)).await?;
     // The import replaced every profile, so the OS task may now be stale.
     let data = profiles::load(&config_dir).await?;
-    let schedule_warning = schedule::reconcile_backup_task(data.active())
+    let schedule_warning = schedule::reconcile_all_tasks(data.active())
         .await
         .err()
         .map(|e| {

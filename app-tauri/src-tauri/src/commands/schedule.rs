@@ -65,6 +65,159 @@ pub(super) async fn reconcile_backup_task(active: Option<&Profile>) -> Result<()
     }
 }
 
+pub(super) const INTEGRITY_TASK: &str = "BorgUI-Integrity-Check";
+pub(super) const RESTORE_DRILL_TASK: &str = "BorgUI-Monthly-Restore-Drill";
+pub(super) const HEALTH_REPORT_TASK: &str = "BorgUI-Daily-Health-Report";
+
+enum AuxKind {
+    Monthly,
+    DailyDigest,
+}
+
+struct AuxTask {
+    name: &'static str,
+    args: &'static str,
+    kind: AuxKind,
+}
+
+enum AuxPlan {
+    Register(AuxTask),
+    Remove(&'static str),
+}
+
+impl AuxPlan {
+    fn name(&self) -> &'static str {
+        match self {
+            AuxPlan::Register(task) => task.name,
+            AuxPlan::Remove(name) => name,
+        }
+    }
+}
+
+fn aux_plan(enabled: bool, task: AuxTask) -> AuxPlan {
+    if enabled {
+        AuxPlan::Register(task)
+    } else {
+        AuxPlan::Remove(task.name)
+    }
+}
+
+/// What the integrity, restore-drill and daily-digest tasks should look like
+/// for the active profile. No active profile means all three are removed.
+fn plan_aux_tasks(active: Option<&Profile>) -> Vec<AuxPlan> {
+    let integrity = active
+        .and_then(|p| p.integrity_schedule.as_ref())
+        .is_some_and(|s| s.enabled);
+    let drill = active
+        .and_then(|p| p.restore_drill_schedule.as_ref())
+        .is_some_and(|s| s.enabled);
+    let digest = active.is_some_and(|p| p.reporting.enabled && p.reporting.daily_digest);
+    vec![
+        aux_plan(
+            integrity,
+            AuxTask {
+                name: INTEGRITY_TASK,
+                args: "--scheduled-integrity-check",
+                kind: AuxKind::Monthly,
+            },
+        ),
+        aux_plan(
+            drill,
+            AuxTask {
+                name: RESTORE_DRILL_TASK,
+                args: "--scheduled-restore-drill",
+                kind: AuxKind::Monthly,
+            },
+        ),
+        aux_plan(
+            digest,
+            AuxTask {
+                name: HEALTH_REPORT_TASK,
+                args: "--scheduled-health-report",
+                kind: AuxKind::DailyDigest,
+            },
+        ),
+    ]
+}
+
+async fn apply_aux_plan(plan: AuxPlan) -> Result<(), String> {
+    match plan {
+        AuxPlan::Register(task) => {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let exe = exe.to_string_lossy();
+            match task.kind {
+                AuxKind::Monthly => {
+                    borg_platform_win::scheduler::schedule_monthly_check(task.name, &exe, task.args)
+                        .await
+                }
+                AuxKind::DailyDigest => {
+                    borg_platform_win::scheduler::schedule_backup(
+                        task.name,
+                        &exe,
+                        task.args,
+                        &borg_platform_win::scheduler::Schedule::Daily { hour: 9, minute: 0 },
+                        false,
+                    )
+                    .await
+                }
+            }
+            .map_err(|e| format!("{}: {e}", task.name))
+        }
+        AuxPlan::Remove(name) => {
+            if borg_platform_win::scheduler::task_exists(name)
+                .await
+                .unwrap_or(false)
+            {
+                borg_platform_win::scheduler::unschedule_backup(name)
+                    .await
+                    .map_err(|e| format!("{name}: {e}"))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// The plan for a single aux task, or `None` for an unknown task name.
+fn plan_single_aux_task(name: &str, active: Option<&Profile>) -> Option<AuxPlan> {
+    plan_aux_tasks(active)
+        .into_iter()
+        .find(|plan| plan.name() == name)
+}
+
+/// Reconcile only one aux task (integrity, restore drill or daily digest).
+/// Used by the setters that own a single task, so a toggle never re-registers
+/// the backup task (which would shift an hourly StartBoundary) nor clobbers a
+/// sibling aux task from a stale snapshot.
+pub(super) async fn reconcile_aux_task(
+    name: &'static str,
+    active: Option<&Profile>,
+) -> Result<(), String> {
+    match plan_single_aux_task(name, active) {
+        Some(plan) => apply_aux_plan(plan).await,
+        None => Err(format!("unknown scheduled task: {name}")),
+    }
+}
+
+/// Reconcile every machine-wide task (backup, integrity, restore drill, daily
+/// digest) with the active profile. Every task is attempted; failures are
+/// joined into one error.
+pub(super) async fn reconcile_all_tasks(active: Option<&Profile>) -> Result<(), String> {
+    let mut errors = Vec::new();
+    if let Err(e) = reconcile_backup_task(active).await {
+        errors.push(e);
+    }
+    for plan in plan_aux_tasks(active) {
+        if let Err(e) = apply_aux_plan(plan).await {
+            errors.push(e);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 #[tauri::command]
 pub async fn save_schedule_config(
     app: tauri::AppHandle,
@@ -217,5 +370,83 @@ mod tests {
             }
             TaskPlan::Remove => panic!("expected Register"),
         }
+    }
+
+    fn aux_plan(p: Option<&Profile>) -> Vec<(&'static str, bool)> {
+        plan_aux_tasks(p)
+            .into_iter()
+            .map(|plan| match plan {
+                AuxPlan::Register(task) => (task.name, true),
+                AuxPlan::Remove(name) => (name, false),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn single_aux_plan_targets_only_named_task() {
+        let p = profile(serde_json::json!({
+            "integrity_schedule": {"enabled": true},
+            "restore_drill_schedule": {"enabled": false}
+        }));
+        let on = plan_single_aux_task(INTEGRITY_TASK, Some(&p)).unwrap();
+        assert_eq!(on.name(), INTEGRITY_TASK);
+        assert!(matches!(on, AuxPlan::Register(_)));
+        let off = plan_single_aux_task(RESTORE_DRILL_TASK, Some(&p)).unwrap();
+        assert_eq!(off.name(), RESTORE_DRILL_TASK);
+        assert!(matches!(off, AuxPlan::Remove(_)));
+        assert!(plan_single_aux_task("BorgUI-Backup", Some(&p)).is_none());
+    }
+
+    const AUX_NAMES: [&str; 3] = [INTEGRITY_TASK, RESTORE_DRILL_TASK, HEALTH_REPORT_TASK];
+
+    #[test]
+    fn aux_no_active_profile_removes_all() {
+        let plan = aux_plan(None);
+        assert_eq!(plan.len(), 3);
+        for (name, registered) in plan {
+            assert!(AUX_NAMES.contains(&name));
+            assert!(!registered);
+        }
+    }
+
+    #[test]
+    fn aux_flags_off_removes_all() {
+        let p = profile(serde_json::json!({
+            "integrity_schedule": {"enabled": false},
+            "restore_drill_schedule": {"enabled": false},
+            "reporting": {"enabled": true, "daily_digest": false}
+        }));
+        assert!(aux_plan(Some(&p)).iter().all(|(_, on)| !on));
+    }
+
+    #[test]
+    fn aux_flags_on_registers_each() {
+        let p = profile(serde_json::json!({
+            "integrity_schedule": {"enabled": true},
+            "restore_drill_schedule": {"enabled": true},
+            "reporting": {"enabled": true, "daily_digest": true}
+        }));
+        assert!(aux_plan(Some(&p)).iter().all(|(_, on)| *on));
+    }
+
+    #[test]
+    fn aux_digest_requires_reporting_enabled() {
+        let p = profile(serde_json::json!({
+            "reporting": {"enabled": false, "daily_digest": true}
+        }));
+        assert!(aux_plan(Some(&p)).iter().all(|(_, on)| !on));
+    }
+
+    #[test]
+    fn aux_switch_from_on_profile_to_off_profile_removes() {
+        let a = profile(serde_json::json!({
+            "integrity_schedule": {"enabled": true},
+            "restore_drill_schedule": {"enabled": true}
+        }));
+        let b = profile(serde_json::json!({
+            "integrity_schedule": {"enabled": false}
+        }));
+        assert!(aux_plan(Some(&a)).iter().any(|(_, on)| *on));
+        assert!(aux_plan(Some(&b)).iter().all(|(_, on)| !on));
     }
 }

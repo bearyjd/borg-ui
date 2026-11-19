@@ -8,11 +8,27 @@ pub async fn list_profiles(app: tauri::AppHandle) -> Result<ProfilesData, String
 }
 
 #[tauri::command]
-pub async fn set_active_profile(app: tauri::AppHandle, id: String) -> Result<(), String> {
+pub async fn set_active_profile(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Option<String>, String> {
     let mut data = read_profiles(&app).await?;
     data.set_active(&id)?;
     write_profiles(&app, &data).await?;
-    schedule::reconcile_backup_task(data.active()).await
+    Ok(schedule_warning(
+        "Profile switched",
+        schedule::reconcile_all_tasks(data.active()).await,
+    ))
+}
+
+/// Turns a post-save schedule reconcile result into an optional warning. The
+/// profile change is already persisted and is NOT rolled back, so a reconcile
+/// failure must not surface as a command error (the UI would keep showing the
+/// old profile while the backend uses the new one).
+fn schedule_warning(done: &str, result: Result<(), String>) -> Option<String> {
+    result
+        .err()
+        .map(|e| format!("{done}, but the backup schedule could not be updated: {e}"))
 }
 
 #[tauri::command]
@@ -144,10 +160,10 @@ pub async fn import_profile(
     let dir = config_dir(&app).await?;
     let (profile, data, active_changed) = persist_imported_profile(&dir, &json).await?;
     let schedule_warning = if active_changed {
-        schedule::reconcile_backup_task(data.active())
-            .await
-            .err()
-            .map(|e| format!("Profile imported, but the backup schedule could not be updated: {e}"))
+        schedule_warning(
+            "Profile imported",
+            schedule::reconcile_all_tasks(data.active()).await,
+        )
     } else {
         None
     };
@@ -242,11 +258,14 @@ pub async fn preview_archive_name(
 }
 
 #[tauri::command]
-pub async fn delete_profile(app: tauri::AppHandle, id: String) -> Result<(), String> {
+pub async fn delete_profile(app: tauri::AppHandle, id: String) -> Result<Option<String>, String> {
     let mut data = read_profiles(&app).await?;
     data.remove(&id)?;
     write_profiles(&app, &data).await?;
-    schedule::reconcile_backup_task(data.active()).await
+    Ok(schedule_warning(
+        "Profile deleted",
+        schedule::reconcile_all_tasks(data.active()).await,
+    ))
 }
 
 #[cfg(test)]
@@ -289,6 +308,20 @@ mod tests {
         let saved = profiles::load(dir.path()).await.unwrap();
         assert_eq!(saved.profiles.len(), 1);
         assert_eq!(saved.active_id.as_deref(), Some(p.id.as_str()));
+    }
+
+    #[test]
+    fn schedule_warning_is_none_on_success() {
+        assert_eq!(schedule_warning("Profile switched", Ok(())), None);
+    }
+
+    #[test]
+    fn schedule_warning_wraps_reconcile_error() {
+        let w = schedule_warning("Profile deleted", Err("schtasks failed".into())).unwrap();
+        assert_eq!(
+            w,
+            "Profile deleted, but the backup schedule could not be updated: schtasks failed"
+        );
     }
 
     #[test]

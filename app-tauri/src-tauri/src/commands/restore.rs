@@ -134,24 +134,11 @@ pub async fn cancel_restore(state: State<'_, AppState>) -> Result<bool, String> 
 
 #[tauri::command]
 pub async fn set_monthly_restore_drill(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    const TASK: &str = "BorgUI-Monthly-Restore-Drill";
-    if enabled {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        borg_platform_win::scheduler::schedule_monthly_check(
-            TASK,
-            &exe.to_string_lossy(),
-            "--scheduled-restore-drill",
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    } else {
-        borg_platform_win::scheduler::unschedule_backup(TASK)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
     let mut data = read_profiles(&app).await?;
     data.require_active_mut()?.restore_drill_schedule =
         Some(crate::profiles::RestoreDrillSchedule { enabled });
+    // Reconcile first: a scheduler failure leaves profiles.json unchanged.
+    schedule::reconcile_aux_task(schedule::RESTORE_DRILL_TASK, data.active()).await?;
     write_profiles(&app, &data).await
 }
 

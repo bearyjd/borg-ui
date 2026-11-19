@@ -34,10 +34,12 @@
     }
     try {
       const created = await profilesState.create(name, repo);
-      await profilesState.setActive(created.id);
+      const warning = await profilesState.setActive(created.id);
       await repoState.load();
       newProfileName = '';
-      profileResult = `Created profile "${name}"`;
+      profileResult = warning
+        ? `Created profile "${name}". ${warning}`
+        : `Created profile "${name}"`;
     } catch (e) {
       profileResult = `Failed: ${e}`;
     }
@@ -103,8 +105,11 @@
       profileResult = `Imported profile "${imported.name}"`;
       if (profilesState.activeId !== imported.id) {
         try {
-          await profilesState.setActive(imported.id);
+          const warning = await profilesState.setActive(imported.id);
           await repoState.load();
+          if (warning) {
+            profileResult = `Imported profile "${imported.name}". ${warning}`;
+          }
         } catch (e) {
           // Backend may have persisted the new active id before failing; resync.
           await profilesState.load();
@@ -140,9 +145,9 @@
       return;
     }
     try {
-      await profilesState.remove(id);
+      const warning = await profilesState.remove(id);
       await repoState.load();
-      profileResult = 'Profile deleted';
+      profileResult = warning ?? 'Profile deleted';
     } catch (e) {
       profileResult = `Failed: ${e}`;
     } finally {
