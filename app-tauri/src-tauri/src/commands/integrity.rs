@@ -93,13 +93,13 @@ pub async fn set_monthly_integrity_check(
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<(), String> {
-    const TASK: &str = "BorgUI-Integrity-Check";
+    const TASK: &str = crate::task_contract::INTEGRITY_TASK;
     if enabled {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         borg_platform_win::scheduler::schedule_monthly_check(
             TASK,
             &exe.to_string_lossy(),
-            "--scheduled-integrity-check",
+            crate::task_contract::SCHEDULED_INTEGRITY_FLAG,
         )
         .await
         .map_err(|e| e.to_string())?;

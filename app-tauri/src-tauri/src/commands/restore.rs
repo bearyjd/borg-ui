@@ -134,13 +134,13 @@ pub async fn cancel_restore(state: State<'_, AppState>) -> Result<bool, String> 
 
 #[tauri::command]
 pub async fn set_monthly_restore_drill(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    const TASK: &str = "BorgUI-Monthly-Restore-Drill";
+    const TASK: &str = crate::task_contract::RESTORE_DRILL_TASK;
     if enabled {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         borg_platform_win::scheduler::schedule_monthly_check(
             TASK,
             &exe.to_string_lossy(),
-            "--scheduled-restore-drill",
+            crate::task_contract::SCHEDULED_RESTORE_DRILL_FLAG,
         )
         .await
         .map_err(|e| e.to_string())?;

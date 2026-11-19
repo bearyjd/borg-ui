@@ -1,7 +1,7 @@
 //! Headless scheduled-backup runner.
 //!
 //! When the Windows Task Scheduler entry fires, it launches the app with
-//! `--scheduled-backup` (see [`crate::commands::save_schedule_config`]). `lib.rs`
+//! `--scheduled-backup` (see [`crate::task_contract`]). `lib.rs`
 //! detects that flag and calls [`run_scheduled_backup`] instead of showing the
 //! GUI: it performs one backup from the active profile's *schedule*
 //! configuration, prunes per the retention policy, records the outcome to

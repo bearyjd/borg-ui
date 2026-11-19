@@ -19,23 +19,17 @@ mod removable;
 mod reporting;
 mod scheduled;
 mod snooze;
+mod task_contract;
 mod templates;
 mod tray;
 
 use borg_core::borg::BorgClient;
 use commands::AppState;
+use task_contract::{
+    SCHEDULED_BACKUP_FLAG, SCHEDULED_HEALTH_REPORT_FLAG, SCHEDULED_INTEGRITY_FLAG,
+    SCHEDULED_RESTORE_DRILL_FLAG, START_MINIMIZED_FLAG, has_flag,
+};
 use tauri::{Manager, WindowEvent};
-
-/// CLI flag the Windows Task Scheduler entry passes to trigger a headless
-/// backup (see `commands::save_schedule_config`).
-const SCHEDULED_BACKUP_FLAG: &str = "--scheduled-backup";
-const SCHEDULED_INTEGRITY_FLAG: &str = "--scheduled-integrity-check";
-const SCHEDULED_RESTORE_DRILL_FLAG: &str = "--scheduled-restore-drill";
-const SCHEDULED_HEALTH_REPORT_FLAG: &str = "--scheduled-health-report";
-
-/// CLI flag the autostart `Run`-key entry passes so BorgUI starts hidden in the
-/// tray at login instead of popping the window open (see `commands::set_autostart`).
-const START_MINIMIZED_FLAG: &str = "--minimized";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -47,11 +41,11 @@ pub fn run() {
 
     // When launched by the Task Scheduler we run one backup headlessly and exit,
     // rather than showing the GUI.
-    let scheduled = std::env::args().any(|a| a == SCHEDULED_BACKUP_FLAG);
-    let scheduled_integrity = std::env::args().any(|a| a == SCHEDULED_INTEGRITY_FLAG);
-    let scheduled_restore_drill = std::env::args().any(|a| a == SCHEDULED_RESTORE_DRILL_FLAG);
-    let scheduled_health_report = std::env::args().any(|a| a == SCHEDULED_HEALTH_REPORT_FLAG);
-    let start_minimized = std::env::args().any(|a| a == START_MINIMIZED_FLAG);
+    let scheduled = has_flag(std::env::args(), SCHEDULED_BACKUP_FLAG);
+    let scheduled_integrity = has_flag(std::env::args(), SCHEDULED_INTEGRITY_FLAG);
+    let scheduled_restore_drill = has_flag(std::env::args(), SCHEDULED_RESTORE_DRILL_FLAG);
+    let scheduled_health_report = has_flag(std::env::args(), SCHEDULED_HEALTH_REPORT_FLAG);
+    let start_minimized = has_flag(std::env::args(), START_MINIMIZED_FLAG);
     let setup_borg_path = borg_path.clone();
 
     tauri::Builder::default()
