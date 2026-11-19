@@ -214,33 +214,21 @@ mod tests {
 
     fn profile() -> Profile {
         Profile {
-            id: "p".into(),
-            name: "P".into(),
-            repo: RepoConfig {
-                ssh_host: "host".into(),
-                ssh_port: 22,
-                ssh_user: "borg".into(),
-                repo_path: "/repo".into(),
-                ssh_key_path: None,
-            },
-            secondary_repo: None,
-            backup_selection: crate::profiles::BackupSelection::default(),
-            schedule: None,
-            integrity_schedule: None,
-            restore_drill_schedule: None,
-            resource_policy: Default::default(),
             hardening: crate::profiles::HardeningPosture {
                 recovery_key_exported: true,
                 ..Default::default()
             },
-            reporting: Default::default(),
-            placeholder_policy: Default::default(),
-            storage_warnings: Default::default(),
-            recovery: Default::default(),
-            retention: None,
-            archive_template: None,
-            pre_backup: None,
-            post_backup: None,
+            ..Profile::new(
+                "p",
+                "P",
+                RepoConfig {
+                    ssh_host: "host".into(),
+                    ssh_port: 22,
+                    ssh_user: "borg".into(),
+                    repo_path: "/repo".into(),
+                    ssh_key_path: None,
+                },
+            )
         }
     }
 

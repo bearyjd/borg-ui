@@ -360,32 +360,17 @@ mod tests {
     use super::*;
 
     fn profile(id: &str, name: &str) -> Profile {
-        Profile {
-            id: id.into(),
-            name: name.into(),
-            repo: borg_core::config::RepoConfig {
+        Profile::new(
+            id,
+            name,
+            borg_core::config::RepoConfig {
                 ssh_host: "host".into(),
                 ssh_port: 22,
                 ssh_user: "user".into(),
                 repo_path: "/repo".into(),
                 ssh_key_path: Some(PathBuf::from("/secret/id_ed25519")),
             },
-            secondary_repo: None,
-            backup_selection: Default::default(),
-            schedule: None,
-            integrity_schedule: None,
-            restore_drill_schedule: None,
-            resource_policy: Default::default(),
-            hardening: Default::default(),
-            reporting: Default::default(),
-            placeholder_policy: Default::default(),
-            storage_warnings: Default::default(),
-            recovery: Default::default(),
-            retention: None,
-            archive_template: None,
-            pre_backup: None,
-            post_backup: None,
-        }
+        )
     }
 
     #[test]
@@ -397,26 +382,7 @@ mod tests {
             repo_path: "/repo".into(),
             ssh_key_path: None,
         };
-        let profile = Profile {
-            id: "same".into(),
-            name: "One".into(),
-            repo,
-            secondary_repo: None,
-            backup_selection: Default::default(),
-            schedule: None,
-            integrity_schedule: None,
-            restore_drill_schedule: None,
-            resource_policy: Default::default(),
-            hardening: Default::default(),
-            reporting: Default::default(),
-            placeholder_policy: Default::default(),
-            storage_warnings: Default::default(),
-            recovery: Default::default(),
-            retention: None,
-            archive_template: None,
-            pre_backup: None,
-            post_backup: None,
-        };
+        let profile = Profile::new("same", "One", repo);
         let data = ProfilesData {
             schema_version: PROFILE_SCHEMA_VERSION,
             profiles: vec![profile.clone(), profile],

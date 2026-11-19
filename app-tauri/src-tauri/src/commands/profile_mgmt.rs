@@ -29,26 +29,7 @@ pub async fn create_profile(
 
     let mut data = read_profiles(&app).await?;
     let id = profiles::make_profile_id(&name, &data);
-    let profile = Profile {
-        id: id.clone(),
-        name,
-        repo,
-        secondary_repo: None,
-        backup_selection: Default::default(),
-        schedule: None,
-        integrity_schedule: None,
-        restore_drill_schedule: None,
-        resource_policy: Default::default(),
-        hardening: Default::default(),
-        reporting: Default::default(),
-        placeholder_policy: Default::default(),
-        storage_warnings: Default::default(),
-        recovery: Default::default(),
-        retention: None,
-        archive_template: None,
-        pre_backup: None,
-        post_backup: None,
-    };
+    let profile = Profile::new(id.clone(), name, repo);
     data.profiles.push(profile.clone());
     if data.active_id.is_none() {
         data.active_id = Some(id);

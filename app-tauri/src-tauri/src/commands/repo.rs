@@ -235,26 +235,7 @@ pub async fn save_repo_config(app: tauri::AppHandle, repo: RepoConfig) -> Result
     if let Some(profile) = data.active_mut() {
         profile.repo = repo;
     } else {
-        let profile = Profile {
-            id: "default".into(),
-            name: "Default".into(),
-            repo,
-            secondary_repo: None,
-            backup_selection: Default::default(),
-            schedule: None,
-            integrity_schedule: None,
-            restore_drill_schedule: None,
-            resource_policy: Default::default(),
-            hardening: Default::default(),
-            reporting: Default::default(),
-            placeholder_policy: Default::default(),
-            storage_warnings: Default::default(),
-            recovery: Default::default(),
-            retention: None,
-            archive_template: None,
-            pre_backup: None,
-            post_backup: None,
-        };
+        let profile = Profile::new("default", "Default", repo);
         data.active_id = Some(profile.id.clone());
         data.profiles.push(profile);
     }
