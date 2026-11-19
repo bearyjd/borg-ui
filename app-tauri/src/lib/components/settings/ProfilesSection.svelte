@@ -101,12 +101,20 @@
       await profilesState.load();
       await repoState.load();
       profileResult = `Imported profile "${imported.name}"`;
-      try {
-        await profilesState.setActive(imported.id);
-        await repoState.load();
-      } catch (e) {
-        profileResult = `Imported profile "${imported.name}", but activating it failed: ${e}`;
-        return;
+      if (profilesState.activeId !== imported.id) {
+        try {
+          await profilesState.setActive(imported.id);
+          await repoState.load();
+        } catch (e) {
+          // Backend may have persisted the new active id before failing; resync.
+          await profilesState.load();
+          await repoState.load();
+          profileResult =
+            profilesState.activeId === imported.id
+              ? `Imported profile "${imported.name}" and activated it, but the schedule could not be updated: ${e}`
+              : `Imported profile "${imported.name}", but activating it failed: ${e}`;
+          return;
+        }
       }
       if (imported.schedule_warning) {
         profileResult = `Imported profile "${imported.name}". ${imported.schedule_warning}`;
