@@ -101,9 +101,11 @@ class ProfilesState {
     return data;
   }
 
-  async setActive(id: string): Promise<void> {
-    await invoke('set_active_profile', { id });
+  /** Returns a schedule warning when the switch was saved but the OS task sync failed. */
+  async setActive(id: string): Promise<string | null> {
+    const warning = await invoke<string | null>('set_active_profile', { id });
     this.activeId = id;
+    return warning ?? null;
   }
 
   async create(name: string, repo: RepoConfig): Promise<Profile> {
@@ -118,9 +120,11 @@ class ProfilesState {
     if (p) p.name = name;
   }
 
-  async remove(id: string): Promise<void> {
-    await invoke('delete_profile', { id });
+  /** Returns a schedule warning when the delete was saved but the OS task sync failed. */
+  async remove(id: string): Promise<string | null> {
+    const warning = await invoke<string | null>('delete_profile', { id });
     await this.load();
+    return warning ?? null;
   }
 }
 

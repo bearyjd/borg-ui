@@ -30,7 +30,8 @@
   async function switchProfile(id: string) {
     if (!id || id === profilesState.activeId) return;
     try {
-      await profilesState.setActive(id);
+      const warning = await profilesState.setActive(id);
+      if (warning) console.warn(warning);
       await Promise.all([
         repoState.load(),
         scheduleState.load().catch(() => {}),
