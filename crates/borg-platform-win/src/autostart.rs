@@ -8,7 +8,8 @@
 //!
 //! The registered command starts the app with `--minimized`, so autostart drops
 //! BorgUI into the tray instead of popping the window open at every login (the
-//! flag is handled in the app's `lib.rs`).
+//! flag is handled in the app's `lib.rs`; keep in sync with
+//! `task_contract::START_MINIMIZED_FLAG` in app-tauri).
 
 use borg_core::error::{BorgError, Result};
 

@@ -59,13 +59,13 @@ pub async fn save_reporting_settings(
     }
     let profile_id = profile.id.clone();
     write_profiles(&app, &data).await?;
-    const TASK: &str = "BorgUI-Daily-Health-Report";
+    const TASK: &str = crate::task_contract::HEALTH_REPORT_TASK;
     if settings.enabled && settings.daily_digest {
         let exe = std::env::current_exe().map_err(|error| error.to_string())?;
         borg_platform_win::scheduler::schedule_backup(
             TASK,
             &exe.to_string_lossy(),
-            "--scheduled-health-report",
+            crate::task_contract::SCHEDULED_HEALTH_REPORT_FLAG,
             &borg_platform_win::scheduler::Schedule::Daily { hour: 9, minute: 0 },
             false,
         )

@@ -1,6 +1,7 @@
 //! Scheduled-backup configuration, status, and autostart.
 
 use super::*;
+use crate::task_contract::{BACKUP_TASK, SCHEDULED_BACKUP_FLAG};
 
 #[tauri::command]
 pub async fn load_schedule_config(
@@ -9,8 +10,6 @@ pub async fn load_schedule_config(
     let data = read_profiles(&app).await?;
     Ok(data.active().and_then(|p| p.schedule.clone()))
 }
-
-const BACKUP_TASK: &str = "BorgUI-Backup";
 
 /// What the machine-wide backup task should look like for the active profile.
 enum TaskPlan {
@@ -44,7 +43,7 @@ pub(super) async fn reconcile_backup_task(active: Option<&Profile>) -> Result<()
             borg_platform_win::scheduler::schedule_backup(
                 BACKUP_TASK,
                 &exe.to_string_lossy(),
-                "--scheduled-backup",
+                SCHEDULED_BACKUP_FLAG,
                 &schedule,
                 wake_to_run,
             )
