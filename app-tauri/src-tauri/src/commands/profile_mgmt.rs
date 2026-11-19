@@ -12,7 +12,7 @@ pub async fn set_active_profile(app: tauri::AppHandle, id: String) -> Result<(),
     let mut data = read_profiles(&app).await?;
     data.set_active(&id)?;
     write_profiles(&app, &data).await?;
-    schedule::reconcile_backup_task(data.active()).await
+    schedule::reconcile_all_tasks(data.active()).await
 }
 
 #[tauri::command]
@@ -144,7 +144,7 @@ pub async fn import_profile(
     let dir = config_dir(&app).await?;
     let (profile, data, active_changed) = persist_imported_profile(&dir, &json).await?;
     let schedule_warning = if active_changed {
-        schedule::reconcile_backup_task(data.active())
+        schedule::reconcile_all_tasks(data.active())
             .await
             .err()
             .map(|e| format!("Profile imported, but the backup schedule could not be updated: {e}"))
@@ -246,7 +246,7 @@ pub async fn delete_profile(app: tauri::AppHandle, id: String) -> Result<(), Str
     let mut data = read_profiles(&app).await?;
     data.remove(&id)?;
     write_profiles(&app, &data).await?;
-    schedule::reconcile_backup_task(data.active()).await
+    schedule::reconcile_all_tasks(data.active()).await
 }
 
 #[cfg(test)]
