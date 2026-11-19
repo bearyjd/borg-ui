@@ -46,5 +46,8 @@ pub async fn preview_configuration_import(
 #[tauri::command]
 pub async fn import_configuration(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let config_dir = config_dir(&app).await?;
-    diagnostics::import_configuration(&config_dir, &PathBuf::from(path)).await
+    diagnostics::import_configuration(&config_dir, &PathBuf::from(path)).await?;
+    // The import replaced every profile, so the OS task may now be stale.
+    let data = profiles::load(&config_dir).await?;
+    schedule::reconcile_backup_task(data.active()).await
 }

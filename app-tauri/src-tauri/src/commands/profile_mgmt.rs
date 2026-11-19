@@ -117,12 +117,23 @@ pub async fn import_profile(app: tauri::AppHandle, path: String) -> Result<Profi
 
     let mut data = read_profiles(&app).await?;
     imported.id = profiles::make_profile_id(&imported.name, &data);
-    data.profiles.push(imported.clone());
-    if data.active_id.is_none() {
+    let active_changed = append_imported(&mut data, imported.clone());
+    write_profiles(&app, &data).await?;
+    if active_changed {
+        schedule::reconcile_backup_task(data.active()).await?;
+    }
+    Ok(imported)
+}
+
+/// Appends an imported profile, activating it when none is active. Returns
+/// whether the active profile changed (the backup task must then be reconciled).
+fn append_imported(data: &mut ProfilesData, imported: Profile) -> bool {
+    let activate = data.active_id.is_none();
+    if activate {
         data.active_id = Some(imported.id.clone());
     }
-    write_profiles(&app, &data).await?;
-    Ok(imported)
+    data.profiles.push(imported);
+    activate
 }
 
 #[tauri::command]
@@ -227,6 +238,28 @@ mod tests {
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         serde_json::to_string(&base).unwrap()
+    }
+
+    fn imported(id: &str) -> Profile {
+        let mut p = parse_imported_profile(&profile_json(serde_json::json!({}))).unwrap();
+        p.id = id.into();
+        p
+    }
+
+    #[test]
+    fn append_imported_activates_when_none_active() {
+        let mut data = ProfilesData::default();
+        assert!(append_imported(&mut data, imported("a")));
+        assert_eq!(data.active().map(|p| p.id.as_str()), Some("a"));
+    }
+
+    #[test]
+    fn append_imported_keeps_existing_active() {
+        let mut data = ProfilesData::default();
+        append_imported(&mut data, imported("a"));
+        assert!(!append_imported(&mut data, imported("b")));
+        assert_eq!(data.active().map(|p| p.id.as_str()), Some("a"));
+        assert_eq!(data.profiles.len(), 2);
     }
 
     #[test]
