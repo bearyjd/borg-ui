@@ -258,10 +258,7 @@ pub async fn preview_archive_name(
 }
 
 #[tauri::command]
-pub async fn delete_profile(
-    app: tauri::AppHandle,
-    id: String,
-) -> Result<Option<String>, String> {
+pub async fn delete_profile(app: tauri::AppHandle, id: String) -> Result<Option<String>, String> {
     let mut data = read_profiles(&app).await?;
     data.remove(&id)?;
     write_profiles(&app, &data).await?;

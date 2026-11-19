@@ -33,7 +33,7 @@
     saving = true;
     result = '';
     try {
-      await invoke('save_reporting_settings', {
+      const warning = await invoke<string | null>('save_reporting_settings', {
         settings,
         webhookUrl: webhookUrl || null,
         smtpPassword: smtpPassword || null,
@@ -42,7 +42,7 @@
       smtpPassword = '';
       await profilesState.load();
       secretStatus = await invoke('reporting_secret_status');
-      result = 'Reporting settings saved.';
+      result = warning ?? 'Reporting settings saved.';
     } catch (error) {
       result = `Could not save reporting settings: ${error}`;
     } finally {

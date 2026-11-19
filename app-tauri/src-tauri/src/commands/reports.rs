@@ -20,13 +20,20 @@ pub async fn reporting_secret_status(
     })
 }
 
+/// Settings are saved even when the scheduler cannot be updated; the UI shows this.
+fn digest_schedule_warning(result: Result<(), String>) -> Option<String> {
+    result.err().map(|e| {
+        format!("Reporting settings saved, but the digest schedule could not be updated: {e}")
+    })
+}
+
 #[tauri::command]
 pub async fn save_reporting_settings(
     app: tauri::AppHandle,
     settings: profiles::ReportPreferences,
     webhook_url: Option<String>,
     smtp_password: Option<String>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let mut data = read_profiles(&app).await?;
     let profile = data.require_active_mut()?;
     profile.reporting = settings.clone();
@@ -58,12 +65,14 @@ pub async fn save_reporting_settings(
         return Err("configure the SMTP password before enabling email".into());
     }
     let profile_id = profile.id.clone();
-    // Reconcile only the digest task, before persisting, so a scheduler
-    // failure does not leave profiles.json out of step with the task.
-    schedule::reconcile_aux_task(schedule::HEALTH_REPORT_TASK, data.active()).await?;
+    // Persist first: a leftover digest task is harmless because the digest
+    // re-checks the saved flags when it fires, so a scheduler failure is
+    // reported as a warning instead of discarding the user's settings.
     write_profiles(&app, &data).await?;
     tracing::debug!(profile_id, "reporting settings updated");
-    Ok(())
+    Ok(digest_schedule_warning(
+        schedule::reconcile_aux_task(schedule::HEALTH_REPORT_TASK, data.active()).await,
+    ))
 }
 
 #[tauri::command]
@@ -86,4 +95,22 @@ pub async fn send_test_report(app: tauri::AppHandle) -> Result<(), String> {
         None,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::digest_schedule_warning;
+
+    #[test]
+    fn digest_warning_is_none_on_success() {
+        assert_eq!(digest_schedule_warning(Ok(())), None);
+    }
+
+    #[test]
+    fn digest_warning_wraps_scheduler_error() {
+        assert_eq!(
+            digest_schedule_warning(Err("schtasks failed".into())).unwrap(),
+            "Reporting settings saved, but the digest schedule could not be updated: schtasks failed"
+        );
+    }
 }
