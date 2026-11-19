@@ -19,12 +19,12 @@
   let importPath = $state('');
   let preview = $state<ImportPreview | null>(null);
 
-  async function run(action: () => Promise<void>, success: string) {
+  async function run(action: () => Promise<string | void>, success: string) {
     busy = true;
     result = '';
     try {
-      await action();
-      result = success;
+      const override = await action();
+      result = override || success;
     } catch (e) {
       result = `Failed: ${e}`;
     } finally {
@@ -86,10 +86,16 @@
 
   async function confirmImport() {
     await run(async () => {
-      await invoke('import_configuration', { path: importPath });
+      const outcome = await invoke<{ schedule_warning: string | null }>(
+        'import_configuration',
+        { path: importPath },
+      );
       await profilesState.load();
       preview = null;
       importPath = '';
+      return outcome.schedule_warning
+        ? `Configuration imported (a rollback copy was saved), but: ${outcome.schedule_warning}`
+        : undefined;
     }, 'Configuration imported. A rollback copy was saved.');
   }
 </script>

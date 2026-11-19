@@ -108,21 +108,53 @@ fn parse_imported_profile(json: &str) -> Result<Profile, String> {
     Ok(imported)
 }
 
+/// Result of `import_profile`. The profile fields are flattened so existing
+/// callers still read `id`/`name`. `schedule_warning` is set when the profile
+/// was saved but the OS backup task could not be synced: the import is NOT
+/// rolled back, so the UI must reload and must not retry the import.
+#[derive(serde::Serialize)]
+pub struct ImportedProfile {
+    #[serde(flatten)]
+    pub profile: Profile,
+    pub schedule_warning: Option<String>,
+}
+
+/// Persists the imported profile. Returns it with whether the active profile
+/// changed (the backup task must then be reconciled).
+async fn persist_imported_profile(
+    config_dir: &std::path::Path,
+    json: &str,
+) -> Result<(Profile, ProfilesData, bool), String> {
+    let mut imported = parse_imported_profile(json)?;
+    let mut data = profiles::load(config_dir).await?;
+    imported.id = profiles::make_profile_id(&imported.name, &data);
+    let active_changed = append_imported(&mut data, imported.clone());
+    write_profiles_to(config_dir, &data).await?;
+    Ok((imported, data, active_changed))
+}
+
 #[tauri::command]
-pub async fn import_profile(app: tauri::AppHandle, path: String) -> Result<Profile, String> {
+pub async fn import_profile(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<ImportedProfile, String> {
     let json = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| e.to_string())?;
-    let mut imported = parse_imported_profile(&json)?;
-
-    let mut data = read_profiles(&app).await?;
-    imported.id = profiles::make_profile_id(&imported.name, &data);
-    let active_changed = append_imported(&mut data, imported.clone());
-    write_profiles(&app, &data).await?;
-    if active_changed {
-        schedule::reconcile_backup_task(data.active()).await?;
-    }
-    Ok(imported)
+    let dir = config_dir(&app).await?;
+    let (profile, data, active_changed) = persist_imported_profile(&dir, &json).await?;
+    let schedule_warning = if active_changed {
+        schedule::reconcile_backup_task(data.active())
+            .await
+            .err()
+            .map(|e| format!("Profile imported, but the backup schedule could not be updated: {e}"))
+    } else {
+        None
+    };
+    Ok(ImportedProfile {
+        profile,
+        schedule_warning,
+    })
 }
 
 /// Appends an imported profile, activating it when none is active. Returns
@@ -244,6 +276,19 @@ mod tests {
         let mut p = parse_imported_profile(&profile_json(serde_json::json!({}))).unwrap();
         p.id = id.into();
         p
+    }
+
+    #[tokio::test]
+    async fn persist_imported_profile_saves_and_activates_first_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let (p, _, changed) =
+            persist_imported_profile(dir.path(), &profile_json(serde_json::json!({})))
+                .await
+                .unwrap();
+        assert!(changed);
+        let saved = profiles::load(dir.path()).await.unwrap();
+        assert_eq!(saved.profiles.len(), 1);
+        assert_eq!(saved.active_id.as_deref(), Some(p.id.as_str()));
     }
 
     #[test]

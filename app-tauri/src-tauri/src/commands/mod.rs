@@ -96,6 +96,11 @@ async fn read_profiles(app: &tauri::AppHandle) -> Result<ProfilesData, String> {
 }
 
 async fn write_profiles(app: &tauri::AppHandle, data: &ProfilesData) -> Result<(), String> {
+    let dir = config_dir(app).await?;
+    write_profiles_to(&dir, data).await
+}
+
+async fn write_profiles_to(dir: &std::path::Path, data: &ProfilesData) -> Result<(), String> {
     // Central save-path gate: no profile with option-like (leading `-`) or
     // otherwise invalid fields is ever persisted, regardless of which command
     // mutated it.
@@ -104,8 +109,7 @@ async fn write_profiles(app: &tauri::AppHandle, data: &ProfilesData) -> Result<(
             .validate()
             .map_err(|e| format!("profile '{}': {e}", profile.name))?;
     }
-    let dir = config_dir(app).await?;
-    profiles::save(&dir, data).await
+    profiles::save(dir, data).await
 }
 
 pub struct AppState {

@@ -93,11 +93,24 @@
         filters: [{ name: 'BorgUI profile', extensions: ['json'] }],
       });
       if (!path) return;
-      const imported = await invoke<{ id: string; name: string }>('import_profile', { path });
+      const imported = await invoke<{
+        id: string;
+        name: string;
+        schedule_warning: string | null;
+      }>('import_profile', { path });
       await profilesState.load();
-      await profilesState.setActive(imported.id);
       await repoState.load();
       profileResult = `Imported profile "${imported.name}"`;
+      try {
+        await profilesState.setActive(imported.id);
+        await repoState.load();
+      } catch (e) {
+        profileResult = `Imported profile "${imported.name}", but activating it failed: ${e}`;
+        return;
+      }
+      if (imported.schedule_warning) {
+        profileResult = `Imported profile "${imported.name}". ${imported.schedule_warning}`;
+      }
     } catch (e) {
       profileResult = `Import failed: ${e}`;
     }
