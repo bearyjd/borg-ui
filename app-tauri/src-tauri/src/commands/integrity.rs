@@ -93,24 +93,9 @@ pub async fn set_monthly_integrity_check(
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<(), String> {
-    const TASK: &str = crate::task_contract::INTEGRITY_TASK;
-    if enabled {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        borg_platform_win::scheduler::schedule_monthly_check(
-            TASK,
-            &exe.to_string_lossy(),
-            crate::task_contract::SCHEDULED_INTEGRITY_FLAG,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    } else {
-        borg_platform_win::scheduler::unschedule_backup(TASK)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-
     let mut data = read_profiles(&app).await?;
     let profile = data.require_active_mut()?;
     profile.integrity_schedule = Some(crate::profiles::IntegritySchedule { enabled });
-    write_profiles(&app, &data).await
+    write_profiles(&app, &data).await?;
+    schedule::reconcile_integrity_task(data.active()).await
 }
