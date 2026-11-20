@@ -64,6 +64,96 @@ pub(super) async fn reconcile_backup_task(active: Option<&Profile>) -> Result<()
     }
 }
 
+fn integrity_task_wanted(active: Option<&Profile>) -> bool {
+    active
+        .and_then(|p| p.integrity_schedule.as_ref())
+        .is_some_and(|s| s.enabled)
+}
+
+fn restore_drill_task_wanted(active: Option<&Profile>) -> bool {
+    active
+        .and_then(|p| p.restore_drill_schedule.as_ref())
+        .is_some_and(|s| s.enabled)
+}
+
+fn report_task_wanted(active: Option<&Profile>) -> bool {
+    active.is_some_and(|p| p.reporting.enabled && p.reporting.daily_digest)
+}
+
+async fn remove_task_if_present(task: &str) -> Result<(), String> {
+    if borg_platform_win::scheduler::task_exists(task)
+        .await
+        .unwrap_or(false)
+    {
+        borg_platform_win::scheduler::unschedule_backup(task)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+async fn reconcile_monthly_task(task: &str, flag: &str, wanted: bool) -> Result<(), String> {
+    if !wanted {
+        return remove_task_if_present(task).await;
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    borg_platform_win::scheduler::schedule_monthly_check(task, &exe.to_string_lossy(), flag)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub(super) async fn reconcile_integrity_task(active: Option<&Profile>) -> Result<(), String> {
+    reconcile_monthly_task(
+        crate::task_contract::INTEGRITY_TASK,
+        crate::task_contract::SCHEDULED_INTEGRITY_FLAG,
+        integrity_task_wanted(active),
+    )
+    .await
+}
+
+pub(super) async fn reconcile_restore_drill_task(active: Option<&Profile>) -> Result<(), String> {
+    reconcile_monthly_task(
+        crate::task_contract::RESTORE_DRILL_TASK,
+        crate::task_contract::SCHEDULED_RESTORE_DRILL_FLAG,
+        restore_drill_task_wanted(active),
+    )
+    .await
+}
+
+pub(super) async fn reconcile_report_task(active: Option<&Profile>) -> Result<(), String> {
+    const TASK: &str = crate::task_contract::HEALTH_REPORT_TASK;
+    if !report_task_wanted(active) {
+        return remove_task_if_present(TASK).await;
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    borg_platform_win::scheduler::schedule_backup(
+        TASK,
+        &exe.to_string_lossy(),
+        crate::task_contract::SCHEDULED_HEALTH_REPORT_FLAG,
+        &borg_platform_win::scheduler::Schedule::Daily { hour: 9, minute: 0 },
+        false,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Reconcile every machine-wide task against the active profile. Attempts all
+/// of them even if one fails, and reports every failure.
+pub(super) async fn reconcile_all_tasks(active: Option<&Profile>) -> Result<(), String> {
+    let results = [
+        reconcile_backup_task(active).await,
+        reconcile_integrity_task(active).await,
+        reconcile_restore_drill_task(active).await,
+        reconcile_report_task(active).await,
+    ];
+    let errors: Vec<String> = results.into_iter().filter_map(Result::err).collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
 #[tauri::command]
 pub async fn save_schedule_config(
     app: tauri::AppHandle,
@@ -216,5 +306,40 @@ mod tests {
             }
             TaskPlan::Remove => panic!("expected Register"),
         }
+    }
+
+    #[test]
+    fn auxiliary_tasks_absent_without_active_profile() {
+        assert!(!integrity_task_wanted(None));
+        assert!(!restore_drill_task_wanted(None));
+        assert!(!report_task_wanted(None));
+    }
+
+    #[test]
+    fn auxiliary_tasks_absent_by_default() {
+        let p = profile(serde_json::json!({}));
+        assert!(!integrity_task_wanted(Some(&p)));
+        assert!(!restore_drill_task_wanted(Some(&p)));
+        assert!(!report_task_wanted(Some(&p)));
+    }
+
+    #[test]
+    fn auxiliary_tasks_follow_profile_settings() {
+        let p = profile(serde_json::json!({
+            "integrity_schedule": {"enabled": true},
+            "restore_drill_schedule": {"enabled": true},
+            "reporting": {"enabled": true, "daily_digest": true}
+        }));
+        assert!(integrity_task_wanted(Some(&p)));
+        assert!(restore_drill_task_wanted(Some(&p)));
+        assert!(report_task_wanted(Some(&p)));
+        let off = profile(serde_json::json!({
+            "integrity_schedule": {"enabled": false},
+            "restore_drill_schedule": {"enabled": false},
+            "reporting": {"enabled": true, "daily_digest": false}
+        }));
+        assert!(!integrity_task_wanted(Some(&off)));
+        assert!(!restore_drill_task_wanted(Some(&off)));
+        assert!(!report_task_wanted(Some(&off)));
     }
 }

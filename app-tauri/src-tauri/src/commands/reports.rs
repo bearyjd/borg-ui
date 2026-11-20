@@ -59,21 +59,7 @@ pub async fn save_reporting_settings(
     }
     let profile_id = profile.id.clone();
     write_profiles(&app, &data).await?;
-    const TASK: &str = crate::task_contract::HEALTH_REPORT_TASK;
-    if settings.enabled && settings.daily_digest {
-        let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-        borg_platform_win::scheduler::schedule_backup(
-            TASK,
-            &exe.to_string_lossy(),
-            crate::task_contract::SCHEDULED_HEALTH_REPORT_FLAG,
-            &borg_platform_win::scheduler::Schedule::Daily { hour: 9, minute: 0 },
-            false,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    } else {
-        let _ = borg_platform_win::scheduler::unschedule_backup(TASK).await;
-    }
+    schedule::reconcile_report_task(data.active()).await?;
     tracing::debug!(profile_id, "reporting settings updated");
     Ok(())
 }
